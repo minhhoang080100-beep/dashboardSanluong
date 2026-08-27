@@ -1,5 +1,5 @@
 import pyodbc
-from .database import get_db_connection
+from database import get_db_connection
 from typing import Dict, Any, List
 from datetime import datetime, date
 import logging

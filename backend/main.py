@@ -1,8 +1,8 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from .config import settings
-from .database import get_db_connection
-from .repository import dashboard_repo
+from config import settings
+from database import get_db_connection
+from repository import dashboard_repo
 from typing import List, Dict, Any
 from datetime import datetime, timedelta
 
