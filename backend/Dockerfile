@@ -20,11 +20,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy toàn bộ source code backend vào container
-COPY . .
+# Copy toàn bộ source code backend vào một thư mục con là /app/backend
+COPY . ./backend
 
 # Mở port 8000
 EXPOSE 8000
 
-# Lệnh khởi chạy server FastAPI
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Lệnh khởi chạy server FastAPI dưới dạng package (backend.main:app)
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
