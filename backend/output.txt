@@ -1,0 +1,8 @@
+--- TallyShift ---
+Columns: ['shiftDate', 'weightNetSum', 'containerTeuSum', 'cargoWeightNetSum']
+(datetime.date(2026, 8, 14), Decimal('576.530'), None, None)
+(datetime.date(2026, 8, 14), Decimal('530.000'), None, None)
+(datetime.date(2026, 8, 14), Decimal('1106.530'), None, None)
+(datetime.date(2026, 8, 14), Decimal('540.000'), None, None)
+(datetime.date(2026, 8, 14), Decimal('566.530'), None, None)
+
