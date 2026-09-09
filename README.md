@@ -41,6 +41,14 @@ npm run dev -- --host 127.0.0.1
 
 Mở URL Vite in ra. Frontend gọi `/api` qua proxy phát triển. Nếu API ở cổng khác, cấu hình biến proxy được mô tả trong `frontend/README.md`. `VITE_API_URL` là đường dẫn kết thúc ở `/api` khi triển khai API khác origin; phải cấu hình CORS exact origin tương ứng. Không đưa bí mật SQL vào biến `VITE_*`.
 
+### Railway API và Vercel frontend
+
+Railway dùng biến môi trường của service, không tự đọc tệp `.env` trên máy phát triển. Trong **Variables** của service API, đặt `DB_SERVER`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DRIVER` và các lựa chọn TLS theo cấu hình SQL đã được quản trị xác nhận. Lưu thông tin đăng nhập trong Railway Variables, không ghi vào Git hoặc biến frontend. Dockerfile cài ODBC Driver 17; `DB_DRIVER` phải khớp driver này.
+
+Domain frontend chính được cấu hình bằng `FRONTEND_ORIGIN`, mặc định là `https://dashboard-sanluong.vercel.app`. `CORS_ORIGINS` là danh sách origin bổ sung ở dạng JSON, ví dụ `["http://localhost:5173","http://127.0.0.1:5173"]`. Mỗi origin gồm scheme và host/port, không có đường dẫn hoặc dấu `/` cuối; không dùng wildcard. Trên Vercel, đặt `VITE_API_URL=https://dashboardsanluong-production.up.railway.app/api` rồi build lại khi đổi biến này.
+
+Sau khi áp dụng thay đổi Variables trên Railway, triển khai lại service. Kiểm tra OPTIONS với `Origin` là domain Vercel phải trả 200 cùng `Access-Control-Allow-Origin` đúng domain. GET báo cáo cũng phải có header này kể cả khi trả lỗi. `503 DATABASE_UNAVAILABLE` là lỗi cấu hình/kết nối SQL cần kiểm tra riêng, không phải lỗi CORS; không thay bằng dữ liệu mẫu hoặc tắt kiểm tra TLS để che lỗi.
+
 ## API và hợp đồng báo cáo
 
 ```text

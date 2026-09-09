@@ -23,7 +23,10 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_HOURS: int = 8
     API_HOST: str = "127.0.0.1"
     API_PORT: int = Field(default=8000, ge=1, le=65535)
-    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    # Keep the deployed frontend separate from additional development origins.
+    # An older CORS_ORIGINS environment override must not remove the main UI.
+    FRONTEND_ORIGIN: str = "https://dashboard-sanluong.vercel.app"
+    CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
     @field_validator("DB_DATABASE")
     @classmethod
@@ -46,6 +49,16 @@ class Settings(BaseSettings):
             ):
                 raise ValueError("CORS_ORIGINS must contain exact HTTP(S) origins without paths")
         return values
+
+    @field_validator("FRONTEND_ORIGIN")
+    @classmethod
+    def exact_frontend_origin(cls, value: str) -> str:
+        return cls.exact_origins([value])[0]
+
+    @property
+    def allowed_cors_origins(self) -> list[str]:
+        """The main frontend plus explicitly configured additional origins."""
+        return list(dict.fromkeys([self.FRONTEND_ORIGIN, *self.CORS_ORIGINS]))
 
     model_config = SettingsConfigDict(
         env_file=Path(__file__).resolve().parent.parent / ".env",

@@ -503,11 +503,78 @@ def test_health_failure_returns_503(monkeypatch, client):
 
 
 def test_cors_requires_exact_configured_origins(client):
-    allowed = client.options("/api/dashboard", headers={"Origin": main.settings.CORS_ORIGINS[0], "Access-Control-Request-Method": "GET"})
-    denied = client.options("/api/dashboard", headers={"Origin": "https://attacker.example", "Access-Control-Request-Method": "GET"})
-    assert allowed.headers["access-control-allow-origin"] == main.settings.CORS_ORIGINS[0]
-    assert "access-control-allow-origin" not in denied.headers
-    assert "access-control-allow-credentials" not in allowed.headers
+    for origin in main.settings.allowed_cors_origins:
+        allowed = client.options("/api/dashboard", headers={"Origin": origin, "Access-Control-Request-Method": "GET"})
+        assert allowed.status_code == 200
+        assert allowed.headers["access-control-allow-origin"] == origin
+        assert allowed.headers["access-control-allow-methods"] == "GET"
+        assert "access-control-allow-credentials" not in allowed.headers
+    for origin in ("https://attacker.example", "https://dashboard-sanluong.vercel.app.attacker.example", "https://unapproved-preview.vercel.app"):
+        denied = client.options("/api/dashboard", headers={"Origin": origin, "Access-Control-Request-Method": "GET"})
+        assert denied.status_code == 400
+        assert "access-control-allow-origin" not in denied.headers
+        assert "access-control-allow-origin" not in client.get("/", headers={"Origin": origin}).headers
+
+
+def test_production_preflight_rejects_write_methods_and_unapproved_headers(client):
+    origin = "https://dashboard-sanluong.vercel.app"
+    for extra in ({"Access-Control-Request-Method": "POST"},
+                  {"Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "X-Unapproved"}):
+        response = client.options("/api/dashboard", headers={"Origin": origin, **extra})
+        assert response.status_code == 400
+
+
+@pytest.mark.parametrize(("path", "expected_status"), [
+    ("/", 200), ("/api/dashboard", 503),
+    ("/api/dashboard?terminal=unknown", 422), ("/api/unknown", 404),
+])
+def test_production_frontend_can_read_success_and_handled_errors(monkeypatch, client, path, expected_status):
+    def unavailable(**kwargs):
+        raise DatabaseUnavailable()
+
+    monkeypatch.setattr(main.dashboard_repo, "get_dashboard", unavailable)
+    origin = "https://dashboard-sanluong.vercel.app"
+    response = client.get(path, headers={"Origin": origin})
+    assert response.status_code == expected_status
+    assert response.headers["access-control-allow-origin"] == origin
+    assert "origin" in response.headers["vary"].lower()
+    assert "access-control-allow-credentials" not in response.headers
+    assert response.headers["cache-control"] == "no-store"
+    if expected_status == 503:
+        assert response.json()["detail"]["code"] == "DATABASE_UNAVAILABLE"
+
+
+def test_cors_defaults_cover_production_and_actual_vite_port(monkeypatch):
+    monkeypatch.delenv("FRONTEND_ORIGIN", raising=False)
+    monkeypatch.delenv("CORS_ORIGINS", raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.allowed_cors_origins == [
+        "https://dashboard-sanluong.vercel.app",
+        "http://localhost:5173", "http://127.0.0.1:5173",
+    ]
+
+
+def test_old_cors_environment_keeps_production_and_explicit_origins(monkeypatch):
+    monkeypatch.delenv("FRONTEND_ORIGIN", raising=False)
+    monkeypatch.setenv("CORS_ORIGINS", '["http://localhost:3000"]')
+    settings = Settings(_env_file=None)
+    assert settings.allowed_cors_origins == [
+        "https://dashboard-sanluong.vercel.app", "http://localhost:3000",
+    ]
+
+
+def test_deployment_can_replace_frontend_and_deduplicate_additional_origins():
+    settings = Settings(_env_file=None, FRONTEND_ORIGIN="https://dashboard.example",
+                        CORS_ORIGINS=["https://dashboard.example", "http://localhost:5173"])
+    assert settings.allowed_cors_origins == ["https://dashboard.example", "http://localhost:5173"]
+
+
+@pytest.mark.parametrize("origin", ["*", "https://*.vercel.app", "https://dashboard.example/", "https://user:password@dashboard.example", "https://dashboard.example?debug=1", "https://dashboard.example#section"])
+def test_cors_rejects_non_origins_in_both_configuration_fields(origin):
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, FRONTEND_ORIGIN=origin)
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, CORS_ORIGINS=[origin])
 
 
 def test_settings_reject_wildcard_and_ignore_legacy_env_keys():
