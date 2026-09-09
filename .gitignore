@@ -24,3 +24,19 @@ dist-ssr/
 # Output and temp files
 test_output*.json
 *.log
+
+# Local audit environments and credentials
+.venv*/
+.pytest_cache/
+.dashboard-access.txt
+backend/.data/
+.env.*
+!.env.example
+
+# Production data and local audit evidence stay outside the public repository.
+/outputs/
+/AUDIT_REPORT.vi.md
+/tests/verify_live_*.py
+/backend/analyze_output.txt
+/backend/output.txt
+/backend/output_tables.txt

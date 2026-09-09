@@ -3,3 +3,10 @@ venv
 .env
 .git
 *.pyc
+.data
+diagnostics
+*.txt
+!requirements.txt
+!requirements-dev.txt
+test_output*.json
+*_audit*.json
