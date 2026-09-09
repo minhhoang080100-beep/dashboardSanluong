@@ -49,6 +49,23 @@ Domain frontend chính được cấu hình bằng `FRONTEND_ORIGIN`, mặc đ�
 
 Sau khi áp dụng thay đổi Variables trên Railway, triển khai lại service. Kiểm tra OPTIONS với `Origin` là domain Vercel phải trả 200 cùng `Access-Control-Allow-Origin` đúng domain. GET báo cáo cũng phải có header này kể cả khi trả lỗi. `503 DATABASE_UNAVAILABLE` là lỗi cấu hình/kết nối SQL cần kiểm tra riêng, không phải lỗi CORS; không thay bằng dữ liệu mẫu hoặc tắt kiểm tra TLS để che lỗi.
 
+#### Chuyển cấu hình TLS từ bản cũ
+
+Bản cũ ghi cố định `Encrypt=yes;TrustServerCertificate=yes`. Bản hiện tại vẫn bật mã hóa nhưng mặc định xác minh chứng chỉ (`DB_ENCRYPT=true`, `DB_TRUST_SERVER_CERTIFICATE=false`). Đủ ba biến đăng nhập chưa bảo đảm kết nối được nếu máy chủ dùng chứng chỉ tự ký hoặc CA chưa được client tin cậy.
+
+Cách triển khai lâu dài là dùng chứng chỉ hợp lệ trên SQL Server, cài CA cần thiết vào trust store của container và giữ `DB_TRUST_SERVER_CERTIFICATE=false`. Tên máy chủ kết nối phải phù hợp với chứng chỉ. Xem [hướng dẫn chứng chỉ của Microsoft ODBC trên Linux](https://learn.microsoft.com/en-us/sql/connect/odbc/linux-mac/connection-string-keywords-and-data-source-names-dsns?view=sql-server-ver17).
+
+Nếu quản trị cho phép khôi phục tạm chính sách kết nối của bản cũ, cấu hình rõ trong Railway Variables rồi Deploy:
+
+```dotenv
+DB_ENCRYPT=true
+DB_TRUST_SERVER_CERTIFICATE=true
+```
+
+Ngoại lệ này giữ mã hóa đường truyền nhưng bỏ xác minh danh tính máy chủ qua chứng chỉ. Không đặt `DB_ENCRYPT=false`; ứng dụng không tự hạ mức bảo vệ hoặc thử lại bằng chính sách TLS yếu hơn khi kết nối lỗi.
+
+Deploy Logs chỉ ghi loại lỗi và SQLSTATE đã được lọc: `missing_configuration`, `tls_certificate`, `tls_handshake`, `authentication`, `timeout`, `network`, `connection`, `driver_configuration` hoặc `unknown`. `connection` biểu thị chưa đủ bằng chứng để phân loại chi tiết hơn. Kiểm tra dòng này để phân biệt lỗi chứng chỉ với lỗi mạng/tài khoản; không chia sẻ mật khẩu hoặc toàn bộ chuỗi kết nối trong quá trình xử lý.
+
 ## API và hợp đồng báo cáo
 
 ```text

@@ -444,6 +444,70 @@ def test_driver_error_is_sanitized(monkeypatch, caplog):
     assert "private-host" not in caplog.text
 
 
+@pytest.mark.parametrize(("state", "driver_message", "category"), [
+    ("08001", "SSL Provider: The certificate chain was issued by an authority that is not trusted.", "tls_certificate"),
+    ("08001", "SSL routines::certificate verify failed:unable to get local issuer certificate", "tls_certificate"),
+    ("08001", "SSL Provider: The target principal name is incorrect.", "tls_certificate"),
+    ("08001", "SSL Provider: handshake failed", "tls_handshake"),
+    ("28000", "Login failed for user.", "authentication"),
+    ("08001", "Login timeout expired", "timeout"),
+    ("HYT00", "Connection attempt expired", "timeout"),
+    ("08001", "TCP Provider: network-related error", "network"),
+    ("08S01", "Communication link failure", "network"),
+    ("IM002", "Data source name not found", "driver_configuration"),
+    ("01000", "Can't open lib: file not found", "driver_configuration"),
+    ("08001", "Client unable to establish connection", "connection"),
+    ("HY000", "Unclassified driver failure", "unknown"),
+    ("PRIV8", "Unclassified driver failure", "unknown"),
+])
+def test_safe_connection_diagnostics_preserve_tls_and_do_not_retry(monkeypatch, caplog, state, driver_message, category):
+    for key, value in {"DB_SERVER": "private-host", "DB_USERNAME": "private-user", "DB_PASSWORD": "secret-password",
+                       "DB_ENCRYPT": True, "DB_TRUST_SERVER_CERTIFICATE": False}.items():
+        monkeypatch.setattr(database.settings, key, value)
+    calls = []
+
+    def fail(connection_string, **kwargs):
+        calls.append(connection_string)
+        raise database.pyodbc.Error(state, driver_message + "; SERVER=private-host; UID=private-user; PWD=secret-password")
+
+    monkeypatch.setattr(database.pyodbc, "connect", fail)
+    with pytest.raises(DatabaseUnavailable) as caught:
+        database.get_db_connection()
+    assert len(calls) == 1
+    assert ";Encrypt=yes;TrustServerCertificate=no;" in calls[0]
+    assert database.settings.DB_ENCRYPT is True
+    assert database.settings.DB_TRUST_SERVER_CERTIFICATE is False
+    assert f"category={category}" in caplog.text
+    expected_state = "unknown" if state == "PRIV8" else state
+    assert f"sqlstate={expected_state}" in caplog.text
+    assert "encrypt=True trust_server_certificate=False" in caplog.text
+    for private_value in ("private-host", "private-user", "secret-password", driver_message, "PRIV8"):
+        assert private_value not in caplog.text
+        assert private_value not in str(caught.value)
+    assert all(record.exc_info is None for record in caplog.records)
+
+
+def test_missing_configuration_logs_only_missing_field_names(monkeypatch, caplog):
+    monkeypatch.setattr(database.settings, "DB_SERVER", "")
+    monkeypatch.setattr(database.settings, "DB_USERNAME", "private-user")
+    monkeypatch.setattr(database.settings, "DB_PASSWORD", "")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Incomplete configuration must not reach the driver")
+
+    monkeypatch.setattr(database.pyodbc, "connect", forbidden)
+    with pytest.raises(DatabaseUnavailable):
+        database.get_db_connection()
+    assert "category=missing_configuration missing_fields=DB_SERVER,DB_PASSWORD" in caplog.text
+    assert "DB_USERNAME" not in caplog.text
+    assert "private-user" not in caplog.text
+
+
+def test_driver_diagnostic_does_not_turn_arbitrary_exception_text_into_sqlstate():
+    assert database._connection_diagnostic(RuntimeError("TOKEN", "private text")) == ("unknown", "unknown")
+    assert database._connection_diagnostic(database.pyodbc.Error("[08001] TCP Provider: private text")) == ("network", "08001")
+
+
 @pytest.fixture
 def client():
     with TestClient(main.app) as test_client:
