@@ -571,7 +571,7 @@ def test_cors_requires_exact_configured_origins(client):
         allowed = client.options("/api/dashboard", headers={"Origin": origin, "Access-Control-Request-Method": "GET"})
         assert allowed.status_code == 200
         assert allowed.headers["access-control-allow-origin"] == origin
-        assert allowed.headers["access-control-allow-methods"] == "GET"
+        assert set(allowed.headers["access-control-allow-methods"].split(', ')) == {"GET", "POST", "PATCH", "DELETE"}
         assert "access-control-allow-credentials" not in allowed.headers
     for origin in ("https://attacker.example", "https://dashboard-sanluong.vercel.app.attacker.example", "https://unapproved-preview.vercel.app"):
         denied = client.options("/api/dashboard", headers={"Origin": origin, "Access-Control-Request-Method": "GET"})
@@ -580,9 +580,9 @@ def test_cors_requires_exact_configured_origins(client):
         assert "access-control-allow-origin" not in client.get("/", headers={"Origin": origin}).headers
 
 
-def test_production_preflight_rejects_write_methods_and_unapproved_headers(client):
+def test_production_preflight_rejects_unsupported_methods_and_unapproved_headers(client):
     origin = "https://dashboard-sanluong.vercel.app"
-    for extra in ({"Access-Control-Request-Method": "POST"},
+    for extra in ({"Access-Control-Request-Method": "PUT"},
                   {"Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "X-Unapproved"}):
         response = client.options("/api/dashboard", headers={"Origin": origin, **extra})
         assert response.status_code == 400

@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from backend.repository import DashboardRepository
 from playwright.sync_api import Error, expect, sync_playwright
+from browser_auth_support import install_auth_fixture
 
 
 def fixture(filters, empty=False, native=False, missing=False):
@@ -86,6 +87,7 @@ def main():
         browser = playwright.chromium.launch(channel=args.channel, headless=True)
         context = browser.new_context(viewport={"width": 1440, "height": 1100}, accept_downloads=True)
         page = context.new_page()
+        auth_state = install_auth_fixture(page)
         page.on("pageerror", lambda exc: errors.append(str(exc)))
         page.route("**/api/dashboard?*", respond)
         page.goto(args.url)
@@ -134,7 +136,7 @@ def main():
         expect(page.locator(".kpi-card")).to_have_count(3)
         state["delay_terminal"] = "ben_thuy"
         page.get_by_role("button", name="Tải lại báo cáo đang chọn").click()
-        expect(page.get_by_text("Đang tổng hợp báo cáo", exact=True)).to_be_visible()
+        expect(page.get_by_text("Đang cập nhật số liệu…", exact=True)).to_be_visible()
         page.get_by_label("Phạm vi xí nghiệp").select_option("cua_lo")
         page.get_by_role("button", name="Áp dụng", exact=True).click()
         expect(page.locator(".kpi-value").first).to_contain_text("1.000")
@@ -154,13 +156,14 @@ def main():
 
         state["mode"] = "error"
         page.get_by_role("button", name="Tải lại báo cáo đang chọn").click()
-        expect(page.get_by_role("heading", name="Chưa tải được báo cáo")).to_be_visible()
-        expect(page.locator(".kpi-card")).to_have_count(0)
-        expect(page.get_by_role("button", name="Xuất báo cáo CSV")).to_be_disabled()
-        state["mode"] = "data"
-        page.get_by_role("button", name="Thử lại", exact=True).click()
+        expect(page.locator(".refresh-error")).to_contain_text("Đang giữ số liệu lần đọc trước")
         expect(page.locator(".kpi-card")).to_have_count(3)
-        checks.append("503: explicit failure, no stale KPI/export; retry recovers")
+        expect(page.get_by_role("button", name="Xuất báo cáo CSV")).to_be_enabled()
+        state["mode"] = "data"
+        page.get_by_role("button", name="Thử cập nhật lại", exact=True).click()
+        expect(page.locator(".kpi-card")).to_have_count(3)
+        expect(page.locator(".refresh-progress")).to_have_count(0)
+        checks.append("503: refresh explicitly marks retained snapshot; retry recovers")
 
         state["mode"] = "native"
         page.get_by_role("button", name="Tải lại báo cáo đang chọn").click()
@@ -187,10 +190,11 @@ def main():
 
         state["mode"] = "malformed"
         page.get_by_role("button", name="Tải lại báo cáo đang chọn").click()
-        expect(page.get_by_role("heading", name="Chưa tải được báo cáo")).to_be_visible()
-        expect(page.locator(".kpi-card")).to_have_count(0)
-        checks.append("malformed API data: visible failure without render crash")
+        expect(page.locator(".refresh-error")).to_be_visible()
+        expect(page.locator(".kpi-card")).to_have_count(3)
+        checks.append("malformed API refresh: visible failure retains only the previous valid snapshot")
         assert errors == [], errors
+        assert auth_state["unexpected"] == [], auth_state["unexpected"]
         browser.close()
 
     result = {"status": "passed", "data": "synthetic fixtures only; no live SQL verification",

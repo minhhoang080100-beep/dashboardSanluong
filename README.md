@@ -1,15 +1,18 @@
 # Dashboard sản lượng Cảng Nghệ Tĩnh
 
-Ứng dụng React/Vite và FastAPI đọc SQL Server `SmartTOS` / `SmartTOS_BenThuy`. Mục tiêu là xem sản lượng toàn công ty hoặc từng xí nghiệp theo kỳ, so sánh kỳ trước, phân tích cơ cấu và xuất báo cáo CSV.
+Ứng dụng React/Vite và FastAPI đọc SQL Server `SmartTOS` / `SmartTOS_BenThuy`, có tài khoản nội bộ và phân quyền theo xí nghiệp. Báo cáo hỗ trợ tra cứu xuống dòng tác nghiệp, kế hoạch tháng/chuyến, đối soát, chốt phiên bản và xuất CSV/Excel.
 
-**Trạng thái bản rà soát 09/09/2026, cập nhật lần 2:** đã kiểm tra catalog hai database, toàn lịch sử TallyShift và nghiệp vụ từng tháng năm 2026; đối chiếu API báo cáo, sửa lọc nhóm qua cảng và lỗi cộng lẫn đơn vị. KPI tấn chỉ cộng phần khối lượng có cơ sở; đơn vị khác và dữ liệu thiếu hiển thị riêng. Chưa sửa dữ liệu gốc hoặc triển khai production. API chưa có xác thực người dùng; điều kiện vận hành và đối soát chứng từ còn lại được ghi trong kế hoạch.
+**Bản nâng cấp 13/09/2026:** đã triển khai các chức năng trên trong mã nguồn và chạy kiểm tra local với SQL thực. KPI tấn chỉ cộng phần khối lượng có cơ sở; giữ riêng đơn vị khác và dữ liệu thiếu. Dữ liệu nguồn TOS chỉ được đọc; tài khoản, kế hoạch và báo cáo chốt lưu trong SQLite riêng. Bản nâng cấp này chưa được triển khai lên Railway/Vercel; cần volume bền vững và quản trị viên đầu tiên theo hướng dẫn triển khai.
 
 ## Tài liệu
 
-- [Kế hoạch nâng cấp theo giai đoạn](UPGRADE_PLAN.vi.md)
+- [Kế hoạch nâng cấp theo giai đoạn](docs/UPGRADE_PLAN.vi.md)
 - [Hướng dẫn frontend](frontend/README.md)
+- [Triển khai Railway/Vercel và sao lưu](docs/DEPLOYMENT.vi.md)
 
-Hồ sơ đối soát chứa dữ liệu sản xuất được giữ cục bộ, không nằm trong repository công khai: `AUDIT_REPORT.vi.md`, `outputs/DATABASE_AUDIT.vi.md` và `outputs/data-accuracy-20260909/DATA_ACCURACY_REPORT.vi.md`. Các script `tests/verify_live_*.py` dùng hồ sơ hiện trường cũng được giữ cục bộ; bộ kiểm thử tái lập trong Git dùng fixture tổng hợp.
+Hồ sơ đối soát, script kiểm tra SQL thực và kết quả kiểm tra cũ được nén trong `outputs/archive/cleanup-*.zip`, chỉ lưu cục bộ và không đưa vào Git. File ZIP giữ đường dẫn gốc cùng `CLEANUP_MANIFEST.json` để tra lại và kiểm tra tính toàn vẹn. Bộ kiểm thử tái lập trong `tests/` dùng fixture tổng hợp.
+
+Các thư mục chính: `backend/` chứa API, `frontend/` chứa giao diện, `tests/` chứa kiểm thử, `docs/` chứa tài liệu. `outputs/` dành cho kết quả kiểm tra cục bộ; có thể dọn các kết quả sinh lại được sau khi kiểm tra. Giữ `.env`, file thông tin đăng nhập, `backend/.data/`, môi trường Python và `frontend/node_modules/` khi vẫn cần chạy local.
 
 ## Chạy trên Windows / PowerShell
 
@@ -24,6 +27,14 @@ py -3.12 -m venv .venv
 ```
 
 Nếu chưa có `.env`, sao chép `.env.example` thành `.env` và điền cấu hình ở máy cục bộ. Giữ nguyên `.env` đang có nếu đã được quản trị cấu hình. `DB_DRIVER` phải khớp driver đã cài. Ưu tiên chứng chỉ SQL được tin cậy; `DB_TRUST_SERVER_CERTIFICATE=true` chỉ là ngoại lệ cần chủ hệ thống cho phép, không phải giải pháp cho lỗi mạng.
+
+Tạo tài khoản quản trị đầu tiên (một lần cho mỗi kho dashboard mới). Lệnh từ chối ghi đè file hoặc tạo lại quản trị viên đã có; mật khẩu tạm chỉ được lưu vào file local đã được Git ignore:
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 -m backend.manage_users bootstrap-admin --username admin --output .dashboard-access.txt
+```
+
+Đăng nhập bằng thông tin trong file rồi đổi mật khẩu theo yêu cầu. Kho local mặc định là `backend/.data/control.sqlite3`. Biến môi trường tiến trình `DASHBOARD_STATE_PATH` có thể chỉ định vị trí khác; không dùng thư mục tạm cho production. Không có mật khẩu mặc định hoặc chế độ tắt xác thực.
 
 Chạy API:
 
@@ -42,6 +53,8 @@ npm run dev -- --host 127.0.0.1
 Mở URL Vite in ra. Frontend gọi `/api` qua proxy phát triển. Nếu API ở cổng khác, cấu hình biến proxy được mô tả trong `frontend/README.md`. `VITE_API_URL` là đường dẫn kết thúc ở `/api` khi triển khai API khác origin; phải cấu hình CORS exact origin tương ứng. Không đưa bí mật SQL vào biến `VITE_*`.
 
 ### Railway API và Vercel frontend
+
+Với bản có đăng nhập/kế hoạch, làm theo [hướng dẫn triển khai](docs/DEPLOYMENT.vi.md) để cấu hình volume `/data`, entrypoint và tài khoản quản trị. Healthcheck công khai là `/api/health/live`; `/api/health` kiểm tra SQL và yêu cầu quyền quản trị. Một instance/worker giữ kho SQLite và bộ nhớ bản báo cáo nhất quán.
 
 Railway dùng biến môi trường của service, không tự đọc tệp `.env` trên máy phát triển. Trong **Variables** của service API, đặt `DB_SERVER`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DRIVER` và các lựa chọn TLS theo cấu hình SQL đã được quản trị xác nhận. Lưu thông tin đăng nhập trong Railway Variables, không ghi vào Git hoặc biến frontend. Dockerfile cài ODBC Driver 17; `DB_DRIVER` phải khớp driver này.
 
@@ -79,8 +92,20 @@ Khi lỗi tái diễn, đối chiếu thời điểm, mã HTTP và Deploy Logs: 
 ```text
 GET /api/dashboard?start_date=2026-08-01&end_date=2026-08-31&terminal=all
 GET /api/voyages/cua_lo/{voyage_id}?start_date=2026-08-01&end_date=2026-08-31&page=1&page_size=25
-GET /api/health
+GET /api/reports/{report_id}/operations
+GET /api/reports/{report_id}/export.xlsx
+GET /api/reports/{report_id}/plan-progress
+GET /api/voyages/cua_lo/{voyage_id}/progress
+GET /api/health/live
 ```
+
+API dữ liệu nhận `Authorization: Bearer <token>` từ `POST /api/auth/login`; người dùng chỉ xem xí nghiệp được cấp. Phiên có hạn 8 giờ, thu hồi khi đổi mật khẩu hoặc quyền. Các API kế hoạch, đối soát, báo cáo chốt yêu cầu quyền tương ứng; toàn bộ endpoint cũ cũng được bảo vệ.
+
+`meta.report_id` định danh tập dòng nguồn của lần đọc. Các tổng, drilldown, chi tiết chuyến với `report_id` và Excel dùng lại tập này, không đọc SQL riêng mỗi lần bấm. Dữ liệu được dùng lại tối đa 30 giây; nút **Tải lại** bỏ qua cache. Bản tra cứu có hạn 15 phút: RAM giữ 8 bản/100.000 dòng, `report-cache.sqlite3` giữ thêm tối đa 128 bản/1.000.000 dòng/128 MiB nội dung nén. Khi bản bị loại khỏi RAM hoặc API khởi động lại, có thể đọc lại từ ổ đĩa; hết hạn hoặc chạm giới hạn ổ đĩa vẫn cần tải báo cáo mới (HTTP 410). Mỗi báo cáo tối đa 100.000 dòng. Các yêu cầu trùng đang chạy được gom lại trong một worker; không cache lỗi, không trả số 0 thay lỗi nguồn. Đây là bản dữ liệu tại tầng ứng dụng, không phải bảo đảm snapshot giao dịch đồng thời giữa hai SQL database.
+
+Kế hoạch nhập tay hoặc xem trước file `.xlsx` theo mẫu `/api/plans/template.xlsx`, lưu nháp rồi duyệt theo số văn bản. Hỗ trợ kế hoạch tháng và chuyến, tách tấn/TEU, giữ phiên bản. Không tự phân bổ kế hoạch tháng theo ngày; chỉ so thực hiện từ ngày 1 đến ngày cuối đã chọn của cùng tháng với kế hoạch cả tháng. Tiến độ toàn chuyến đọc riêng tất cả tác nghiệp qua cảng của chuyến và công bố thời điểm nguồn. Thiếu kế hoạch, mẫu số 0 hoặc thực hiện chưa đầy đủ không có phần trăm giả.
+
+Chốt báo cáo lưu bản tổng và các dòng nguồn tại máy chủ thành phiên bản bất biến. So sánh chỉ áp dụng cùng kỳ/xí nghiệp, nhận diện cả thay đổi chi tiết dù tổng không đổi. Ghi chú đối soát lưu theo xí nghiệp + ID tác nghiệp, có lịch sử; không cập nhật phiếu gốc TOS.
 
 `terminal`: `all`, `cua_lo`, `ben_thuy`. Mặc định từ đầu tháng đến ngày hiện tại tại Việt Nam. Kỳ tối đa 366 ngày, gồm cả ngày kết thúc, không chọn ngày tương lai. Kỳ đối chiếu là khoảng liền trước có cùng số ngày.
 
@@ -136,4 +161,6 @@ Kiểm thử không ghi database nguồn. Browser smoke test dùng dữ liệu f
 
 Dockerfile dùng build context `backend/`, chỉ copy module chạy API và chạy dưới user riêng. Cần cung cấp biến môi trường khi chạy; không đóng gói `.env` vào image. Cài ODBC theo [hướng dẫn chính thức Microsoft](https://learn.microsoft.com/en-us/sql/connect/odbc/linux-mac/installing-the-microsoft-odbc-driver-for-sql-server?view=sql-server-ver17).
 
-Docker engine không hoạt động trong phiên rà soát nên **chưa xác minh build image**. Chưa publish/deploy ứng dụng. Trước khi triển khai nội bộ chính thức cần xác thực/phân quyền, HTTPS, tài khoản SQL chỉ đọc, thay thông tin đăng nhập cũ từng xuất hiện trong source và hoàn tất đối soát nghiệp vụ.
+Đã build image Docker và kiểm tra container với volume thử riêng: hạ quyền API, đăng nhập/đổi mật khẩu, giữ tài khoản và kế hoạch sau khởi động lại, sao lưu online và kiểm tra khôi phục. Bản nâng cấp chưa phát hành lên cloud; phiên Railway CLI hiện chưa đăng nhập. Volume/sao lưu production và đối soát theo chứng từ cần được xác nhận tại môi trường triển khai. Xem [hướng dẫn triển khai](docs/DEPLOYMENT.vi.md).
+
+Workflow `.github/workflows/verify.yml` chạy kiểm thử backend, frontend, trình duyệt bằng dữ liệu tổng hợp và kiểm tra Docker khi push/PR. Có thể kiểm tra container local bằng `.\.venv-audit\Scripts\python.exe -B tests/container_smoke.py --image dashboard-sanluong:local-review` sau khi build image tương ứng.

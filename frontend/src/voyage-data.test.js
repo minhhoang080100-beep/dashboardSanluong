@@ -90,6 +90,26 @@ test('detail 404 and 503 fail visibly without substitute operations', async () =
   await assert.rejects(fetchVoyageDetail(voyage, filters, 1, { fetcher: async () => ({ ok: false, status: 503 }) }), /không truy vấn/);
 });
 
+test('expired report is identified for dashboard reload without retrying the expired snapshot', async () => {
+  let attempts = 0;
+  let request;
+  await assert.rejects(fetchVoyageDetail(voyage, filters, 1, {
+    reportId: 'expired-synthetic-report',
+    fetcher: async (url) => {
+      attempts += 1;
+      request = url;
+      return { ok: false, status: 410 };
+    },
+  }), (error) => {
+    assert.equal(error.status, 410);
+    assert.equal(error.code, 'REPORT_EXPIRED');
+    assert.match(error.message, /tải lại báo cáo/);
+    return true;
+  });
+  assert.equal(attempts, 1);
+  assert.equal(new URL(request, 'http://localhost').searchParams.get('report_id'), 'expired-synthetic-report');
+});
+
 test('voyage detail recovers from one network failure with the requested page', async () => {
   let attempts = 0;
   const data = detail();

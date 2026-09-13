@@ -1,46 +1,66 @@
-import { BarChart3, Database, LayoutDashboard, Ship, Users } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { BarChart3, ClipboardList, Settings } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import Dashboard from './components/Dashboard';
+import Auth from './components/Auth';
 import portLogo from './assets/nghetinh-port-logo.png';
 import './App.css';
 
 const sections = [
-  { href: '#overview', label: 'Tổng quan', icon: LayoutDashboard },
-  { href: '#production', label: 'Phân tích sản lượng', icon: BarChart3 },
-  { href: '#voyages', label: 'Chuyến tàu', icon: Ship },
-  { href: '#customers', label: 'Khách hàng', icon: Users },
-  { href: '#data-quality', label: 'Nguồn & định nghĩa', icon: Database },
+  { href: '#overview', view: 'reports', label: 'Báo cáo sản lượng', icon: BarChart3 },
+  { href: '#management', view: 'management', label: 'Kế hoạch & đối soát', icon: ClipboardList },
+  { href: '#admin', view: 'admin', label: 'Quản trị', icon: Settings },
 ];
 
-function App() {
-  const [activeSection, setActiveSection] = useState(() => window.location.hash || '#overview');
+function permittedHash(hash, user) {
+  if (hash === '#admin') return user.role === 'admin' ? hash : '#overview';
+  return ['#overview', '#production', '#voyages', '#customers', '#data-quality', '#management'].includes(hash) ? hash : '#overview';
+}
+
+function AppShell({ user, logout, changePassword }) {
+  const main = useRef(null);
+  const [hash, setHash] = useState(() => permittedHash(window.location.hash, user));
+  const activeView = hash === '#management' ? 'management' : hash === '#admin' ? 'admin' : 'reports';
   useEffect(() => {
-    const handleHash = () => setActiveSection(window.location.hash || '#overview');
+    const handleHash = () => {
+      const next = permittedHash(window.location.hash, user);
+      if (window.location.hash && window.location.hash !== next) window.history.replaceState(null, '', next);
+      setHash(next);
+    };
+    handleHash();
     window.addEventListener('hashchange', handleHash);
     return () => window.removeEventListener('hashchange', handleHash);
-  }, []);
+  }, [user]);
+  useEffect(() => {
+    if (!['#overview', '#management', '#admin'].includes(hash)) return;
+    const frame = requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+    return () => cancelAnimationFrame(frame);
+  }, [hash]);
+
   return (
     <div className="app-shell">
-      <a className="skip-link" href="#main-content">Đến nội dung chính</a>
-      <aside className="sidebar" aria-label="Điều hướng dashboard">
-        <a className="brand" href="#overview" aria-label="Cảng Nghệ Tĩnh — Tổng quan">
-          <img className="brand-logo" src={portLogo} width="918" height="577" alt="NgheTinhPort – Cảng Nghệ Tĩnh" />
-        </a>
-        <p className="nav-label">ĐIỀU HÀNH SẢN XUẤT</p>
-        <nav className="nav-links" aria-label="Các mục báo cáo">
-          {sections.map(({ href, label, icon: Icon }) => (
-            <a className="nav-item" href={href} key={href} aria-current={activeSection === href ? 'location' : undefined}><Icon size={18} aria-hidden="true" /><span>{label}</span></a>
-          ))}
-        </nav>
-      </aside>
-      <main className="main-content" id="main-content" tabIndex={-1}>
-        <header className="top-header">
-          <span><span className="breadcrumb-root">Điều hành</span><span aria-hidden="true"> / </span>Sản xuất & khai thác</span>
-        </header>
-        <Dashboard />
+      <a className="skip-link" href="#main-content" onClick={(event) => { event.preventDefault(); main.current?.focus(); }}>Đến nội dung chính</a>
+      <header className="top-header">
+        <div className="header-content">
+          <a className="brand" href="#overview" aria-label="Cảng Nghệ Tĩnh — Báo cáo sản lượng">
+            <img className="brand-logo" src={portLogo} width="918" height="577" alt="NgheTinhPort – Cảng Nghệ Tĩnh" />
+          </a>
+          <nav className="top-nav" aria-label="Điều hướng chính">
+            {sections.filter((section) => section.view !== 'admin' || user.role === 'admin').map(({ href, view, label, icon: Icon }) => (
+              <a className="nav-item" href={href} key={href} aria-current={activeView === view ? 'page' : undefined} onClick={() => { if (window.location.hash === href) window.scrollTo({ top: 0, behavior: 'instant' }); }}><Icon size={17} aria-hidden="true" /><span>{label}</span></a>
+            ))}
+          </nav>
+          <div className="user-tools"><span>{user.display_name}</span><button className="button" type="button" onClick={changePassword}>Đổi mật khẩu</button><button className="button" type="button" onClick={logout}>Đăng xuất</button></div>
+        </div>
+      </header>
+      <main ref={main} className="main-content" id="main-content" tabIndex={-1}>
+        <Dashboard user={user} activeView={activeView} anchor={hash} />
       </main>
     </div>
   );
+}
+
+function App() {
+  return <Auth>{({ user, logout, changePassword }) => <AppShell key={user.id} user={user} logout={logout} changePassword={changePassword} />}</Auth>;
 }
 
 export default App;

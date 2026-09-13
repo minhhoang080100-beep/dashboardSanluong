@@ -6,6 +6,7 @@ from urllib.parse import parse_qs, urlparse
 
 from browser_voyages import report_fixture, detail_fixture
 from playwright.sync_api import expect, sync_playwright
+from browser_auth_support import install_auth_fixture
 
 
 def main():
@@ -34,6 +35,7 @@ def main():
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(channel="chrome", headless=True)
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
+        auth_state = install_auth_fixture(page)
         page.on("pageerror", lambda error: errors.append(str(error)))
         page.route("**/api/dashboard?*", respond)
         page.route("**/api/voyages/**", respond)
@@ -43,20 +45,22 @@ def main():
         state.update(dashboard_mode="transient", dashboard_calls=0)
         page.get_by_role("button", name="Tải lại báo cáo đang chọn").click()
         expect(page.locator(".kpi-card")).to_have_count(3)
+        expect(page.locator(".refresh-progress")).to_have_count(0)
         assert state["dashboard_calls"] == 2, state
         expect(page.locator(".error-state")).to_have_count(0)
         checks.append("dashboard recovers from one 503 with exactly two requests")
 
         state.update(dashboard_mode="down", dashboard_calls=0)
         page.get_by_role("button", name="Tải lại báo cáo đang chọn").click()
-        expect(page.locator(".error-state")).to_be_visible()
-        expect(page.locator(".kpi-card")).to_have_count(0)
+        expect(page.locator(".refresh-error")).to_be_visible()
+        expect(page.locator(".kpi-card")).to_have_count(3)
         assert state["dashboard_calls"] == 2, state
-        checks.append("persistent error stops after two requests and shows no stale report")
+        checks.append("persistent refresh error stops after two requests and marks the retained report")
 
         state.update(dashboard_mode="ok", dashboard_calls=0)
-        page.get_by_role("button", name="Thử lại", exact=True).click()
+        page.get_by_role("button", name="Thử cập nhật lại", exact=True).click()
         expect(page.locator(".kpi-card")).to_have_count(3)
+        expect(page.locator(".refresh-progress")).to_have_count(0)
         assert state["dashboard_calls"] == 1, state
         checks.append("manual retry recovers after the automatic retry is exhausted")
 
@@ -80,6 +84,7 @@ def main():
         expect(dialog).not_to_be_visible()
         checks.append("closing a voyage during retry backoff cancels the second request")
         assert errors == [], errors
+        assert auth_state["unexpected"] == [], auth_state["unexpected"]
         browser.close()
 
     output = Path("outputs")

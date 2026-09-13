@@ -249,3 +249,11 @@ tbody tr:last-child td, tbody tr:last-child th { border-bottom: 0; }
   .kpi-primary { background: white; color: #173346; }
   .kpi-primary .kpi-top, .kpi-primary .kpi-value > span, .kpi-primary .trend { color: #173346; }
 }
+.source-status { display: inline-flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.data-status-tag { display: inline-flex; border-radius: 4px; padding: 3px 7px; background: #fff2d9; color: #795214; font-size: 11px; line-height: 1.4; }
+.report-refresh-control { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin: -12px 0 0; color: var(--text-muted); font-size: 12px; }
+.report-refresh-control label { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
+.report-refresh-control input { width: 15px; height: 15px; accent-color: var(--primary-color); }
+.refresh-error { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid #e8d2ad; border-radius: 8px; padding: 12px 16px; margin-bottom: 18px; color: #795214; background: #fffbf2; font-size: 13px; }
+.refresh-error span { flex: 1 1 320px; }
+.refresh-progress { color: var(--text-muted); font-size: 12px; margin-bottom: 12px; }

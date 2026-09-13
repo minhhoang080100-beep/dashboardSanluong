@@ -5,17 +5,17 @@ import './CargoBreakdown.css';
 
 const PREVIEW_COUNT = 8;
 
-function CargoRow({ row, rank, maximum }) {
+function CargoRow({ row, rank, maximum, onInspect }) {
   return <li className={`cargo-row${rank === 1 ? ' cargo-row-leading' : ''}${row.tonnage < 0 ? ' cargo-row-negative' : ''}`}>
     <span className="cargo-rank" aria-hidden="true">{rank ? String(rank).padStart(2, '0') : '−'}</span>
     <div className="cargo-row-content">
-      <div className="cargo-row-label"><span className="cargo-name">{row.name}</span><strong className="cargo-value">{formatNumber(row.tonnage)}<span className="sr-only"> tấn</span></strong></div>
+      <div className="cargo-row-label"><span className="cargo-name">{onInspect ? <button className="inspect-label" type="button" onClick={(event) => onInspect(row, event)}>{row.name}</button> : row.name}</span><strong className="cargo-value">{formatNumber(row.tonnage)}<span className="sr-only"> tấn</span></strong></div>
       {row.tonnage > 0 && <div className="cargo-bar" aria-hidden="true"><span style={{ width: `${row.tonnage / maximum * 100}%` }} /></div>}
     </div>
   </li>;
 }
 
-export default function CargoBreakdown({ rows }) {
+export default function CargoBreakdown({ rows, onInspect }) {
   const [expanded, setExpanded] = useState(false);
   // Compare known volumes directly. Missing or signed values must not turn
   // this chart into an incomplete percentage distribution.
@@ -35,15 +35,15 @@ export default function CargoBreakdown({ rows }) {
     {!rows.length ? <div className="empty-panel"><Package size={27} aria-hidden="true" /><p>Không có phát sinh trong kỳ đã chọn.</p></div> : <>
       {(positive.length > 0 || negative.length > 0) && <div className="cargo-columns" aria-hidden="true"><span>Nhóm hàng</span><span>Sản lượng (tấn)</span></div>}
       {positive.length > 0 && <ol className="cargo-ranking" id="cargo-ranking" aria-label="Nhóm hàng theo sản lượng giảm dần">
-        {visible.map((row, index) => <CargoRow key={`${row.name}-${index}`} row={row} rank={index + 1} maximum={maximum} />)}
+        {visible.map((row, index) => <CargoRow key={`${row.name}-${index}`} row={row} rank={index + 1} maximum={maximum} onInspect={onInspect} />)}
       </ol>}
       {positive.length > PREVIEW_COUNT && <button type="button" className="cargo-expand" aria-expanded={expanded} aria-controls="cargo-ranking" onClick={() => setExpanded((value) => !value)}>
         {expanded ? 'Thu gọn danh sách' : `Xem thêm ${positive.length - PREVIEW_COUNT} nhóm hàng`}<ChevronDown size={15} aria-hidden="true" />
       </button>}
-      {negative.length > 0 && <div className="cargo-adjustments"><h4>Điều chỉnh giảm (tấn)</h4><ul className="cargo-ranking" aria-label="Nhóm hàng có sản lượng âm">{negative.map((row, index) => <CargoRow key={`${row.name}-${index}`} row={row} maximum={maximum} />)}</ul></div>}
+      {negative.length > 0 && <div className="cargo-adjustments"><h4>Điều chỉnh giảm (tấn)</h4><ul className="cargo-ranking" aria-label="Nhóm hàng có sản lượng âm">{negative.map((row, index) => <CargoRow key={`${row.name}-${index}`} row={row} maximum={maximum} onInspect={onInspect} />)}</ul></div>}
       {(zero.length > 0 || unknown.length > 0) && <details className="cargo-other">
         <summary><span>{foldedLabel}</span><ChevronDown size={15} aria-hidden="true" /></summary>
-        <ul className="cargo-other-list">{[...zero, ...unknown].map((row, index) => <li key={`${row.name}-${index}`}><span>{row.name}</span><span className="cargo-other-value">{isNumber(row.tonnage) ? '0 tấn' : 'Chưa có số tấn'}</span></li>)}</ul>
+        <ul className="cargo-other-list">{[...zero, ...unknown].map((row, index) => <li key={`${row.name}-${index}`}><span>{onInspect ? <button className="inspect-label" type="button" onClick={(event) => onInspect(row, event)}>{row.name}</button> : row.name}</span><span className="cargo-other-value">{isNumber(row.tonnage) ? '0 tấn' : 'Chưa có số tấn'}</span></li>)}</ul>
       </details>}
     </>}
   </article>;

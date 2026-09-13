@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, RefreshCw, Search, Ship, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Download, RefreshCw, Search, Ship, X } from 'lucide-react';
 import { formatDate, formatNumber, formatTimestamp } from '../dashboard-data';
 import { fetchVoyageDetail, filterVoyages, paginateVoyages, voyageListError } from '../voyage-data';
+import useDownload from '../use-download';
+import VoyageProgress from './VoyageProgress';
 import './Voyages.css';
 
 const dateRange = (start, end) => start ? start === end || !end ? formatDate(start) : `${formatDate(start)} – ${formatDate(end)}` : '—';
@@ -11,18 +13,21 @@ function ProductionTable({ rows, label, heading, date = false }) {
   return <article className="voyage-breakdown"><h3>{heading}</h3><div className="table-scroll"><table><thead><tr><th scope="col">{label}</th><th scope="col">Tấn</th><th scope="col">TEU</th></tr></thead><tbody>{rows.map((row, index) => <tr key={index}><th scope="row">{date ? formatDate(row.date) : row.name}</th><td>{formatNumber(row.tonnage)}</td><td>{formatNumber(row.teu)}</td></tr>)}</tbody></table></div></article>;
 }
 
-function VoyageDialog({ selected, filters, apiBase, onClose, trigger }) {
+function VoyageDialog({ selected, filters, apiBase, onClose, trigger, reportId, onReportReload }) {
   const dialog = useRef(null);
   const operationHeading = useRef(null);
   const pendingPageFocus = useRef(false);
   const [page, setPage] = useState(1);
   const [operationFilter, setOperationFilter] = useState('with_values');
   const [reload, setReload] = useState(0);
+  const [exportError, setExportError] = useState('');
+  const download = useDownload();
   const [resource, setResource] = useState({ key: '', status: 'loading', data: null, error: '' });
-  const requestKey = `${selected.terminal_id}/${selected.voyage_id}/${filters.start_date}/${filters.end_date}/${operationFilter}/${page}`;
+  const requestKey = `${reportId || ''}/${selected.terminal_id}/${selected.voyage_id}/${filters.start_date}/${filters.end_date}/${operationFilter}/${page}`;
   const loading = resource.key !== requestKey || resource.status === 'loading';
   const data = !loading && resource.status === 'success' ? resource.data : null;
   const error = !loading && resource.status === 'error' ? resource.error : '';
+  const expiredReport = Boolean(error) && resource.errorCode === 'REPORT_EXPIRED';
 
   useEffect(() => {
     const element = dialog.current;
@@ -42,15 +47,15 @@ function VoyageDialog({ selected, filters, apiBase, onClose, trigger }) {
     let timedOut = false;
     setResource({ key: requestKey, status: 'loading', data: null, error: '' });
     const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 45000);
-    fetchVoyageDetail(selected, filters, page, { signal: controller.signal, baseUrl: apiBase, operationFilter })
+    fetchVoyageDetail(selected, filters, page, { signal: controller.signal, baseUrl: apiBase, operationFilter, reportId })
       .then((result) => { if (active) setResource({ key: requestKey, status: 'success', data: result, error: '' }); })
       .catch((failure) => {
         if (!active || (controller.signal.aborted && !timedOut)) return;
         const message = timedOut ? 'Truy vấn chi tiết mất quá 45 giây. Vui lòng thử lại.' : failure instanceof TypeError ? 'Không kết nối được máy chủ chi tiết chuyến tàu.' : failure instanceof SyntaxError ? 'Máy chủ trả về dữ liệu chi tiết không hợp lệ.' : failure.message;
-        setResource({ key: requestKey, status: 'error', data: null, error: message });
+        setResource({ key: requestKey, status: 'error', data: null, error: message, errorCode: failure.code });
       }).finally(() => clearTimeout(timeout));
     return () => { active = false; clearTimeout(timeout); controller.abort(); };
-  }, [selected, filters, page, reload, requestKey, apiBase, operationFilter]);
+  }, [selected, filters, page, reload, requestKey, apiBase, operationFilter, reportId]);
 
   useEffect(() => {
     if (data && pendingPageFocus.current) {
@@ -70,18 +75,41 @@ function VoyageDialog({ selected, filters, apiBase, onClose, trigger }) {
     setPage(1);
   }
 
+  function recoverDetail() {
+    if (expiredReport) {
+      onClose();
+      onReportReload?.();
+      return;
+    }
+    setReload((value) => value + 1);
+  }
+
+  async function exportVoyage() {
+    setExportError('');
+    const outcome = await download.run(`/reports/${encodeURIComponent(reportId)}/export.xlsx?${new URLSearchParams({ terminal: selected.terminal_id, voyage_id: selected.voyage_id, operation_filter: operationFilter })}`, `chuyen-tau-${selected.voyage_id}.xlsx`, { baseUrl: apiBase });
+    if (outcome.error) {
+      const failure = outcome.error;
+      if (failure.status === 410) {
+        setResource({ key: requestKey, status: 'error', data: null, error: failure.message, errorCode: 'REPORT_EXPIRED' });
+      } else setExportError(failure.message);
+    }
+  }
+
   return <dialog ref={dialog} className="voyage-dialog" aria-label="Chi tiết chuyến tàu" onCancel={(event) => { event.preventDefault(); onClose(); }}>
     <header className="voyage-dialog-header"><div><span className="section-kicker">CHI TIẾT CHUYẾN TÀU</span><h2>{selected.vessel_name || 'Chưa có tên tàu'}</h2><p>{selected.voyage_code || selected.voyage_id} · {selected.terminal_name}</p></div><button type="button" className="button icon-button" aria-label="Đóng chi tiết chuyến tàu" onClick={onClose} autoFocus><X size={20} aria-hidden="true" /></button></header>
     <div className="voyage-dialog-body">
-      <p className="voyage-detail-period">Kỳ tác nghiệp: {formatDate(filters.start_date)} – {formatDate(filters.end_date)}</p>
+        <p className="voyage-detail-period">Kỳ tác nghiệp: {formatDate(filters.start_date)} – {formatDate(filters.end_date)} · ID chuyến dùng khi nhập kế hoạch: {selected.voyage_id}</p>
+      {reportId && <button type="button" className="button" disabled={!data || download.busy} aria-busy={download.busy} onClick={exportVoyage}><Download size={16} />{download.busy ? 'Đang xuất Excel…' : 'Xuất Excel chuyến tàu'}</button>}
+      {exportError && <p className="form-error" role="alert">{exportError}</p>}
       <div aria-live="polite" aria-busy={loading}>
         {loading && <div className="voyage-detail-loading" role="status"><span className="spinner" />Đang tải chi tiết chuyến tàu…</div>}
-        {error && <div className="voyage-detail-error" role="alert"><p>{error}</p><button type="button" className="button primary" onClick={() => setReload((value) => value + 1)}><RefreshCw size={15} aria-hidden="true" />Thử lại chi tiết</button></div>}
+        {error && <div className="voyage-detail-error" role="alert"><p>{error}</p><button type="button" className="button primary" onClick={recoverDetail}><RefreshCw size={15} aria-hidden="true" />{expiredReport ? onReportReload ? 'Tải lại báo cáo' : 'Đóng chi tiết' : 'Thử lại chi tiết'}</button></div>}
       </div>
       {data && <>
         <dl className="voyage-metadata"><div><dt>Tàu</dt><dd>{data.header.vessel_name || 'Chưa có tên tàu'}</dd></div><div><dt>Mã chuyến</dt><dd>{data.header.voyage_code || data.header.voyage_id}</dd></div><div><dt>Ngày làm hàng trong kỳ</dt><dd>{dateRange(data.header.first_operation_date, data.header.last_operation_date)}</dd></div><div><dt>Đến cảng thực tế</dt><dd>{timestamp(data.header.arrival_at)}</dd></div><div><dt>Rời cảng thực tế</dt><dd>{timestamp(data.header.departure_at)}</dd></div><div><dt>Xí nghiệp</dt><dd>{data.header.terminal_name}</dd></div></dl>
         <div className="voyage-summary"><div><span>Sản lượng qua cảng</span><strong>{formatNumber(data.summary.tonnage)} <small>tấn</small></strong></div><div><span>Container</span><strong>{formatNumber(data.summary.teu)} <small>TEU</small></strong></div><div><span>Dòng có phát sinh</span><strong>{formatNumber(data.operations.counts.with_values, 0)}</strong><small className="voyage-source-count">{formatNumber(data.operations.total_all, 0)} dòng nguồn</small></div></div>
         <div className="voyage-breakdowns"><ProductionTable rows={data.cargo} label="Nhóm hàng" heading="Cơ cấu hàng hóa" /><ProductionTable rows={data.daily} label="Ngày" heading="Sản lượng theo ngày" date /></div>
+        {reportId && <VoyageProgress selected={selected} apiBase={apiBase} />}
         {data.native_units.length > 0 && <article className="voyage-native"><h3>Đơn vị nguồn khác</h3><div className="table-scroll"><table><thead><tr><th scope="col">Đơn vị</th><th scope="col">Sản lượng theo đơn vị nguồn</th></tr></thead><tbody>{data.native_units.map((row, index) => <tr key={index}><th scope="row">{row.unit_name} ({row.unit_code})</th><td>{formatNumber(row.value)}</td></tr>)}</tbody></table></div></article>}
         <section className="voyage-operations" aria-labelledby="voyage-operations-title">
           <div className="voyage-section-heading"><h3 id="voyage-operations-title" ref={operationHeading} tabIndex={-1}>Tác nghiệp qua cảng trong kỳ</h3><span>{formatNumber(data.operations.total, 0)}/{formatNumber(data.operations.total_all, 0)} dòng</span></div>
@@ -101,7 +129,7 @@ function VoyageDialog({ selected, filters, apiBase, onClose, trigger }) {
   </dialog>;
 }
 
-export default function Voyages({ rows, count, filters, apiBase, onRetry }) {
+export default function Voyages({ rows, count, filters, apiBase, onRetry, reportId }) {
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState(null);
@@ -117,6 +145,6 @@ export default function Voyages({ rows, count, filters, apiBase, onRetry }) {
       <div className="voyage-pagination"><span>Trang {results.page}/{results.totalPages}</span><div><button className="button" type="button" aria-label="Trang chuyến trước" disabled={results.page <= 1} onClick={() => setPage(results.page - 1)}><ArrowLeft size={15} aria-hidden="true" />Trước</button><button className="button" type="button" aria-label="Trang chuyến sau" disabled={results.page >= results.totalPages} onClick={() => setPage(results.page + 1)}>Sau<ArrowRight size={15} aria-hidden="true" /></button></div></div>
     </> : <div className="empty-panel"><Ship size={26} aria-hidden="true" /><p>{query ? 'Không tìm thấy tàu hoặc mã chuyến phù hợp.' : 'Không có chuyến tàu trong kỳ đã chọn.'}</p></div>}
     </>}
-    {!listError && selected && <VoyageDialog selected={selected} filters={filters} apiBase={apiBase} trigger={trigger.current} onClose={() => setSelected(null)} />}
+    {!listError && selected && <VoyageDialog key={reportId || ''} selected={selected} filters={filters} apiBase={apiBase} reportId={reportId} trigger={trigger.current} onClose={() => setSelected(null)} onReportReload={onRetry} />}
   </section>;
 }

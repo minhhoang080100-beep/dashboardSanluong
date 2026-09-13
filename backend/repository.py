@@ -26,7 +26,7 @@ TERMINALS = {
 
 
 class VoyageNotFound(LookupError):
-    """No eligible voyage has throughput in the requested terminal/date scope."""
+    """No eligible voyage exists in the requested source or reporting scope."""
 
 
 def _timestamp(value):
@@ -134,6 +134,17 @@ def _normalise_fact(row: dict[str, Any]) -> dict[str, Any]:
     row["known_teu_count"] = row["container_row_count"] - row["missing_quantity_count"]
     if row["container_row_count"] and not row["known_teu_count"]:
         row["teu"] = None
+    # Raw snapshots may predate these diagnostic counters. Classify a raw
+    # single row only; a grouped quantity cannot identify its missing members.
+    raw_missing = int(row["record_count"]) == 1 and "quantity" in row and native is None
+    quantity = row.get("quantity")
+    conditions = {
+        "empty_unweighed_count": raw_missing and quantity is not None and _decimal(quantity) == 0,
+        "unweighed_unknown_quantity_count": raw_missing and quantity is None,
+        "missing_weight_with_quantity_count": raw_missing and quantity is not None and _decimal(quantity) != 0,
+    }
+    for field, matches in conditions.items():
+        row[field] = int(row[field] or 0) if field in row else int(matches)
     return row
 
 
@@ -252,6 +263,80 @@ class DashboardRepository:
             ) mass_conversion ON mass_conversion.baseUnitId = u.baseUnitId
             JOIN {schema}.JobMethod j ON t.jobMethodId = j.jobMethodId"""
 
+    def search_voyages(self, terminal: str, search: str = "", limit: int = 30):
+        """Find existing physical calls, including calls with no production yet."""
+        if terminal not in TERMINALS:
+            raise ValueError("Chọn một xí nghiệp hợp lệ để tìm chuyến tàu.")
+        if not isinstance(search, str) or len(search) > 100:
+            raise ValueError("Từ khóa tìm chuyến tàu tối đa 100 ký tự.")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("Mỗi lần tìm từ 1 đến 100 chuyến tàu.")
+        schema = TERMINALS[terminal][0]
+        search = search.strip()
+        predicate = ""
+        params = [limit]
+        if search:
+            # SQL Server LIKE metacharacters are literal user input, not a way
+            # to widen the search. Parameters also keep quotes out of SQL text.
+            pattern = search.replace("~", "~~").replace("%", "~%").replace("_", "~_").replace("[", "~[")
+            identifier = int(search) if search.isascii() and search.isdigit() and len(search) <= 10 else 0
+            identifier = identifier if 1 <= identifier <= 2147483647 else 0
+            predicate = """AND (v.vesselVoyageId = ?
+                OR v.vesselVoyageCode LIKE ? ESCAPE '~'
+                OR s.vesselName LIKE ? ESCAPE '~')"""
+            params.extend((identifier, f"%{pattern}%", f"%{pattern}%"))
+        query = f"""SELECT TOP (?) '{terminal}' AS terminal,
+            CAST(v.vesselVoyageId AS nvarchar(128)) AS voyage_id,
+            v.vesselVoyageCode AS voyage_code, s.vesselName AS vessel_name,
+            v.ATA AS arrival_date, v.ATD AS departure_date
+            FROM {schema}.VesselVoyage v
+            JOIN {schema}.Vessel s ON v.vesselId = s.vesselId
+            WHERE {self.physical_voyage_filter} {predicate}
+            ORDER BY v.vesselVoyageId DESC"""
+        return [{**row, "voyage_id": str(row["voyage_id"]),
+                 "arrival_date": _timestamp(row.get("arrival_date")),
+                 "departure_date": _timestamp(row.get("departure_date"))}
+                for row in self._execute_query(query, tuple(params))]
+
+    def validate_voyages(self, pairs) -> set[tuple[str, str]]:
+        """Return valid terminal/ID pairs in one read for a bounded plan import.
+
+        IDs are normalized to decimal strings. Missing/deleted/virtual calls
+        are absent from the result; malformed input fails before any SQL read.
+        No operation date, arrival date or existing throughput is required.
+        """
+        selected = defaultdict(set)
+        for index, pair in enumerate(pairs):
+            if index >= 500:
+                raise ValueError("Mỗi lần kiểm tra tối đa 500 chuyến tàu.")
+            if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+                raise ValueError("Định danh chuyến tàu phải gồm xí nghiệp và mã chuyến.")
+            terminal, voyage_id = pair
+            if not isinstance(terminal, str) or terminal not in TERMINALS:
+                raise ValueError("Xí nghiệp của chuyến tàu không hợp lệ.")
+            if isinstance(voyage_id, str):
+                voyage_id = voyage_id.strip()
+                if not voyage_id.isascii() or not voyage_id.isdigit() or len(voyage_id) > 10:
+                    raise ValueError("Mã định danh chuyến tàu không hợp lệ.")
+                voyage_id = int(voyage_id)
+            if isinstance(voyage_id, bool) or not isinstance(voyage_id, int) or not 1 <= voyage_id <= 2147483647:
+                raise ValueError("Mã định danh chuyến tàu không hợp lệ.")
+            selected[terminal].add(voyage_id)
+        if not selected:
+            return set()
+        parts, params = [], []
+        for terminal, ids in selected.items():
+            schema = TERMINALS[terminal][0]
+            parts.append(f"""SELECT '{terminal}' AS terminal,
+                CAST(v.vesselVoyageId AS nvarchar(128)) AS voyage_id
+                FROM {schema}.VesselVoyage v
+                JOIN {schema}.Vessel s ON v.vesselId = s.vesselId
+                WHERE {self.physical_voyage_filter}
+                  AND v.vesselVoyageId IN ({', '.join('?' for _ in ids)})""")
+            params.extend(sorted(ids))
+        rows = self._execute_query("\nUNION ALL\n".join(parts), tuple(params))
+        return {(row["terminal"], str(row["voyage_id"])) for row in rows}
+
     def _fact_query(self, start: date, end_exclusive: date, terminal: str, voyage_id: int | None = None):
         parts = []
         params = []
@@ -277,6 +362,9 @@ class DashboardRepository:
                 "container_row_count": f"SUM(CASE WHEN c.cargoName IN ({self.container_codes}) THEN 1 ELSE 0 END)",
                 "missing_quantity_count": f"SUM(CASE WHEN c.cargoName IN ({self.container_codes}) AND t.quantityTotalSum IS NULL THEN 1 ELSE 0 END)",
                 "negative_value_count": "SUM(CASE WHEN t.weightNetSum < 0 OR t.quantityTotalSum < 0 THEN 1 ELSE 0 END)",
+                "empty_unweighed_count": "SUM(CASE WHEN t.weightNetSum IS NULL AND t.quantityTotalSum = 0 THEN 1 ELSE 0 END)",
+                "unweighed_unknown_quantity_count": "SUM(CASE WHEN t.weightNetSum IS NULL AND t.quantityTotalSum IS NULL THEN 1 ELSE 0 END)",
+                "missing_weight_with_quantity_count": "SUM(CASE WHEN t.weightNetSum IS NULL AND t.quantityTotalSum <> 0 THEN 1 ELSE 0 END)",
             }
             source_columns = {key: (value if key in {"terminal_id", "terminal_name"} else "'source'" if key == "kind" else "MAX(t.shiftDate)" if key == "latest_operation_at" else "NULL") for key, value in columns.items()}
             fact_select = ",\n".join(f"{value} AS {key}" for key, value in columns.items())
@@ -312,6 +400,72 @@ class DashboardRepository:
         query, params = self._fact_query(previous_start, end + timedelta(days=1), terminal, voyage_id)
         fetched = self._execute_query(query, params)
         return self._dashboard_from_rows(fetched, start, end, terminal)
+
+    def _report_query(self, start: date, end_exclusive: date, terminal: str):
+        """One raw fact read for an immutable report and all later drill-downs."""
+        parts, params = [], []
+        selected = TERMINALS if terminal == "all" else {terminal: TERMINALS[terminal]}
+        for terminal_id, (schema, name) in selected.items():
+            columns = {
+                "kind": "'fact'", "id": "CAST(t.tallyShiftId AS nvarchar(128))",
+                "operation_code": "t.tallyShiftCode", "operation_day": "CAST(t.shiftDate AS date)",
+                "terminal_id": f"'{terminal_id}'", "terminal_name": f"N'{name}'",
+                "vessel_id": f"CASE WHEN {self.physical_voyage_filter} THEN CAST(t.vesselVoyageId AS nvarchar(128)) ELSE NULL END",
+                "source_voyage_id": "CAST(t.vesselVoyageId AS nvarchar(128))",
+                "vessel_name": "s.vesselName", "voyage_code": "v.vesselVoyageCode",
+                "arrival_at": "v.ATA", "departure_at": "v.ATD",
+                "shift_id": "CAST(t.shiftId AS nvarchar(128))", "shift_code": "sh.shiftCode",
+                "customer_id": "CAST(t.consigneeId AS nvarchar(128))",
+                "customer_name": "COALESCE(NULLIF(p.partnerShortName, N''), N'Chưa xác định')",
+                "latest_operation_at": "t.shiftDate",
+                "job_method": "j.jobMethodName", "job_method_code": "j.jobMethodCode",
+                "cargo_name": "COALESCE(c.cargoName, N'Chưa phân loại')", "direction_id": "t.cargoDirectId",
+                "quantity": "t.quantityTotalSum", "quantity_unit": "qu.baseUnitCode",
+                "quantity_unit_name": "qu.baseUnitName", "native_weight": "t.weightNetSum",
+                "unit_code": "COALESCE(u.baseUnitCode, N'UNKNOWN')",
+                "unit_name": "COALESCE(u.baseUnitName, N'Chưa xác định đơn vị')",
+                "tonne_factor": self.tonne_factor_logic, "teu": self.teu_logic,
+                "record_count": "1",
+                "known_weight_count": "CASE WHEN t.weightNetSum IS NOT NULL THEN 1 ELSE 0 END",
+                "missing_weight_count": "CASE WHEN t.weightNetSum IS NULL THEN 1 ELSE 0 END",
+                "container_row_count": f"CASE WHEN c.cargoName IN ({self.container_codes}) THEN 1 ELSE 0 END",
+                "missing_quantity_count": f"CASE WHEN c.cargoName IN ({self.container_codes}) AND t.quantityTotalSum IS NULL THEN 1 ELSE 0 END",
+                "negative_value_count": "CASE WHEN t.weightNetSum < 0 OR t.quantityTotalSum < 0 THEN 1 ELSE 0 END",
+                "empty_unweighed_count": "CASE WHEN t.weightNetSum IS NULL AND t.quantityTotalSum = 0 THEN 1 ELSE 0 END",
+                "unweighed_unknown_quantity_count": "CASE WHEN t.weightNetSum IS NULL AND t.quantityTotalSum IS NULL THEN 1 ELSE 0 END",
+                "missing_weight_with_quantity_count": "CASE WHEN t.weightNetSum IS NULL AND t.quantityTotalSum <> 0 THEN 1 ELSE 0 END",
+            }
+            source_columns = {
+                key: (value if key in {"terminal_id", "terminal_name"}
+                      else "'source'" if key == "kind"
+                      else "MAX(t.shiftDate)" if key == "latest_operation_at" else "NULL")
+                for key, value in columns.items()
+            }
+            fact_select = ",\n".join(f"{value} AS {key}" for key, value in columns.items())
+            source_select = ",\n".join(f"{value} AS {key}" for key, value in source_columns.items())
+            throughput = self.throughput_filter.format(schema=schema)
+            parts.append(f"""SELECT {fact_select}
+                {self._source_joins(schema)}
+                LEFT JOIN {schema}.BaseUnit qu ON t.quantityUnitId = qu.baseUnitId
+                LEFT JOIN {schema}.Shift sh ON t.shiftId = sh.shiftId
+                WHERE t.shiftDate >= ? AND t.shiftDate < ?
+                  AND {throughput} AND {self.row_active_filter}
+                UNION ALL SELECT {source_select}
+                FROM {schema}.TallyShift t
+                JOIN {schema}.JobMethod j ON t.jobMethodId = j.jobMethodId
+                WHERE {throughput} AND {self.row_active_filter}""")
+            params.extend((start, end_exclusive))
+        return "\nUNION ALL\n".join(parts), tuple(params)
+
+    def read_report(self, start_date=None, end_date=None, terminal="all"):
+        """Read current/prior facts once; preserve unassigned throughput rows."""
+        start, end = date_range(start_date, end_date, terminal)
+        previous_start = start - timedelta(days=(end - start).days + 1)
+        query, params = self._report_query(previous_start, end + timedelta(days=1), terminal)
+        fetched = self._execute_query(query, params)
+        report = self._dashboard_from_rows(fetched, start, end, terminal)
+        current = [row for row in fetched if row["kind"] == "fact" and start <= row["operation_day"] <= end]
+        return {"report": report, "rows": current}
 
     def _dashboard_from_rows(self, fetched, start: date, end: date, terminal: str):
         length = (end - start).days + 1
@@ -505,6 +659,10 @@ class DashboardRepository:
                 "warnings": warnings, "unavailable": unavailable,
                 "data_quality": {
                     "missing_weight_count": missing_weight,
+                    **{field: sum(row[field] for row in current) for field in (
+                        "empty_unweighed_count", "unweighed_unknown_quantity_count",
+                        "missing_weight_with_quantity_count",
+                    )},
                     "missing_quantity_count": missing_quantity,
                     "negative_value_count": negative_values,
                     "days_with_records": len({row["operation_day"] for row in current}),
@@ -541,7 +699,10 @@ class DashboardRepository:
             CASE WHEN t.weightNetSum IS NULL THEN 1 ELSE 0 END AS missing_weight_count,
             CASE WHEN c.cargoName IN ({self.container_codes}) THEN 1 ELSE 0 END AS container_row_count,
             CASE WHEN c.cargoName IN ({self.container_codes}) AND t.quantityTotalSum IS NULL THEN 1 ELSE 0 END AS missing_quantity_count,
-            CASE WHEN t.weightNetSum < 0 OR t.quantityTotalSum < 0 THEN 1 ELSE 0 END AS negative_value_count
+            CASE WHEN t.weightNetSum < 0 OR t.quantityTotalSum < 0 THEN 1 ELSE 0 END AS negative_value_count,
+            CASE WHEN t.weightNetSum IS NULL AND t.quantityTotalSum = 0 THEN 1 ELSE 0 END AS empty_unweighed_count,
+            CASE WHEN t.weightNetSum IS NULL AND t.quantityTotalSum IS NULL THEN 1 ELSE 0 END AS unweighed_unknown_quantity_count,
+            CASE WHEN t.weightNetSum IS NULL AND t.quantityTotalSum <> 0 THEN 1 ELSE 0 END AS missing_weight_with_quantity_count
             {self._source_joins(schema)}
             LEFT JOIN {schema}.BaseUnit qu ON t.quantityUnitId = qu.baseUnitId
             LEFT JOIN {schema}.Shift sh ON t.shiftId = sh.shiftId
@@ -616,6 +777,36 @@ class DashboardRepository:
                 "meta": {"filters": {"terminal": terminal, "voyage_id": str(voyage_id), "start_date": start.isoformat(), "end_date": end.isoformat(), "timezone": "Asia/Ho_Chi_Minh", "operation_filter": operation_filter},
                          "generated_at": dashboard["meta"]["generated_at"], "metric_coverage": dashboard["meta"]["metric_coverage"],
                          "operations_order": "shiftDate DESC, tallyShiftId DESC",
+                          "read_consistency": "single_fact_set"}}
+
+    def read_voyage_lifetime(self, terminal: str, voyage_id: int):
+        """Whole-call progress, separate from the selected reporting period."""
+        if terminal not in TERMINALS:
+            raise ValueError("Chọn một xí nghiệp hợp lệ.")
+        if isinstance(voyage_id, bool) or not isinstance(voyage_id, int) or not 1 <= voyage_id <= 2147483647:
+            raise ValueError("Mã chuyến tàu không hợp lệ.")
+        start, end = date(1900, 1, 1), vietnam_today()
+        query, params = self._operation_query(start, end, terminal, voyage_id)
+        rows = self._execute_query(query, params)
+        if not rows:
+            raise VoyageNotFound("Không có tác nghiệp qua cảng của chuyến tàu.")
+        for row in rows:
+            day = row["operation_day"]
+            row["operation_day"] = day.date() if isinstance(day, datetime) else date.fromisoformat(day[:10]) if isinstance(day, str) else day
+            _normalise_fact(row)
+        label = rows[0]
+        values = _panel_values(_aggregate(rows))
+        header = {"terminal_id": terminal, "terminal_name": label["terminal_name"],
+                  "voyage_id": str(voyage_id), "vessel_name": label.get("vessel_name"),
+                  "voyage_code": label.get("voyage_code"), "arrival_at": _timestamp(label.get("arrival_at")),
+                  "departure_at": _timestamp(label.get("departure_at")),
+                  "first_operation_date": min(row["operation_day"] for row in rows).isoformat(),
+                  "last_operation_date": max(row["operation_day"] for row in rows).isoformat(),
+                  "cargo_names": sorted({row["cargo_name"] for row in rows}), **values}
+        return {"header": header, "summary": values, "rows": rows,
+                "meta": {"scope": "whole_voyage", "terminal": terminal, "voyage_id": str(voyage_id),
+                         "start_date": start.isoformat(), "end_date": end.isoformat(),
+                         "source_read_at": datetime.now(timezone.utc).isoformat(),
                          "read_consistency": "single_fact_set"}}
 
     # Existing consumers keep their routes while gaining identical date rules.

@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlparse
 
 from browser_smoke import fixture
 from playwright.sync_api import Error, expect, sync_playwright
+from browser_auth_support import install_auth_fixture
 
 
 def report_fixture(filters):
@@ -101,6 +102,7 @@ def main():
     with sync_playwright() as p:
         browser = p.chromium.launch(channel="chrome", headless=True)
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
+        auth_state = install_auth_fixture(page)
         page.on("pageerror", lambda error: errors.append(str(error)))
         page.route("**/api/dashboard?*", respond_dashboard)
         page.route("**/api/voyages/**", respond_detail)
@@ -211,6 +213,7 @@ def main():
         page.get_by_role("button", name="Xem chi tiết BEN THUY TEST · TEST-101 · Bến Thủy").click()
         expect(dialog.get_by_role("alert")).to_be_visible()
         assert errors == [], errors
+        assert auth_state["unexpected"] == [], auth_state["unexpected"]
         checks.append("contract: malformed detail response fails visibly without a render crash")
         browser.close()
 

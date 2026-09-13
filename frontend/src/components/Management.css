@@ -1,0 +1,88 @@
+.management { min-width: 0; }
+.management-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+.management-heading h2 { font-size: 21px; font-weight: 650; }
+.management-heading h3 { font-size: 17px; }
+.management-heading > span { color: var(--text-muted); font-size: 12px; }
+.management-tabs { display: flex; gap: 5px; overflow-x: auto; border-bottom: 1px solid var(--border-color); margin-bottom: 20px; padding-bottom: 8px; }
+.management-tabs button { min-height: 42px; border: 0; padding: 9px 15px; border-radius: 6px; background: transparent; color: var(--text-muted); white-space: nowrap; font-size: 12px; font-weight: 600; }
+.management-tabs button[aria-selected="true"] { background: var(--primary-color); color: white; }
+.management-stack { display: grid; gap: 18px; }
+.management-card { min-width: 0; border: 1px solid var(--border-color); border-radius: 9px; padding: 22px; background: white; }
+.management-card > h3 { font-size: 17px; margin-bottom: 8px; }
+.management-caption, .management-context { color: var(--text-muted); font-size: 12px; margin-bottom: 16px; }
+.management-empty { padding: 28px 14px; color: var(--text-muted); text-align: center; font-size: 12px; }
+.management-empty .button { margin-top: 12px; }
+.management-error { padding: 12px 14px; border-radius: 6px; background: #fff4ef; color: #943d30; font-size: 12px; margin: 12px 0; overflow-wrap: anywhere; }
+.management-error .button { margin-top: 10px; }
+.management-success { padding: 10px 13px; background: #edf7f1; color: #166147; border-radius: 6px; font-size: 12px; margin: 12px 0; }
+.management-filters, .management-upload { display: flex; flex-wrap: wrap; align-items: end; gap: 14px; margin: 16px 0 20px; }
+.management-filters > span { font-size: 12px; color: var(--text-muted); padding-bottom: 10px; }
+.management label { display: flex; flex-direction: column; gap: 6px; color: var(--text-muted); font-size: 12px; min-width: 0; }
+.management input:not([type="checkbox"]), .management select, .management textarea { min-width: 0; max-width: 100%; padding: 10px 11px; border: 1px solid #cbd8dd; border-radius: 6px; color: var(--text-main); background: white; font: inherit; font-size: 12px; }
+.management textarea { resize: vertical; line-height: 1.55; min-height: 76px; font-family: inherit; }
+.management input:not([type="checkbox"]), .management select { min-height: 42px; }
+.management input[type="file"] { padding: 8px; width: 100%; }
+.management input[type="checkbox"] { accent-color: var(--primary-color); width: 16px; height: 16px; margin: 0; }
+.management-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px; margin-top: 18px; }
+.management-wide { grid-column: 1 / -1; }
+.management-actions, .management-row-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
+.management-actions > span { color: var(--text-muted); font-size: 11px; }
+.management-row-actions .button { font-size: 10px; padding: 7px 10px; min-height: 34px; }
+.management-editor { margin: 14px 0; border: 1px solid var(--border-color); border-radius: 7px; padding: 13px 15px; background: #fcfdfd; }
+.management-editor > summary { color: var(--primary-color); cursor: pointer; font-size: 13px; font-weight: 600; }
+.management table { min-width: 640px; }
+.management table th, .management table td { text-align: left; vertical-align: top; font-size: 11px; }
+.management table th { font-weight: 600; }
+.management table td { font-variant-numeric: tabular-nums; }
+.management table small { display: block; color: var(--text-muted); font-weight: 400; font-size: 10px; margin-top: 4px; }
+.management table td:last-child, .management table th:first-child { overflow-wrap: anywhere; }
+.management-status { display: inline-block; border-radius: 4px; padding: 3px 7px; background: #f1f4f5; color: #52646e; white-space: nowrap; }
+.management-status.status-approved { background: #e5f2eb; color: #17634b; }
+.management-status.status-draft { background: #f9f0dd; color: #765920; }
+.management-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; font-size: 11px; color: var(--text-muted); }
+.management-pagination > div { display: flex; gap: 8px; }
+.management-preview { margin-top: 16px; }
+.management-preview h4 { font-size: 13px; margin: 0 0 12px; }
+.management-preview > .button { margin-top: 15px; }
+.management-preview .table-scroll { max-height: 350px; }
+.management-import-errors { margin: 10px 0 16px; padding: 12px 12px 12px 30px; border-radius: 6px; color: #943d30; background: #fff4ef; font-size: 12px; max-height: 220px; overflow: auto; }
+.management-issue-editor { padding: 4px 8px 12px; }
+.management-issue-editor .management-form { margin-top: 8px; }
+.management-note { padding: 8px 0; font-size: 12px; }
+.management-note p { white-space: pre-wrap; margin: 7px 0; }
+.management-password { padding: 16px; border: 1px solid #b9d8c8; border-radius: 7px; background: #f0f8f4; display: grid; gap: 13px; margin-bottom: 18px; }
+.management-password p { margin-top: 5px; font-size: 12px; color: var(--text-muted); }
+.management-password input { font-family: monospace; }
+.management-scope { border: 1px solid var(--border-color); border-radius: 6px; padding: 9px 13px; margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.management-scope legend { font-size: 12px; color: var(--text-muted); padding: 0 4px; }
+.management-scope label { flex-direction: row; align-items: center; gap: 7px; }
+.management-comparison { margin: 16px 0; border: 1px solid #c7dce3; border-radius: 7px; padding: 16px; background: #f6fafb; }
+.management-comparison h4 { margin: 0; font-size: 13px; }
+.management-comparison p, .management-comparison > small { font-size: 12px; color: var(--text-muted); }
+.management-comparison > small { display: block; margin-top: 12px; }
+.management-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
+.management-metrics article { padding: 14px; border-radius: 7px; background: #eef5f3; }
+.management-metrics span { display: block; color: var(--text-muted); font-size: 11px; }
+.management-metrics strong { display: block; margin-top: 8px; font-size: 24px; font-variant-numeric: tabular-nums; }
+.management-config { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 20px 0 0; }
+.management-config > div { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid #edf1f3; }
+.management-config dt, .management-config dd { font-size: 11px; }
+.management-config dt { color: var(--text-muted); }
+.management-config dd { margin: 0; white-space: nowrap; }
+@media (max-width: 750px) {
+  .management-card { padding: 16px; }
+  .management-heading { align-items: flex-start; }
+  .management-heading h2 { font-size: 19px; }
+  .management-heading h3 { font-size: 16px; }
+  .management-heading > .button { padding: 8px 10px; min-height: 36px; }
+  .management-form { grid-template-columns: minmax(0, 1fr); }
+  .management-filters > label, .management-upload > label { flex: 1 1 160px; }
+  .management-editor { padding: 12px; }
+  .management-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .management-config { grid-template-columns: minmax(0, 1fr); }
+  .management-pagination { flex-wrap: wrap; }
+}
+.management-search { display: flex; gap: 10px; align-items: flex-end; }
+.management-search label { flex: 1; min-width: 0; }
+.voyage-picker { display: grid; gap: 12px; }
+.status-cancelled { color: #805547; background: #f6e9e4; }

@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 
 from browser_smoke import fixture
 from playwright.sync_api import expect, sync_playwright
+from browser_auth_support import install_auth_fixture
 
 
 PREFIX = "KIỂM THỬ — "
@@ -64,6 +65,7 @@ def main():
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(channel=args.channel, headless=True)
         page = browser.new_page(viewport={"width": 1440, "height": 1100})
+        auth_state = install_auth_fixture(page)
         page.on("pageerror", lambda error: errors.append(str(error)))
         page.route("**/api/dashboard?*", respond)
         page.goto(args.url)
@@ -146,6 +148,7 @@ def main():
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), mode
         checks.append("edge states: all-zero, all-NULL, all-negative and empty stay distinct without invalid bars")
         assert not errors, errors
+        assert auth_state["unexpected"] == [], auth_state["unexpected"]
         browser.close()
 
     result = {"status": "passed", "data": "labelled synthetic browser fixtures only; no SQL connections", "checks": checks, "viewports": [1440, 768, 601, 390, 320], "page_errors": errors, "requested_cases": requests}

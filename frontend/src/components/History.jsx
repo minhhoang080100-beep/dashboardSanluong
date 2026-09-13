@@ -4,7 +4,7 @@ import { formatNumber, isNumber } from '../dashboard-data';
 
 const metricNames = { tonnage: 'Tấn', teu: 'TEU' };
 
-export default function History({ monthlyRows, dailyRows, hasRecords }) {
+export default function History({ monthlyRows, dailyRows, hasRecords, onInspect }) {
   const [metric, setMetric] = useState('tonnage');
   const [granularity, setGranularity] = useState(dailyRows?.length && dailyRows.length <= 62 ? 'day' : 'month');
   const byDay = granularity === 'day' && Array.isArray(dailyRows);
@@ -36,11 +36,11 @@ export default function History({ monthlyRows, dailyRows, hasRecords }) {
               <XAxis dataKey="date" tickFormatter={(date) => dateLabel(date, true)} axisLine={false} tickLine={false} minTickGap={18} tick={{ fill: '#5b6f7c', fontSize: 11 }} dy={9} />
               <YAxis axisLine={false} tickLine={false} width={64} tick={{ fill: '#5b6f7c', fontSize: 11 }} tickFormatter={(value) => formatNumber(value)} />
               <Tooltip cursor={{ fill: '#edf4f2' }} formatter={(value) => [formatNumber(value), metricNames[metric]]} labelFormatter={(value) => `${byDay ? 'Ngày' : 'Tháng'} ${dateLabel(value)}`} contentStyle={{ background: '#fff', borderColor: '#dce5e9', borderRadius: 8, fontSize: 12 }} />
-              <Bar dataKey={metric} fill={metric === 'tonnage' ? '#267865' : '#397b9b'} radius={[4, 4, 0, 0]} maxBarSize={60} isAnimationActive={false} />
+              <Bar dataKey={metric} fill={metric === 'tonnage' ? '#267865' : '#397b9b'} radius={[4, 4, 0, 0]} maxBarSize={60} isAnimationActive={false} cursor={byDay && onInspect ? 'pointer' : undefined} onClick={byDay && onInspect ? (row, _index, event) => onInspect(row.date || row.payload?.date, event) : undefined} />
             </BarChart>
           </ResponsiveContainer>
         </div>}
-        <details className="chart-data"><summary>Xem bảng số liệu theo {timeLabel}</summary><div className="table-scroll"><table><caption className="sr-only">Sản lượng theo {timeLabel} trong kỳ báo cáo</caption><thead><tr><th scope="col">{byDay ? 'Ngày' : 'Tháng'}</th><th scope="col">Tấn</th><th scope="col">TEU</th></tr></thead><tbody>{rows.map((row) => <tr key={row.date}><th scope="row">{dateLabel(row.date)}</th><td>{formatNumber(row.tonnage)}</td><td>{formatNumber(row.teu)}</td></tr>)}</tbody></table></div></details>
+        <details className="chart-data"><summary>Xem bảng số liệu theo {timeLabel}</summary><div className="table-scroll"><table><caption className="sr-only">Sản lượng theo {timeLabel} trong kỳ báo cáo</caption><thead><tr><th scope="col">{byDay ? 'Ngày' : 'Tháng'}</th><th scope="col">Tấn</th><th scope="col">TEU</th></tr></thead><tbody>{rows.map((row) => <tr key={row.date}><th scope="row">{byDay && onInspect ? <button className="inspect-label" type="button" onClick={(event) => onInspect(row.date, event)}>{dateLabel(row.date)}</button> : dateLabel(row.date)}</th><td>{formatNumber(row.tonnage)}</td><td>{formatNumber(row.teu)}</td></tr>)}</tbody></table></div></details>
       </>}
     </article>
   );

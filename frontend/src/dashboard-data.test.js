@@ -21,6 +21,19 @@ test('calendar follows Vietnam midnight even if device is elsewhere', () => {
   assert.equal(todayInVietnam(new Date('2026-09-08T16:59:59Z')), '2026-09-08');
 });
 
+test('refresh keeps a validated same-period snapshot, surfaces failed refresh and clears on filter change', () => {
+  const data = fixture();
+  for (const status of ['refreshing', 'stale']) {
+    const resource = { status, data, key: JSON.stringify(filters), error: 'Source unavailable' };
+    const view = dashboardResourceView(resource, filters);
+    assert.equal(view.data, data);
+    assert.equal(view.status, status);
+    assert.equal(view.error, status === 'stale' ? resource.error : '');
+    assert.equal(dashboardResourceView(resource, { ...filters, terminal: 'cua_lo' }).data, null);
+    assert.equal(dashboardResourceView({ ...resource, data: {} }, filters).status, 'recovering');
+  }
+});
+
 test('previous month handles year boundary and leap February', () => {
   assert.deepEqual(presetDates('previous', '2026-01-09'), { start_date: '2025-12-01', end_date: '2025-12-31' });
   assert.deepEqual(presetDates('previous', '2024-03-05'), { start_date: '2024-02-01', end_date: '2024-02-29' });

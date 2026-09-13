@@ -52,6 +52,7 @@
 .voyage-breakdown th, .voyage-breakdown td { padding: 10px; }
 .voyage-breakdown tbody th { overflow-wrap: anywhere; }
 .voyage-native { margin-top: 25px; }
+.voyage-native table small { display: block; margin-top: 4px; font-size: 10px; font-weight: 400; color: var(--text-muted); }
 .voyage-operations { margin-top: 28px; }
 .voyage-section-heading { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
 .voyage-section-heading > span { font-size: 11px; color: var(--text-muted); }

@@ -11,6 +11,13 @@ export function todayInVietnam(now = new Date()) {
 }
 
 export function presetDates(preset, today = todayInVietnam()) {
+  if (preset === 'today') return { start_date: today, end_date: today };
+  if (preset === 'yesterday') {
+    const previous = new Date(`${today}T00:00:00Z`);
+    previous.setUTCDate(previous.getUTCDate() - 1);
+    const day = previous.toISOString().slice(0, 10);
+    return { start_date: day, end_date: day };
+  }
   if (preset === 'year') return { start_date: `${today.slice(0, 4)}-01-01`, end_date: today };
   if (preset === 'previous') {
     const lastDay = new Date(`${today.slice(0, 7)}-01T00:00:00Z`);
@@ -95,8 +102,8 @@ export function validateDashboard(data, filters) {
   return data;
 }
 
-export async function fetchDashboard(filters, { signal, fetcher = fetch, baseUrl = '/api' } = {}) {
-  const response = await fetchReportResponse(`${baseUrl.replace(/\/+$/, '')}/dashboard?${new URLSearchParams(filters)}`, { signal, fetcher });
+export async function fetchDashboard(filters, { signal, fetcher = fetch, baseUrl = '/api', refresh = false } = {}) {
+  const response = await fetchReportResponse(`${baseUrl.replace(/\/+$/, '')}/dashboard?${new URLSearchParams({ ...filters, ...(refresh ? { refresh: 'true' } : {}) })}`, { signal, fetcher });
   if (!response.ok) {
     if (response.status === 503) throw new Error('Tạm thời không thể truy vấn dữ liệu sản xuất. Vui lòng tải lại hoặc liên hệ bộ phận CNTT.');
     if (response.status === 400 || response.status === 422) throw new Error('Bộ lọc chưa được máy chủ chấp nhận. Hãy kiểm tra khoảng ngày và xí nghiệp.');
@@ -109,9 +116,9 @@ export async function fetchDashboard(filters, { signal, fetcher = fetch, baseUrl
 // Revalidate retained state as well as network responses before any panel or CSV uses it.
 export function dashboardResourceView(resource, filters) {
   if (resource.key !== JSON.stringify(filters) || resource.status === 'loading') return { status: 'loading', data: null, error: '' };
-  if (resource.status === 'success') {
+  if (['success', 'refreshing', 'stale'].includes(resource.status)) {
     try {
-      return { status: 'success', data: validateDashboard(resource.data, filters), error: '' };
+      return { status: resource.status, data: validateDashboard(resource.data, filters), error: resource.status === 'stale' ? resource.error : '' };
     } catch (failure) {
       return { status: 'recovering', data: null, error: failure.message };
     }

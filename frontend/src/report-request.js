@@ -1,3 +1,5 @@
+import { authHeaders, sessionExpired } from './api-client.js';
+
 const TRANSIENT_STATUSES = new Set([502, 503, 504]);
 
 function waitBeforeRetry(signal) {
@@ -21,7 +23,7 @@ function waitBeforeRetry(signal) {
 // Only report GETs retry. The caller's signal covers both attempts and the delay,
 // so its deadline and cancellation on filter/page changes remain unchanged.
 export async function fetchReportResponse(url, { signal, fetcher = fetch } = {}) {
-  const options = { signal, headers: { Accept: 'application/json' } };
+  const options = { signal, headers: { Accept: 'application/json', ...authHeaders() } };
   for (let attempt = 0; attempt < 2; attempt += 1) {
     signal?.throwIfAborted();
     let response;
@@ -33,6 +35,7 @@ export async function fetchReportResponse(url, { signal, fetcher = fetch } = {})
       continue;
     }
     signal?.throwIfAborted();
+    if (response.status === 401) sessionExpired();
     if (attempt === 1 || response.ok || !TRANSIENT_STATUSES.has(response.status)) return response;
     try {
       // Release the failed response without letting cleanup delay cancellation.

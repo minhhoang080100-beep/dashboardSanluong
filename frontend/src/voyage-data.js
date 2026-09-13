@@ -93,16 +93,25 @@ export function validateVoyageDetail(data, selected, filters, page, pageSize, op
   return data;
 }
 
-export async function fetchVoyageDetail(selected, filters, page, { signal, fetcher = fetch, baseUrl = '/api', pageSize = 25, operationFilter = 'all' } = {}) {
+export async function fetchVoyageDetail(selected, filters, page, { signal, fetcher = fetch, baseUrl = '/api', pageSize = 25, operationFilter = 'all', reportId } = {}) {
   if (!operationFilters.has(operationFilter)) fail();
   const query = new URLSearchParams({ start_date: filters.start_date, end_date: filters.end_date, page: String(page), page_size: String(pageSize), operation_filter: operationFilter });
+  if (reportId) query.set('report_id', reportId);
   const url = `${baseUrl.replace(/\/+$/, '')}/voyages/${encodeURIComponent(selected.terminal_id)}/${encodeURIComponent(selected.voyage_id)}?${query}`;
   const response = await fetchReportResponse(url, { signal, fetcher });
   if (!response.ok) {
+    if (response.status === 410) {
+      const error = new Error('Phiên dữ liệu đã hết hạn. Hãy tải lại báo cáo rồi mở lại chi tiết chuyến tàu.');
+      error.code = 'REPORT_EXPIRED';
+      error.status = 410;
+      throw error;
+    }
     if (response.status === 404) throw new Error('Không tìm thấy chuyến tàu có tác nghiệp trong kỳ đã chọn. Hãy tải lại danh sách.');
     if (response.status === 422) throw new Error('Trang phiếu hoặc kỳ báo cáo không còn hợp lệ. Hãy mở lại chuyến tàu.');
     if (response.status === 503) throw new Error('Tạm thời không truy vấn được chi tiết chuyến tàu. Vui lòng thử lại.');
     throw new Error(`Không tải được chi tiết chuyến tàu (HTTP ${response.status}).`);
   }
-  return validateVoyageDetail(await response.json(), selected, filters, page, pageSize, operationFilter);
+  const result = validateVoyageDetail(await response.json(), selected, filters, page, pageSize, operationFilter);
+  if (reportId && result.meta.report_id !== reportId) fail();
+  return result;
 }
