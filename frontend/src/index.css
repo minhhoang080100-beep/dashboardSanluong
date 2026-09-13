@@ -1,27 +1,40 @@
 :root {
   font-family: 'Segoe UI', Arial, sans-serif;
-  color: #173346;
-  background: #f3f6f7;
+  color: #2d3d43;
+  background: #edf0ee;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  --text-main: #173346;
-  --text-muted: #5b6f7c;
-  --primary-color: #176c5b;
-  --primary-hover: #115343;
-  --border-color: #dce5e9;
+  --text-main: #2d3d43;
+  --text-muted: #5d6b66;
+  --primary-color: #536f67;
+  --primary-hover: #405c54;
+  --border-color: #d7dfd9;
+  --border-soft: #e5eae5;
+  --surface: #fbfcfa;
+  --surface-muted: #f1f4f1;
+  --surface-hover: #e9eeea;
+  --surface-selected: #e4ece6;
+  --warning-color: #80602e;
+  --warning-surface: #f5f0e5;
+  --danger-color: #975b51;
+  --danger-surface: #f6eeeb;
+  --focus-color: #587c81;
+  --shadow-panel: 0 2px 4px #2d3d4303;
+  font-size: 14px;
   line-height: 1.5;
   color-scheme: light;
 }
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; }
-button, input, select { font: inherit; }
-button, a, input, select, summary { -webkit-tap-highlight-color: transparent; }
+button, input, select, textarea { font: inherit; }
+button, a, input, select, textarea, summary { -webkit-tap-highlight-color: transparent; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .55; }
 a { color: var(--primary-color); }
-button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 3px solid #247eae; outline-offset: 3px; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid var(--focus-color); outline-offset: 3px; }
+::selection { color: var(--text-main); background: #d7e3da; }
 h1, h2, h3, p { margin: 0; }
 svg { flex-shrink: 0; }
 section[id], article[id] { scroll-margin-top: 20px; }

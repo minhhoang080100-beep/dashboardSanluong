@@ -9,7 +9,7 @@ import { allowedTerminals, rememberFilters, restoreFilters } from '../filter-pre
 import { AUTO_REFRESH_MS, currentReportPeriod, rememberAutoRefresh, restoreAutoRefresh, shouldAutoRefresh } from '../report-refresh';
 import './Dashboard.css';
 
-const COLORS = ['#176c5b', '#397b9b', '#b48636', '#7285a6', '#7a9b71', '#8c6e94'];
+const COLORS = ['#64877b', '#8094a0', '#ac966e', '#8c91a1', '#8b9b7d', '#a08a96'];
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 const History = lazy(() => import('./History'));
 
@@ -29,8 +29,8 @@ function Kpi({ title, value, unit, trend, status, icon: Icon, accent, digits = 3
     <article className={`kpi-card ${accent ? 'kpi-primary' : ''}`}>
       <div className="kpi-top"><span>{title}</span><span className="kpi-icon"><Icon size={19} aria-hidden="true" /></span></div>
       <p className="kpi-value">{onInspect ? <button type="button" className="inspect-value" onClick={onInspect} aria-label={`Xem chi tiết ${title}`}>{formatNumber(value, digits)}</button> : formatNumber(value, digits)}<span>{unit}</span></p>
-      <Trend value={['partial', 'unavailable'].includes(status) ? null : trend} />
-      {listLink && <a className="kpi-link" href={listLink}>Xem danh sách <OpenArrow size={13} aria-hidden="true" /></a>}
+      <div className="kpi-bottom"><Trend value={['partial', 'unavailable'].includes(status) ? null : trend} />
+      {listLink && <a className="kpi-link" href={listLink}>Xem danh sách <OpenArrow size={13} aria-hidden="true" /></a>}</div>
     </article>
   );
 }
@@ -254,10 +254,10 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
 
   return <div className="dashboard">
     <section className="dashboard-intro" id={isReportView ? 'overview' : undefined} aria-labelledby="dashboard-title">
-      <h1 id="dashboard-title">{isReportView ? 'Báo cáo sản lượng' : activeView === 'admin' ? 'Quản trị' : 'Kế hoạch & đối soát'}</h1>
-      {isReportView && <button className="button secondary export-button" type="button" onClick={exportCsv} disabled={!data || hasDraft}><Download size={16} aria-hidden="true" />Xuất báo cáo CSV</button>}
+      <div className="dashboard-title-group"><h1 id="dashboard-title">{isReportView ? 'Báo cáo sản lượng' : activeView === 'admin' ? 'Quản trị' : 'Kế hoạch & đối soát'}</h1>
+      {isReportView && <nav className="report-shortcuts" aria-label="Tra cứu báo cáo"><a href="#production"><BarChart3 size={14} aria-hidden="true" />Phân tích sản lượng</a><a href="#voyages"><Ship size={14} aria-hidden="true" />Chuyến tàu</a><a href="#customers"><Users size={14} aria-hidden="true" />Khách hàng</a></nav>}</div>
+      {isReportView && <button className="button secondary export-button" type="button" aria-label="Xuất báo cáo CSV" title="Xuất báo cáo CSV" onClick={exportCsv} disabled={!data || hasDraft}><Download size={16} aria-hidden="true" /><span>Xuất báo cáo CSV</span></button>}
     </section>
-    {isReportView && <nav className="report-shortcuts" aria-label="Tra cứu báo cáo"><a href="#production"><BarChart3 size={14} aria-hidden="true" />Phân tích sản lượng</a><a href="#voyages"><Ship size={14} aria-hidden="true" />Chuyến tàu</a><a href="#customers"><Users size={14} aria-hidden="true" />Khách hàng</a></nav>}
     {activeView !== 'admin' && <>
     <section className="filter-panel" aria-label="Bộ lọc báo cáo">
       <div className="filter-top"><span><SlidersHorizontal size={16} aria-hidden="true" />Kỳ báo cáo</span><div className="preset-buttons" role="group" aria-label="Chọn nhanh kỳ báo cáo">
@@ -276,8 +276,10 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
       {formError && <p className="form-error" role="alert">{formError}</p>}
       {hasDraft && !formError && <p className="draft-note">Bộ lọc đã thay đổi. Chọn “Áp dụng” để cập nhật báo cáo.</p>}
     </section>
-    <div className="report-context"><span><CalendarDays size={15} aria-hidden="true" /><strong>{formatDate(filters.start_date)} – {formatDate(filters.end_date)}</strong><span className="context-divider" aria-hidden="true">·</span>{TERMINALS[filters.terminal]}</span><span className="source-status">{data ? `Đọc nguồn: ${formatTimestamp(data.meta.source_read_at || data.meta.generated_at)}` : 'Giờ Việt Nam · UTC+7'}{incomplete && <a className="data-status-tag" href="#data-quality" onClick={() => { const details = document.getElementById('data-quality'); if (details) details.open = true; }}>Số liệu chưa đầy đủ</a>}{data && (view.status === 'stale' || oldSource) && <span className="data-status-tag">{view.status === 'stale' ? 'Chưa cập nhật được' : 'Dữ liệu hơn 3 phút trước'}</span>}</span></div>
-    {isReportView && <div className="report-refresh-control"><label><input type="checkbox" checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} />Tự cập nhật mỗi 2 phút</label><span>{currentPeriod ? 'Tạm dừng khi đang nhập, mở chi tiết hoặc chuyển khỏi báo cáo.' : 'Chỉ cập nhật tự động với kỳ kết thúc hôm nay.'}</span></div>}
+    <div className="report-toolbar">
+      <div className="report-context"><span><CalendarDays size={15} aria-hidden="true" /><strong>{formatDate(filters.start_date)} – {formatDate(filters.end_date)}</strong><span className="context-divider" aria-hidden="true">·</span>{TERMINALS[filters.terminal]}</span><span className="source-status">{data ? `Đọc nguồn: ${formatTimestamp(data.meta.source_read_at || data.meta.generated_at)}` : 'Giờ Việt Nam · UTC+7'}{incomplete && <a className="data-status-tag" href="#data-quality" onClick={() => { const details = document.getElementById('data-quality'); if (details) details.open = true; }}>Số liệu chưa đầy đủ</a>}{data && (view.status === 'stale' || oldSource) && <span className="data-status-tag">{view.status === 'stale' ? 'Chưa cập nhật được' : 'Dữ liệu hơn 3 phút trước'}</span>}</span></div>
+      {isReportView && <div className="report-refresh-control"><label title={currentPeriod ? 'Tạm dừng khi đang nhập, mở chi tiết hoặc chuyển khỏi báo cáo.' : 'Chỉ cập nhật tự động với kỳ kết thúc hôm nay.'}><input type="checkbox" aria-describedby="refresh-help" checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} />Tự cập nhật mỗi 2 phút</label><span id="refresh-help" className="sr-only">{currentPeriod ? 'Tạm dừng khi đang nhập, mở chi tiết hoặc chuyển khỏi báo cáo.' : 'Chỉ cập nhật tự động với kỳ kết thúc hôm nay.'}</span></div>}
+    </div>
     {data && view.status === 'stale' && <div className="refresh-error" role="alert"><span>{view.error} Đang giữ số liệu lần đọc trước.</span><button type="button" className="button" onClick={() => setReload((value) => value + 1)}>Thử cập nhật lại</button></div>}
     {data && view.status === 'refreshing' && <p className="refresh-progress" role="status">Đang cập nhật số liệu…</p>}
     {isReportView && exportMessage && <p className="export-message" role="status">{exportMessage}</p>}

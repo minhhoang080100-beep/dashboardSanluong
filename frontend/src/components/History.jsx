@@ -32,11 +32,11 @@ export default function History({ monthlyRows, dailyRows, hasRecords, onInspect 
         {!hasMetricValues ? <div className="empty-panel"><p>Chưa đủ dữ liệu để tính {metricNames[metric]} trong kỳ đã chọn.</p></div> : <div className="history-chart" role="img" aria-label={`Biểu đồ sản lượng theo ${timeLabel}, đơn vị ${metricNames[metric]}. Số liệu chi tiết trong bảng bên dưới.`}>
           <ResponsiveContainer width="100%" height="100%" minWidth={0}>
             <BarChart data={rows} margin={{ top: 10, right: 10, bottom: 0, left: 0 }} accessibilityLayer>
-              <CartesianGrid strokeDasharray="3 4" vertical={false} stroke="#e3e9ed" />
-              <XAxis dataKey="date" tickFormatter={(date) => dateLabel(date, true)} axisLine={false} tickLine={false} minTickGap={18} tick={{ fill: '#5b6f7c', fontSize: 11 }} dy={9} />
-              <YAxis axisLine={false} tickLine={false} width={64} tick={{ fill: '#5b6f7c', fontSize: 11 }} tickFormatter={(value) => formatNumber(value)} />
-              <Tooltip cursor={{ fill: '#edf4f2' }} formatter={(value) => [formatNumber(value), metricNames[metric]]} labelFormatter={(value) => `${byDay ? 'Ngày' : 'Tháng'} ${dateLabel(value)}`} contentStyle={{ background: '#fff', borderColor: '#dce5e9', borderRadius: 8, fontSize: 12 }} />
-              <Bar dataKey={metric} fill={metric === 'tonnage' ? '#267865' : '#397b9b'} radius={[4, 4, 0, 0]} maxBarSize={60} isAnimationActive={false} cursor={byDay && onInspect ? 'pointer' : undefined} onClick={byDay && onInspect ? (row, _index, event) => onInspect(row.date || row.payload?.date, event) : undefined} />
+              <CartesianGrid strokeDasharray="2 5" vertical={false} stroke="var(--border-color)" />
+              <XAxis dataKey="date" tickFormatter={(date) => dateLabel(date, true)} axisLine={false} tickLine={false} minTickGap={22} tick={{ fill: 'var(--text-muted)', fontSize: 12 }} dy={9} />
+              <YAxis axisLine={false} tickLine={false} width={68} tick={{ fill: 'var(--text-muted)', fontSize: 12 }} tickFormatter={(value) => formatNumber(value)} />
+              <Tooltip cursor={{ fill: 'var(--surface-muted)' }} formatter={(value) => [formatNumber(value), metricNames[metric]]} labelFormatter={(value) => `${byDay ? 'Ngày' : 'Tháng'} ${dateLabel(value)}`} contentStyle={{ background: 'var(--surface)', borderColor: 'var(--border-color)', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--text-main)', boxShadow: '0 6px 20px #2d3d4312' }} labelStyle={{ color: 'var(--text-main)', fontWeight: 600 }} itemStyle={{ color: 'var(--text-main)' }} />
+              <Bar dataKey={metric} fill={metric === 'tonnage' ? '#64877b' : '#8094a0'} radius={[3, 3, 0, 0]} maxBarSize={48} isAnimationActive={false} cursor={byDay && onInspect ? 'pointer' : undefined} onClick={byDay && onInspect ? (row, _index, event) => onInspect(row.date || row.payload?.date, event) : undefined} />
             </BarChart>
           </ResponsiveContainer>
         </div>}
