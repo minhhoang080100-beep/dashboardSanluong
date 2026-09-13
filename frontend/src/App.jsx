@@ -36,7 +36,6 @@ function App() {
       <main className="main-content" id="main-content" tabIndex={-1}>
         <header className="top-header">
           <span><span className="breadcrumb-root">Điều hành</span><span aria-hidden="true"> / </span>Sản xuất & khai thác</span>
-          <span className="header-tag">Góc nhìn ban lãnh đạo</span>
         </header>
         <Dashboard />
       </main>

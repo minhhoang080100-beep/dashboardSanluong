@@ -1,4 +1,5 @@
 import { validateVoyageList } from './voyage-data.js';
+import { fetchReportResponse } from './report-request.js';
 
 export const TERMINALS = { all: 'Toàn công ty', cua_lo: 'Xí nghiệp Cửa Lò', ben_thuy: 'Xí nghiệp Bến Thủy' };
 export const TIMEZONE = 'Asia/Ho_Chi_Minh';
@@ -95,7 +96,7 @@ export function validateDashboard(data, filters) {
 }
 
 export async function fetchDashboard(filters, { signal, fetcher = fetch, baseUrl = '/api' } = {}) {
-  const response = await fetcher(`${baseUrl.replace(/\/+$/, '')}/dashboard?${new URLSearchParams(filters)}`, { signal, headers: { Accept: 'application/json' } });
+  const response = await fetchReportResponse(`${baseUrl.replace(/\/+$/, '')}/dashboard?${new URLSearchParams(filters)}`, { signal, fetcher });
   if (!response.ok) {
     if (response.status === 503) throw new Error('Tạm thời không thể truy vấn dữ liệu sản xuất. Vui lòng tải lại hoặc liên hệ bộ phận CNTT.');
     if (response.status === 400 || response.status === 422) throw new Error('Bộ lọc chưa được máy chủ chấp nhận. Hãy kiểm tra khoảng ngày và xí nghiệp.');
@@ -155,7 +156,7 @@ export function dashboardCsv(data) {
     ...data.directions.map((row) => [row.name, row.tonnage, directionRatios.available ? Math.round(row.tonnage / overview.total_tonnage * 1000) / 10 : null]),
     [], ['KHÁCH HÀNG DẪN ĐẦU'], ['Tên', 'Xí nghiệp', 'Tấn'],
     ...data.customers.map((row) => [row.name, row.terminal_name, row.volume]),
-    [], ['CHUYẾN TÀU TRONG KỲ'], ['Tàu', 'Mã chuyến', 'Xí nghiệp', 'Ngày làm hàng đầu kỳ', 'Ngày làm hàng cuối kỳ', 'Tấn', 'TEU', 'Số phiếu'],
+    [], ['CHUYẾN TÀU TRONG KỲ'], ['Tàu', 'Mã chuyến', 'Xí nghiệp', 'Ngày làm hàng đầu kỳ', 'Ngày làm hàng cuối kỳ', 'Tấn', 'TEU', 'Số dòng tác nghiệp'],
     ...data.voyages.map((row) => [row.vessel_name, row.voyage_code || row.voyage_id, row.terminal_name, row.first_operation_date, row.last_operation_date, row.tonnage, row.teu, row.record_count]),
     [], ['NGUỒN DỮ LIỆU'], ['Xí nghiệp', 'Phát sinh mới nhất tại nguồn (giờ Việt Nam)', 'Số bản ghi trong kỳ'],
     ...(meta.sources || []).map((source) => [source.name, formatTimestamp(source.latest_operation_at), source.record_count]),

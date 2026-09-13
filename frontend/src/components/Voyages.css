@@ -44,6 +44,7 @@
 .voyage-summary span { color: var(--text-muted); font-size: 11px; display: block; }
 .voyage-summary strong { font-size: 24px; display: block; margin-top: 7px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .voyage-summary small { font-size: 11px; font-weight: 400; }
+.voyage-summary .voyage-source-count { display: block; margin-top: 5px; color: var(--text-muted); }
 .voyage-breakdowns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
 .voyage-breakdown { min-width: 0; }
 .voyage-breakdown h3, .voyage-native h3, .voyage-operations h3 { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
@@ -54,6 +55,9 @@
 .voyage-operations { margin-top: 28px; }
 .voyage-section-heading { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
 .voyage-section-heading > span { font-size: 11px; color: var(--text-muted); }
+.operation-filter { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 2px 0 16px; font-size: 11px; color: var(--text-muted); }
+.operation-filter select { min-width: 230px; max-width: 100%; min-height: 40px; border: 1px solid #cbd9dd; border-radius: 6px; padding: 8px 32px 8px 11px; background: white; color: var(--text-main); font: inherit; }
+.operation-empty { padding: 28px 18px; border: 1px solid var(--border-color); border-radius: 7px; background: #f8fbfa; color: var(--text-muted); font-size: 12px; text-align: center; }
 .operations-table { min-width: 800px; }
 .operations-table td:nth-child(2), .operations-table td:nth-child(3), .operations-table thead th:nth-child(2), .operations-table thead th:nth-child(3) { text-align: left; }
 .operations-table td, .operations-table th { vertical-align: top; }
@@ -85,4 +89,7 @@
   .voyage-summary span { font-size: 10px; }
   .voyage-breakdowns { grid-template-columns: minmax(0, 1fr); gap: 22px; }
   .voyage-pagination { gap: 10px; }
+  .voyage-section-heading { align-items: flex-start; flex-direction: column; gap: 0; margin-bottom: 12px; }
+  .operation-filter { align-items: stretch; flex-direction: column; gap: 6px; }
+  .operation-filter select { width: 100%; min-width: 0; font-size: 12px; }
 }

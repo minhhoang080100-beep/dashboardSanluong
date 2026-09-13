@@ -2,6 +2,7 @@
 
 import logging
 import re
+from time import perf_counter
 
 import pyodbc
 
@@ -15,6 +16,7 @@ DATABASES = frozenset({"SmartTOS", "SmartTOS_BenThuy"})
 _DIAGNOSTIC_SQLSTATES = frozenset({
     "01000", "08001", "08004", "08006", "08007", "08S01", "28000",
     "HY000", "HYT00", "HYT01", "IM002", "IM003", "IM004", "IM005", "IM006", "IM014",
+    "40001", "42000", "42S02", "42S22", "42501", "HY008",
 })
 
 
@@ -58,6 +60,22 @@ def _connection_diagnostic(exc: Exception) -> tuple[str, str]:
         category = "tls_handshake"
     elif sqlstate == "28000":
         category = "authentication"
+    elif sqlstate == "42501" or any(marker in message for marker in (
+        "permission was denied", "permission denied", "does not have permission",
+        "not able to access the database",
+    )):
+        category = "permission"
+    elif "deadlock" in message:
+        category = "deadlock"
+    elif sqlstate == "40001":
+        category = "transaction_conflict"
+    elif sqlstate in {"42S02", "42S22"} or any(marker in message for marker in (
+        "invalid object name", "invalid column name", "could not find stored procedure",
+        "incorrect syntax", "syntax error",
+    )):
+        category = "schema"
+    elif sqlstate == "HY008":
+        category = "cancelled"
     elif sqlstate in {"HYT00", "HYT01"} or "timeout expired" in message or "timed out" in message:
         category = "timeout"
     elif sqlstate.startswith("IM") or "can't open lib" in message or "data source name not found" in message:
@@ -70,9 +88,26 @@ def _connection_diagnostic(exc: Exception) -> tuple[str, str]:
     elif sqlstate.startswith("08"):
         # 08001 alone also occurs for TLS errors, so it is not proof of a network failure.
         category = "connection"
+    elif sqlstate == "42000":
+        category = "query"
     else:
         category = "unknown"
     return category, sqlstate
+
+
+def log_database_failure(exc: Exception, *, phase: str, started_at: float,
+                         operation: str = "query", log: logging.Logger = logger):
+    """Log fixed labels and elapsed time, never driver text, SQL or parameters."""
+    safe_phase = phase if phase in {"cursor", "execute", "fetch", "row_limit"} else "unknown"
+    safe_operation = operation if operation in {"query", "health"} else "unknown"
+    category, sqlstate = _connection_diagnostic(exc)
+    if safe_phase == "row_limit":
+        category, sqlstate = "row_limit", "unknown"
+    log.error(
+        "Database operation failed; operation=%s phase=%s category=%s sqlstate=%s elapsed_ms=%d",
+        safe_operation, safe_phase, category, sqlstate,
+        max(0, round((perf_counter() - started_at) * 1000)),
+    )
 
 
 def get_db_connection(database: str | None = None):
@@ -97,6 +132,7 @@ def get_db_connection(database: str | None = None):
         "ApplicationIntent=ReadOnly;"
     )
     connection = None
+    started_at = perf_counter()
     try:
         connection = pyodbc.connect(
             conn_str, timeout=settings.DB_CONNECT_TIMEOUT_SECONDS, autocommit=True
@@ -111,7 +147,8 @@ def get_db_connection(database: str | None = None):
                 pass
         category, sqlstate = _connection_diagnostic(exc)
         logger.error(
-            "Database connection failed; category=%s sqlstate=%s encrypt=%s trust_server_certificate=%s",
+            "Database connection failed; category=%s sqlstate=%s encrypt=%s trust_server_certificate=%s elapsed_ms=%d",
             category, sqlstate, settings.DB_ENCRYPT, settings.DB_TRUST_SERVER_CERTIFICATE,
+            max(0, round((perf_counter() - started_at) * 1000)),
         )
         raise DatabaseUnavailable() from None

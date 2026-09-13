@@ -1,4 +1,6 @@
 from datetime import date
+import logging
+from time import perf_counter
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request
@@ -7,12 +9,14 @@ from fastapi.responses import JSONResponse
 
 if __package__:
     from .config import settings
-    from .database import DatabaseUnavailable, get_db_connection
+    from .database import DatabaseUnavailable, get_db_connection, log_database_failure
     from .repository import VoyageNotFound, dashboard_repo, date_range
 else:
     from config import settings
-    from database import DatabaseUnavailable, get_db_connection
+    from database import DatabaseUnavailable, get_db_connection, log_database_failure
     from repository import VoyageNotFound, dashboard_repo, date_range
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Cảng Nghệ Tĩnh - Dashboard API",
@@ -65,20 +69,28 @@ def health_check():
         connection = get_db_connection(name)
         if connection is None:
             raise DatabaseUnavailable()
+        cursor = None
+        started_at = perf_counter()
+        phase = "cursor"
         try:
             cursor = connection.cursor()
-            try:
-                cursor.execute("SELECT TOP (1) shiftDate FROM dbo.TallyShift")
-                cursor.fetchone()
-            finally:
-                cursor.close()
-        except Exception:
+            phase = "execute"
+            cursor.execute("SELECT TOP (1) shiftDate FROM dbo.TallyShift")
+            phase = "fetch"
+            cursor.fetchone()
+        except Exception as exc:
+            log_database_failure(exc, phase=phase, started_at=started_at, operation="health", log=logger)
             raise DatabaseUnavailable() from None
         finally:
+            if cursor is not None:
+                try:
+                    cursor.close()
+                except Exception:
+                    logger.warning("Database health cursor close failed.")
             try:
                 connection.close()
             except Exception:
-                pass
+                logger.warning("Database health connection close failed.")
     return {"status": "ok", "database": "connected", "sources": ["cua_lo", "ben_thuy"]}
 
 
@@ -95,10 +107,12 @@ def get_voyage_detail(
     end_date: date | None = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=25, ge=1, le=100),
+    operation_filter: Literal["all", "with_values", "missing_weight"] = "all",
 ):
     try:
+        options = {} if operation_filter == "all" else {"operation_filter": operation_filter}
         return dashboard_repo.get_voyage_detail(
-            terminal, voyage_id, start_date, end_date, page, page_size
+            terminal, voyage_id, start_date, end_date, page, page_size, **options
         )
     except VoyageNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None

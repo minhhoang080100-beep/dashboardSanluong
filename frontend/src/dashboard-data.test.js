@@ -152,6 +152,30 @@ test('HTTP 503 cannot become empty or fabricated data', async () => {
   await assert.rejects(fetchDashboard(filters, { fetcher: async () => ({ ok: false, status: 503 }) }), /không thể truy vấn/);
 });
 
+test('dashboard recovers from a transient 503 with a fresh validated payload', async () => {
+  let attempts = 0;
+  const data = fixture();
+  const result = await fetchDashboard(filters, {
+    fetcher: async () => ++attempts === 1
+      ? { ok: false, status: 503 }
+      : { ok: true, json: async () => data },
+  });
+  assert.equal(attempts, 2);
+  assert.equal(result, data);
+});
+
+test('dashboard does not retry malformed JSON or mismatched report data', async () => {
+  const wrongPeriod = fixture();
+  wrongPeriod.meta.filters.start_date = '2026-08-01';
+  for (const json of [async () => { throw new SyntaxError('Invalid JSON'); }, async () => wrongPeriod]) {
+    let attempts = 0;
+    await assert.rejects(fetchDashboard(filters, {
+      fetcher: async () => { attempts += 1; return { ok: true, json }; },
+    }));
+    assert.equal(attempts, 1);
+  }
+});
+
 test('retained pre-voyage payload is hidden and requests recovery, never a false empty list', () => {
   const data = fixture();
   delete data.voyages;
@@ -203,6 +227,8 @@ test('export retains filter context, metric unit, provenance and warnings', () =
   assert.ok(csv.includes('2026-09-01'));
   assert.ok(csv.includes('Tấn'));
   assert.ok(csv.includes('CHUYẾN TÀU TRONG KỲ'));
+  assert.ok(csv.includes('Số dòng tác nghiệp'));
+  assert.ok(!csv.includes('Số phiếu'));
   assert.ok(csv.includes('Quy tắc chưa đối soát'));
   assert.ok(csv.includes('"\'=HYPERLINK'));
   assert.ok(csv.includes('Cửa Lò'));

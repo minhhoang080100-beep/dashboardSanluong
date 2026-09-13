@@ -2,7 +2,6 @@
 .dashboard-intro { display: flex; justify-content: space-between; align-items: center; gap: 24px; margin-bottom: 3px; }
 .section-kicker { display: block; color: #527367; font-size: 10px; font-weight: 700; letter-spacing: .13em; margin-bottom: 7px; }
 .dashboard-intro h1 { font-size: clamp(26px, 2.6vw, 36px); line-height: 1.2; font-weight: 650; letter-spacing: -.035em; }
-.intro-description { color: var(--text-muted); font-size: 13px; margin-top: 9px; max-width: 620px; }
 .button { display: inline-flex; justify-content: center; align-items: center; gap: 8px; border-radius: 6px; border: 1px solid var(--border-color); padding: 11px 15px; min-height: 42px; color: var(--text-main); background: white; font-size: 12px; font-weight: 600; white-space: nowrap; transition: background .15s; }
 .button:hover:not(:disabled) { background: #e9f0ee; }
 .button.primary { color: white; background: var(--primary-color); border-color: var(--primary-color); }
@@ -57,7 +56,6 @@
 .empty-notice { background: #edf5f8; border-color: #c5dce7; color: #2e627d; }
 .section-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin: 9px 0 17px; }
 .section-heading h2 { font-size: 20px; letter-spacing: -.02em; font-weight: 650; }
-.section-heading .section-kicker { margin-bottom: 5px; }
 .section-meta { color: var(--text-muted); font-size: 11px; }
 .production-grid { display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(0, 1fr); gap: 18px; }
 .panel { min-width: 0; border-radius: 8px; border: 1px solid var(--border-color); background: #fff; padding: 22px; }
@@ -203,7 +201,6 @@ tbody tr:last-child td, tbody tr:last-child th { border-bottom: 0; }
   .dashboard { padding: 22px 16px 18px; gap: 17px; }
   .dashboard-intro { flex-direction: column; gap: 16px; }
   .dashboard-intro h1 { font-size: 30px; }
-  .intro-description { font-size: 12px; }
   .export-button { align-self: flex-start; }
   .filter-panel { padding: 14px; }
   .filter-top { align-items: flex-start; flex-direction: column; gap: 10px; padding-bottom: 12px; }

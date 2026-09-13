@@ -66,6 +66,14 @@ Ngoại lệ này giữ mã hóa đường truyền nhưng bỏ xác minh danh t
 
 Deploy Logs chỉ ghi loại lỗi và SQLSTATE đã được lọc: `missing_configuration`, `tls_certificate`, `tls_handshake`, `authentication`, `timeout`, `network`, `connection`, `driver_configuration` hoặc `unknown`. `connection` biểu thị chưa đủ bằng chứng để phân loại chi tiết hơn. Kiểm tra dòng này để phân biệt lỗi chứng chỉ với lỗi mạng/tài khoản; không chia sẻ mật khẩu hoặc toàn bộ chuỗi kết nối trong quá trình xử lý.
 
+#### Theo dõi lỗi tải dữ liệu gián đoạn
+
+Dashboard và chi tiết chuyến tự thử lại GET **một lần** sau 500 ms khi `fetch` lỗi mạng hoặc HTTP 502/503/504. Cả hai lần dùng chung giới hạn 45 giây; đổi bộ lọc/trang hoặc đóng chi tiết sẽ hủy yêu cầu và lần thử lại. Lỗi cấu trúc/JSON và lỗi bộ lọc không được thử lại. Nếu vẫn thất bại, giao diện giữ thông báo lỗi và nút thử lại, không thay bằng dữ liệu cũ hay số 0.
+
+Log kết nối có `elapsed_ms`. Lỗi đọc báo cáo và kiểm tra sức khỏe còn có `operation=query|health`, `phase=cursor|execute|fetch|row_limit`, `category`, `sqlstate` và `elapsed_ms`. Ngoài nhóm lỗi kết nối, các nhóm truy vấn gồm `permission`, `schema`, `deadlock`, `transaction_conflict`, `cancelled`, `query` và `row_limit`. Log không chứa câu SQL, tham số, dữ liệu trả về hay nội dung lỗi driver nguyên bản.
+
+Khi lỗi tái diễn, đối chiếu thời điểm, mã HTTP và Deploy Logs: lỗi kết nối khác lỗi `DATABASE_QUERY_FAILED` sau khi đã kết nối. Kiểm tra `/api/health` và một báo cáo cùng kỳ riêng biệt. Không tự tăng timeout hoặc đổi quy tắc sản lượng khi chưa xác định bước lỗi. Nếu lỗi tập trung ở lần mở đầu tiên sau thời gian không dùng, kiểm tra service có bật **Serverless** hay không; Railway ghi nhận lần đánh thức có thể trả 502 trong [tài liệu Serverless](https://docs.railway.com/deployments/serverless). Đây là hướng kiểm tra có điều kiện, không phải khẳng định service đang bật chế độ này.
+
 ## API và hợp đồng báo cáo
 
 ```text
@@ -79,6 +87,12 @@ GET /api/health
 Response gồm `overview`, `cargo`, `history` (tháng), `daily_history` (ngày), `terminals`, `directions`, `customers`, `native_units`, `voyages`, `efficiency`, `yard`, `meta`. Các panel sản lượng dùng cùng tập kết quả truy vấn. `meta.metric_coverage` chứa trạng thái và số dòng đủ/thiếu dữ liệu từng chỉ tiêu; `native_units` giữ riêng các đơn vị chưa cộng được vào tấn. Chỉ tiêu không có giá trị đã biết trả `null`, không có bản ghi trả 0. `meta` còn chứa bộ lọc, kỳ đối chiếu, thời điểm tổng hợp, ngày nghiệp vụ mới nhất theo nguồn và định nghĩa.
 
 `voyages` là danh sách các chuyến được đếm trong KPI, lấy từ cùng tập tác nghiệp qua cảng và cùng bộ lọc. Khóa chuyến gồm xí nghiệp + ID chuyến; không gộp theo tên tàu. Mở một chuyến gọi `/api/voyages/{terminal}/{voyage_id}` để đọc thông tin tàu, ngày đến/rời thực tế, sản lượng theo hàng/ngày và các phiếu tác nghiệp phân trang. ID trong ví dụ chỉ minh họa; lấy ID thực từ danh sách. Không có chuyến hợp lệ trong kỳ trả 404. `page_size` tối đa 100; đây là chi tiết trong kỳ lọc, không tự mở rộng sang toàn vòng đời chuyến.
+
+Mỗi dòng chi tiết tương ứng một `TallyShift`, định danh bằng `tallyShiftId`; đây là dòng tổng hợp tác nghiệp, không phải một lượt xe hay một phiếu cân. Ngày lấy từ `shiftDate`, ca lấy qua `shiftId` → `Shift.shiftCode`, số lượng từ `quantityTotalSum`, trọng lượng từ `weightNetSum`, giữ nguyên đơn vị nguồn. Phạm vi chỉ gồm dòng chưa xóa, chuyến tàu vật lý hợp lệ, hướng xếp/dỡ và phương án thuộc nhóm `SANLUONG-QUACANG`. Không cộng thêm bảng nguồn lực vào sản lượng vì một tác nghiệp có thể có nhiều nguồn lực.
+
+Chi tiết nhận `operation_filter=all|with_values|missing_weight`, mặc định API là `all`. Giao diện chủ động chọn `with_values`: số lượng **hoặc** trọng lượng nguồn có giá trị khác 0, bao gồm điều chỉnh âm và đơn vị ngoài tấn. `missing_weight` lấy trọng lượng nguồn `NULL`; dòng có số lượng khác 0 nhưng thiếu trọng lượng có thể thuộc cả hai bộ lọc. Lọc bảng trước khi phân trang, sau khi tổng hợp toàn bộ dòng đủ điều kiện; bộ lọc không đổi `header`, `summary`, `cargo`, `daily` hoặc `native_units`. `operations.total` là số dòng sau lọc; `total_all` và `counts.all` là tổng dòng nguồn, bằng `summary.record_count`; `counts` chứa số dòng của từng bộ lọc. Khi không có dòng khớp bộ lọc, trang 1 vẫn trả 200 với `rows=[]`, `total_pages=0`; trang vượt phạm vi trả 422.
+
+Không tự chuyển trọng lượng thiếu thành 0 hoặc ước tính từ số container. Cờ `isChecked` không được dùng làm điều kiện sản lượng: cần xác nhận quy trình duyệt tại nguồn trước khi thêm quy tắc này. API vẫn cung cấp trạng thái độ đầy đủ của số liệu trong metadata.
 
 Theo yêu cầu giao diện hiện tại, các lưu ý rải dưới KPI và khung cảnh báo vàng được ẩn. Định nghĩa và metadata vẫn có trong mục nguồn dữ liệu thu gọn/API/CSV; cách tính và phân biệt NULL với 0 không thay đổi. Ngày rời chưa ghi nhận không được suy thành trạng thái tàu đang ở cảng.
 

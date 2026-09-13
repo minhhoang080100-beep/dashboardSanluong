@@ -34,7 +34,7 @@ function Kpi({ title, value, unit, trend, status, icon: Icon, accent, digits = 3
 function NativeUnits({ rows }) {
   if (!rows?.length) return null;
   return <section className="panel native-units-panel" aria-labelledby="native-units-title">
-    <div className="panel-heading"><div><span className="section-kicker">GIỮ RIÊNG ĐƠN VỊ NGUỒN</span><h2 id="native-units-title">Sản lượng chưa cộng vào tấn</h2><p>Các đơn vị dưới đây được trình bày riêng, không cộng với nhau hoặc với chỉ tiêu tấn.</p></div><Package size={22} className="heading-icon" aria-hidden="true" /></div>
+    <div className="panel-heading"><div><h2 id="native-units-title">Sản lượng chưa cộng vào tấn</h2><p>Các đơn vị dưới đây được trình bày riêng, không cộng với nhau hoặc với chỉ tiêu tấn.</p></div><Package size={22} className="heading-icon" aria-hidden="true" /></div>
     <div className="table-scroll"><table className="native-units-table"><caption className="sr-only">Số liệu ngoài chỉ tiêu tấn theo xí nghiệp và đơn vị gốc</caption><thead><tr><th scope="col">Xí nghiệp</th><th scope="col">Đơn vị nguồn</th><th scope="col">Sản lượng ghi nhận</th><th scope="col">Số bản ghi</th></tr></thead><tbody>{rows.map((row, index) => <tr key={`${row.terminal_id}-${row.unit_code}-${index}`}><th scope="row">{row.terminal_name}</th><td>{row.unit_name || 'Chưa xác định'}{row.unit_code && <small className="native-unit-code">{row.unit_code}</small>}</td><td>{formatNumber(row.value)}</td><td>{formatNumber(row.record_count, 0)}</td></tr>)}</tbody></table></div>
   </section>;
 }
@@ -60,7 +60,7 @@ function Breakdown({ title, subtitle, rows, total, hasSignedInput, icon: Icon })
 function Terminals({ rows, total, hasSignedInput }) {
   const ratios = ratioAvailability(rows.map((row) => row.tonnage), total, hasSignedInput);
   return <article className="panel terminal-panel">
-    <div className="panel-heading"><div><h3><MapPin size={17} aria-hidden="true" />Đóng góp xí nghiệp</h3><p>Tỷ trọng theo sản lượng qua cảng</p></div></div>
+    <div className="panel-heading"><div><h3><MapPin size={17} aria-hidden="true" />Sản lượng theo xí nghiệp</h3><p>Tỷ trọng theo sản lượng qua cảng</p></div></div>
     {!rows.length ? <EmptyPanel /> : <div className="terminal-list">{rows.map((row, index) => {
       const share = ratios.available ? row.tonnage / total * 100 : null;
       return <div className="terminal-item" key={row.name}>
@@ -76,7 +76,7 @@ function Terminals({ rows, total, hasSignedInput }) {
 function Customers({ rows, total, hasSignedInput }) {
   const ratios = ratioAvailability(rows.map((row) => row.volume), total, hasSignedInput);
   return <section className="panel customer-panel" id="customers" aria-labelledby="customers-title">
-    <div className="panel-heading"><div><span className="section-kicker">KHÁCH HÀNG</span><h2 id="customers-title">Khách hàng dẫn đầu</h2><p>Xếp hạng theo tấn trong kỳ báo cáo</p></div><Users size={22} className="heading-icon" aria-hidden="true" /></div>
+    <div className="panel-heading"><div><h2 id="customers-title">Sản lượng theo khách hàng</h2><p>Xếp hạng theo tấn trong kỳ báo cáo</p></div><Users size={22} className="heading-icon" aria-hidden="true" /></div>
     {!rows.length ? <EmptyPanel /> : <div className="table-scroll"><table className="customer-table">
       <caption className="sr-only">Khách hàng có sản lượng qua cảng lớn nhất trong phạm vi đã chọn</caption>
       <thead><tr><th scope="col">Hạng</th><th scope="col">Khách hàng</th><th scope="col">Sản lượng <span>(tấn)</span></th><th scope="col">Tỷ trọng toàn kỳ</th></tr></thead>
@@ -105,7 +105,7 @@ function DataQuality({ meta }) {
       if (!coverage) return null;
       return <div key={key}><dt>{label}</dt><dd>{formatNumber(coverage.known_rows, 0)} bản ghi đủ giá trị / {formatNumber(key === 'teu' ? coverage.container_rows : coverage.eligible_rows, 0)} bản ghi thuộc phạm vi{coverage.excluded_native_rows > 0 ? `; ${formatNumber(coverage.excluded_native_rows, 0)} bản ghi đơn vị khác` : ''}</dd></div>;
     })}</dl></div>}
-    {meta.warnings.length > 0 && <div className="quality-warnings"><h3><CircleAlert size={16} aria-hidden="true" />Lưu ý khi ra quyết định</h3><ul>{meta.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></div>}
+    {meta.warnings.length > 0 && <div className="quality-warnings"><h3><CircleAlert size={16} aria-hidden="true" />Lưu ý về dữ liệu</h3><ul>{meta.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></div>}
     <div className="readiness-grid">
       <article><Clock3 size={19} aria-hidden="true" /><div><h3>Hiệu suất khai thác</h3><span className="unavailable-tag">Chưa đủ cơ sở tính</span><p>{meta.unavailable?.efficiency || 'Chưa có dữ liệu được xác nhận để tính thời gian quay vòng tàu và năng suất xếp dỡ.'}</p></div></article>
       <article><Warehouse size={19} aria-hidden="true" /><div><h3>Sức chứa kho bãi</h3><span className="unavailable-tag">Chưa đủ cơ sở tính</span><p>{meta.unavailable?.yard || 'Chưa có dữ liệu tồn kho và sức chứa được xác nhận để tính tỷ lệ lấp đầy.'}</p></div></article>
@@ -190,7 +190,7 @@ function Dashboard() {
 
   return <div className="dashboard">
     <section className="dashboard-intro" id="overview" aria-labelledby="dashboard-title">
-      <div><p className="section-kicker">TỔNG QUAN HOẠT ĐỘNG</p><h1 id="dashboard-title">Bức tranh sản xuất</h1><p className="intro-description">Theo dõi sản lượng, cơ cấu hàng hóa và đóng góp của từng xí nghiệp.</p></div>
+      <h1 id="dashboard-title">Báo cáo sản lượng</h1>
       <button className="button secondary export-button" type="button" onClick={exportCsv} disabled={!data || hasDraft}><Download size={16} aria-hidden="true" />Xuất báo cáo CSV</button>
     </section>
     <section className="filter-panel" aria-label="Bộ lọc báo cáo">
@@ -225,7 +225,7 @@ function Dashboard() {
       </section>
       <div className="comparison-note"><Info size={14} aria-hidden="true" /><span>So sánh với {formatDate(data.meta.previous_period?.start_date)} – {formatDate(data.meta.previous_period?.end_date)}. {data.meta.previous_period?.label}</span></div>
       <section id="production" aria-labelledby="production-title">
-        <div className="section-heading"><div><span className="section-kicker">SẢN LƯỢNG & CƠ CẤU</span><h2 id="production-title">Động lực sản xuất trong kỳ</h2></div><span className="section-meta">{formatNumber(data.overview.record_count)} bản ghi tác nghiệp</span></div>
+        <div className="section-heading"><h2 id="production-title">Phân tích sản lượng</h2><span className="section-meta">{formatNumber(data.overview.record_count)} bản ghi tác nghiệp</span></div>
         <div className="production-grid"><Suspense fallback={<div className="panel empty-panel" role="status">Đang tải biểu đồ…</div>}><History key={filterKey} monthlyRows={data.history} dailyRows={data.daily_history} hasRecords={data.overview.record_count > 0} /></Suspense><Terminals rows={data.terminals} total={data.overview.total_tonnage} hasSignedInput={hasSignedInput} /></div>
         <div className="breakdown-grid"><CargoBreakdown key={filterKey} rows={data.cargo} /><Breakdown title="Cơ cấu hướng hàng" subtitle="Tỷ trọng trên tổng tấn" rows={data.directions} total={data.overview.total_tonnage} hasSignedInput={hasSignedInput} icon={Ship} /></div>
       </section>
@@ -233,7 +233,7 @@ function Dashboard() {
       <NativeUnits rows={data.native_units} />
       <Customers rows={data.customers} total={data.overview.total_tonnage} hasSignedInput={hasSignedInput} />
       <DataQuality meta={data.meta} />
-      <footer className="dashboard-footer"><span>CẢNG NGHỆ TĨNH <span aria-hidden="true">/</span> Báo cáo quản trị sản xuất</span><span>{TERMINALS[filters.terminal]} · {formatDate(filters.end_date)}</span></footer>
+      <footer className="dashboard-footer"><span>CẢNG NGHỆ TĨNH <span aria-hidden="true">/</span> Báo cáo sản lượng</span><span>{TERMINALS[filters.terminal]} · {formatDate(filters.end_date)}</span></footer>
     </>}
   </div>;
 }

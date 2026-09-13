@@ -9,13 +9,15 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 import logging
+from time import perf_counter
 
 if __package__:
-    from .database import DatabaseQueryError, DatabaseUnavailable, get_db_connection
+    from .database import DatabaseQueryError, DatabaseUnavailable, get_db_connection, log_database_failure
 else:
-    from database import DatabaseQueryError, DatabaseUnavailable, get_db_connection
+    from database import DatabaseQueryError, DatabaseUnavailable, get_db_connection, log_database_failure
 
 logger = logging.getLogger(__name__)
+MAX_QUERY_ROWS = 250_000
 VIETNAM = timezone(timedelta(hours=7))
 TERMINALS = {
     "cua_lo": ("SmartTOS.dbo", "Cửa Lò"),
@@ -39,6 +41,38 @@ def _timestamp(value):
             return None
         return datetime.combine(value, datetime.min.time()).isoformat()
     return str(value)
+
+
+def _voyage_calendar_day(value):
+    """SQL naive timestamps are Vietnam local; offset timestamps need conversion."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if isinstance(value, date) and value.year < 1900:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            try:
+                value = value.astimezone(VIETNAM)
+            except (ValueError, OverflowError):
+                return None
+        value = value.date()
+    return value if isinstance(value, date) and value.year >= 1900 else None
+
+
+def _voyage_daily_history(daily, header, start: date, end: date):
+    """Trim calendar padding to this call, retaining every recorded operation day."""
+    first_operation = _voyage_calendar_day(header.get("first_operation_date")) or start
+    last_operation = _voyage_calendar_day(header.get("last_operation_date")) or end
+    arrival = _voyage_calendar_day(header.get("arrival_at")) or first_operation
+    departure = _voyage_calendar_day(header.get("departure_at")) or end
+    # Do not hide genuine source records if arrival/departure metadata disagrees
+    # with operation dates. Only empty calendar padding is removed.
+    first_day = max(start, min(arrival, first_operation)).isoformat()
+    last_day = min(end, max(departure, last_operation)).isoformat()
+    return [row for row in daily if first_day <= row["date"] <= last_day]
 
 
 def vietnam_today() -> date:
@@ -162,9 +196,13 @@ class DashboardRepository:
             # Also protects integrations still returning None from the old API.
             raise DatabaseUnavailable()
         cursor = None
+        started_at = perf_counter()
+        phase = "cursor"
         try:
             cursor = connection.cursor()
+            phase = "execute"
             cursor.execute(query, params)
+            phase = "fetch"
             columns = [column[0] for column in cursor.description]
             rows = []
             while True:
@@ -173,12 +211,15 @@ class DashboardRepository:
                     return rows
                 rows.extend(dict(zip(columns, row)) for row in batch)
                 # Fail visibly instead of exhausting the API process memory.
-                if len(rows) > 250_000:
+                if len(rows) > MAX_QUERY_ROWS:
+                    phase = "row_limit"
                     raise DatabaseQueryError()
-        except DatabaseUnavailable:
+        except DatabaseUnavailable as exc:
+            if phase == "row_limit":
+                log_database_failure(exc, phase=phase, started_at=started_at, log=logger)
             raise
-        except Exception:
-            logger.error("Dashboard SQL query failed; no substitute values were returned.")
+        except Exception as exc:
+            log_database_failure(exc, phase=phase, started_at=started_at, log=logger)
             raise DatabaseQueryError() from None
         finally:
             if cursor is not None:
@@ -479,6 +520,7 @@ class DashboardRepository:
         schema, name = TERMINALS[terminal]
         query = f"""SELECT 'fact' AS kind, CAST(t.tallyShiftId AS nvarchar(128)) AS id,
             t.tallyShiftCode AS operation_code, CAST(t.shiftDate AS date) AS operation_day,
+            CAST(t.shiftId AS nvarchar(128)) AS shift_id, sh.shiftCode AS shift_code,
             '{terminal}' AS terminal_id, N'{name}' AS terminal_name,
             CAST(t.vesselVoyageId AS nvarchar(128)) AS vessel_id,
             s.vesselName AS vessel_name, v.vesselVoyageCode AS voyage_code,
@@ -502,13 +544,14 @@ class DashboardRepository:
             CASE WHEN t.weightNetSum < 0 OR t.quantityTotalSum < 0 THEN 1 ELSE 0 END AS negative_value_count
             {self._source_joins(schema)}
             LEFT JOIN {schema}.BaseUnit qu ON t.quantityUnitId = qu.baseUnitId
+            LEFT JOIN {schema}.Shift sh ON t.shiftId = sh.shiftId
             WHERE t.shiftDate >= ? AND t.shiftDate < ? AND t.vesselVoyageId = ?
               AND {self.throughput_filter.format(schema=schema)} AND {self.row_active_filter}
               AND {self.physical_voyage_filter}
             ORDER BY t.shiftDate DESC, t.tallyShiftId DESC"""
         return query, (start, end + timedelta(days=1), voyage_id)
 
-    def get_voyage_detail(self, terminal: str, voyage_id: int, start_date=None, end_date=None, page=1, page_size=25):
+    def get_voyage_detail(self, terminal: str, voyage_id: int, start_date=None, end_date=None, page=1, page_size=25, operation_filter="all"):
         if terminal not in TERMINALS:
             raise ValueError("Chọn một xí nghiệp hợp lệ để xem chuyến tàu.")
         if isinstance(voyage_id, bool) or not isinstance(voyage_id, int) or not 1 <= voyage_id <= 2147483647:
@@ -517,6 +560,8 @@ class DashboardRepository:
             raise ValueError("Số trang phải là số nguyên dương.")
         if isinstance(page_size, bool) or not isinstance(page_size, int) or not 1 <= page_size <= 100:
             raise ValueError("Mỗi trang từ 1 đến 100 phiếu.")
+        if not isinstance(operation_filter, str) or operation_filter not in {"all", "with_values", "missing_weight"}:
+            raise ValueError("Bộ lọc phiếu tác nghiệp không hợp lệ.")
         start, end = date_range(start_date, end_date, terminal)
         # Summary, charts and the requested page share this one read. Pagination
         # is applied to the bounded voyage set after aggregation, so same-count
@@ -527,17 +572,30 @@ class DashboardRepository:
         header = next((row for row in dashboard["voyages"] if row["terminal_id"] == terminal and row["voyage_id"] == str(voyage_id)), None)
         if header is None:
             raise VoyageNotFound("Không có chuyến tàu hợp lệ phát sinh sản lượng trong phạm vi đã chọn.")
-        total = header["record_count"]
+        # Filter only the table, after every total has been computed from the
+        # complete source set. Native nonzero values include corrections and
+        # nonmass units; approval flags and converted tonnes/TEU are not filters.
+        with_values = [row for row in raw_operations if any(
+            value is not None and _decimal(value) != 0
+            for value in (row.get("native_weight"), row.get("quantity"))
+        )]
+        missing_weight = [row for row in raw_operations if row.get("native_weight") is None]
+        groups = {"all": raw_operations, "with_values": with_values, "missing_weight": missing_weight}
+        counts = {name: len(rows) for name, rows in groups.items()}
+        selected_operations = groups[operation_filter]
+        total = len(selected_operations)
         total_pages = (total + page_size - 1) // page_size
-        if page > total_pages:
+        if page > max(1, total_pages):
             raise ValueError("Trang phiếu tác nghiệp nằm ngoài phạm vi.")
         operations = []
         offset = (page - 1) * page_size
-        for row in raw_operations[offset:offset + page_size]:
+        for row in selected_operations[offset:offset + page_size]:
             values = _panel_values(_aggregate([row]))
             operation_day = row["operation_day"]
             operations.append({
                 "id": str(row["id"]), "operation_code": row.get("operation_code"),
+                "shift_id": str(row["shift_id"]) if row.get("shift_id") is not None else None,
+                "shift_code": row.get("shift_code"),
                 "operation_date": operation_day.isoformat()[:10] if isinstance(operation_day, (date, datetime)) else str(operation_day)[:10],
                 "job_method": row.get("job_method"), "job_method_code": row.get("job_method_code"),
                 "cargo_name": row["cargo_name"],
@@ -551,9 +609,11 @@ class DashboardRepository:
             })
         summary = {key: header[key] for key in ("tonnage", "teu", "record_count", "tonnage_status", "teu_status")}
         return {"header": header, "summary": summary, "cargo": dashboard["cargo"],
-                "daily": dashboard["daily_history"], "native_units": dashboard["native_units"],
-                "operations": {"page": page, "page_size": page_size, "total": total, "total_pages": total_pages, "rows": operations},
-                "meta": {"filters": {"terminal": terminal, "voyage_id": str(voyage_id), "start_date": start.isoformat(), "end_date": end.isoformat(), "timezone": "Asia/Ho_Chi_Minh"},
+                "daily": _voyage_daily_history(dashboard["daily_history"], header, start, end),
+                "native_units": dashboard["native_units"],
+                "operations": {"page": page, "page_size": page_size, "total": total, "total_pages": total_pages, "rows": operations,
+                               "filter": operation_filter, "total_all": counts["all"], "counts": counts},
+                "meta": {"filters": {"terminal": terminal, "voyage_id": str(voyage_id), "start_date": start.isoformat(), "end_date": end.isoformat(), "timezone": "Asia/Ho_Chi_Minh", "operation_filter": operation_filter},
                          "generated_at": dashboard["meta"]["generated_at"], "metric_coverage": dashboard["meta"]["metric_coverage"],
                          "operations_order": "shiftDate DESC, tallyShiftId DESC",
                          "read_consistency": "single_fact_set"}}

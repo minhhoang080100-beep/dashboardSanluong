@@ -16,9 +16,10 @@ function VoyageDialog({ selected, filters, apiBase, onClose, trigger }) {
   const operationHeading = useRef(null);
   const pendingPageFocus = useRef(false);
   const [page, setPage] = useState(1);
+  const [operationFilter, setOperationFilter] = useState('with_values');
   const [reload, setReload] = useState(0);
   const [resource, setResource] = useState({ key: '', status: 'loading', data: null, error: '' });
-  const requestKey = `${selected.terminal_id}/${selected.voyage_id}/${filters.start_date}/${filters.end_date}/${page}`;
+  const requestKey = `${selected.terminal_id}/${selected.voyage_id}/${filters.start_date}/${filters.end_date}/${operationFilter}/${page}`;
   const loading = resource.key !== requestKey || resource.status === 'loading';
   const data = !loading && resource.status === 'success' ? resource.data : null;
   const error = !loading && resource.status === 'error' ? resource.error : '';
@@ -41,7 +42,7 @@ function VoyageDialog({ selected, filters, apiBase, onClose, trigger }) {
     let timedOut = false;
     setResource({ key: requestKey, status: 'loading', data: null, error: '' });
     const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 45000);
-    fetchVoyageDetail(selected, filters, page, { signal: controller.signal, baseUrl: apiBase })
+    fetchVoyageDetail(selected, filters, page, { signal: controller.signal, baseUrl: apiBase, operationFilter })
       .then((result) => { if (active) setResource({ key: requestKey, status: 'success', data: result, error: '' }); })
       .catch((failure) => {
         if (!active || (controller.signal.aborted && !timedOut)) return;
@@ -49,7 +50,7 @@ function VoyageDialog({ selected, filters, apiBase, onClose, trigger }) {
         setResource({ key: requestKey, status: 'error', data: null, error: message });
       }).finally(() => clearTimeout(timeout));
     return () => { active = false; clearTimeout(timeout); controller.abort(); };
-  }, [selected, filters, page, reload, requestKey, apiBase]);
+  }, [selected, filters, page, reload, requestKey, apiBase, operationFilter]);
 
   useEffect(() => {
     if (data && pendingPageFocus.current) {
@@ -63,6 +64,12 @@ function VoyageDialog({ selected, filters, apiBase, onClose, trigger }) {
     setPage((value) => value + delta);
   }
 
+  function changeOperationFilter(event) {
+    pendingPageFocus.current = true;
+    setOperationFilter(event.target.value);
+    setPage(1);
+  }
+
   return <dialog ref={dialog} className="voyage-dialog" aria-label="Chi tiết chuyến tàu" onCancel={(event) => { event.preventDefault(); onClose(); }}>
     <header className="voyage-dialog-header"><div><span className="section-kicker">CHI TIẾT CHUYẾN TÀU</span><h2>{selected.vessel_name || 'Chưa có tên tàu'}</h2><p>{selected.voyage_code || selected.voyage_id} · {selected.terminal_name}</p></div><button type="button" className="button icon-button" aria-label="Đóng chi tiết chuyến tàu" onClick={onClose} autoFocus><X size={20} aria-hidden="true" /></button></header>
     <div className="voyage-dialog-body">
@@ -73,12 +80,20 @@ function VoyageDialog({ selected, filters, apiBase, onClose, trigger }) {
       </div>
       {data && <>
         <dl className="voyage-metadata"><div><dt>Tàu</dt><dd>{data.header.vessel_name || 'Chưa có tên tàu'}</dd></div><div><dt>Mã chuyến</dt><dd>{data.header.voyage_code || data.header.voyage_id}</dd></div><div><dt>Ngày làm hàng trong kỳ</dt><dd>{dateRange(data.header.first_operation_date, data.header.last_operation_date)}</dd></div><div><dt>Đến cảng thực tế</dt><dd>{timestamp(data.header.arrival_at)}</dd></div><div><dt>Rời cảng thực tế</dt><dd>{timestamp(data.header.departure_at)}</dd></div><div><dt>Xí nghiệp</dt><dd>{data.header.terminal_name}</dd></div></dl>
-        <div className="voyage-summary"><div><span>Sản lượng qua cảng</span><strong>{formatNumber(data.summary.tonnage)} <small>tấn</small></strong></div><div><span>Container</span><strong>{formatNumber(data.summary.teu)} <small>TEU</small></strong></div><div><span>Phiếu tác nghiệp</span><strong>{formatNumber(data.summary.record_count, 0)}</strong></div></div>
+        <div className="voyage-summary"><div><span>Sản lượng qua cảng</span><strong>{formatNumber(data.summary.tonnage)} <small>tấn</small></strong></div><div><span>Container</span><strong>{formatNumber(data.summary.teu)} <small>TEU</small></strong></div><div><span>Dòng có phát sinh</span><strong>{formatNumber(data.operations.counts.with_values, 0)}</strong><small className="voyage-source-count">{formatNumber(data.operations.total_all, 0)} dòng nguồn</small></div></div>
         <div className="voyage-breakdowns"><ProductionTable rows={data.cargo} label="Nhóm hàng" heading="Cơ cấu hàng hóa" /><ProductionTable rows={data.daily} label="Ngày" heading="Sản lượng theo ngày" date /></div>
         {data.native_units.length > 0 && <article className="voyage-native"><h3>Đơn vị nguồn khác</h3><div className="table-scroll"><table><thead><tr><th scope="col">Đơn vị</th><th scope="col">Sản lượng theo đơn vị nguồn</th></tr></thead><tbody>{data.native_units.map((row, index) => <tr key={index}><th scope="row">{row.unit_name} ({row.unit_code})</th><td>{formatNumber(row.value)}</td></tr>)}</tbody></table></div></article>}
-        <section className="voyage-operations" aria-labelledby="voyage-operations-title"><div className="voyage-section-heading"><h3 id="voyage-operations-title" ref={operationHeading} tabIndex={-1}>Phiếu tác nghiệp trong kỳ</h3><span>{formatNumber(data.operations.total, 0)} phiếu</span></div>
-          <div className="table-scroll"><table className="operations-table"><caption className="sr-only">Danh sách phiếu tác nghiệp của chuyến tàu trong kỳ đang chọn</caption><thead><tr><th scope="col">Phiếu / ngày</th><th scope="col">Hàng hóa / phương án</th><th scope="col">Hướng hàng</th><th scope="col">Số lượng nguồn</th><th scope="col">Trọng lượng nguồn</th><th scope="col">Tấn</th><th scope="col">TEU</th></tr></thead><tbody>{data.operations.rows.map((row) => <tr key={row.id}><th scope="row">{row.operation_code || row.id}<small>{formatDate(row.operation_date)}</small></th><td>{row.cargo_name || '—'}<small>{row.job_method || '—'}</small></td><td>{row.direction || '—'}</td><td>{formatNumber(row.quantity)}<small>{row.quantity_unit_name || row.quantity_unit || '—'}</small></td><td>{formatNumber(row.weight)}<small>{row.weight_unit_name || row.weight_unit || '—'}</small></td><td>{formatNumber(row.tonnage)}</td><td>{formatNumber(row.teu)}</td></tr>)}</tbody></table></div>
-          <div className="voyage-pagination"><span>Trang {data.operations.page}/{Math.max(1, data.operations.total_pages)}</span><div><button className="button" type="button" aria-label="Trang phiếu trước" disabled={data.operations.page <= 1} onClick={() => changePage(-1)}><ArrowLeft size={15} aria-hidden="true" />Trước</button><button className="button" type="button" aria-label="Trang phiếu sau" disabled={data.operations.page >= data.operations.total_pages} onClick={() => changePage(1)}>Sau<ArrowRight size={15} aria-hidden="true" /></button></div></div>
+        <section className="voyage-operations" aria-labelledby="voyage-operations-title">
+          <div className="voyage-section-heading"><h3 id="voyage-operations-title" ref={operationHeading} tabIndex={-1}>Tác nghiệp qua cảng trong kỳ</h3><span>{formatNumber(data.operations.total, 0)}/{formatNumber(data.operations.total_all, 0)} dòng</span></div>
+          <label className="operation-filter"><span>Hiển thị tác nghiệp</span><select value={operationFilter} onChange={changeOperationFilter}>
+            <option value="with_values">Có phát sinh ({formatNumber(data.operations.counts.with_values, 0)})</option>
+            <option value="all">Tất cả ({formatNumber(data.operations.counts.all, 0)})</option>
+            <option value="missing_weight">Thiếu trọng lượng ({formatNumber(data.operations.counts.missing_weight, 0)})</option>
+          </select></label>
+          {data.operations.rows.length > 0 ? <>
+            <div className="table-scroll"><table className="operations-table"><caption className="sr-only">Danh sách dòng tác nghiệp của chuyến tàu theo bộ lọc đang chọn</caption><thead><tr><th scope="col">Mã tác nghiệp / ngày</th><th scope="col">Hàng hóa / phương án</th><th scope="col">Hướng hàng</th><th scope="col">Số lượng nguồn</th><th scope="col">Trọng lượng nguồn</th><th scope="col">Tấn</th><th scope="col">TEU</th></tr></thead><tbody>{data.operations.rows.map((row) => <tr key={row.id}><th scope="row">{row.operation_code || row.id}<small>{formatDate(row.operation_date)}</small>{row.shift_code && <small>Ca {row.shift_code}</small>}</th><td>{row.cargo_name || '—'}<small>{row.job_method || '—'}</small></td><td>{row.direction || '—'}</td><td>{formatNumber(row.quantity)}<small>{row.quantity_unit_name || row.quantity_unit || '—'}</small></td><td>{formatNumber(row.weight)}<small>{row.weight_unit_name || row.weight_unit || '—'}</small></td><td>{formatNumber(row.tonnage)}</td><td>{formatNumber(row.teu)}</td></tr>)}</tbody></table></div>
+            <div className="voyage-pagination"><span>Trang {data.operations.page}/{data.operations.total_pages}</span><div><button className="button" type="button" aria-label="Trang phiếu trước" disabled={data.operations.page <= 1} onClick={() => changePage(-1)}><ArrowLeft size={15} aria-hidden="true" />Trước</button><button className="button" type="button" aria-label="Trang phiếu sau" disabled={data.operations.page >= data.operations.total_pages} onClick={() => changePage(1)}>Sau<ArrowRight size={15} aria-hidden="true" /></button></div></div>
+          </> : <div className="operation-empty" role="status">{operationFilter === 'with_values' ? 'Không có dòng tác nghiệp có phát sinh trong kỳ đã chọn.' : operationFilter === 'missing_weight' ? 'Không có dòng tác nghiệp thiếu trọng lượng trong kỳ đã chọn.' : 'Không có dòng tác nghiệp trong kỳ đã chọn.'}</div>}
         </section>
         <p className="voyage-detail-generated">Tổng hợp: {formatTimestamp(data.meta.generated_at)} · Giờ Việt Nam</p>
       </>}
@@ -94,7 +109,7 @@ export default function Voyages({ rows, count, filters, apiBase, onRetry }) {
   const listError = voyageListError(rows, count, filters);
   const results = listError ? null : paginateVoyages(filterVoyages(rows, query), page);
   return <section className="panel voyages-panel" id="voyages" aria-labelledby="voyages-title">
-    <div className="panel-heading"><div><span className="section-kicker">KHAI THÁC THEO CHUYẾN</span><h2 id="voyages-title">Chuyến tàu trong kỳ</h2><p>{formatNumber(count, 0)} chuyến · {formatDate(filters.start_date)} – {formatDate(filters.end_date)}</p></div><Ship size={22} className="heading-icon" aria-hidden="true" /></div>
+    <div className="panel-heading"><div><h2 id="voyages-title">Chuyến tàu trong kỳ</h2><p>{formatNumber(count, 0)} chuyến · {formatDate(filters.start_date)} – {formatDate(filters.end_date)}</p></div><Ship size={22} className="heading-icon" aria-hidden="true" /></div>
     {listError ? <div className="voyage-detail-error" role="alert"><p>{listError}</p><button type="button" className="button primary" onClick={onRetry} disabled={!onRetry}><RefreshCw size={15} aria-hidden="true" />Tải lại danh sách chuyến</button></div> : <>
     <div className="voyage-list-tools"><label className="voyage-search"><Search size={16} aria-hidden="true" /><span className="sr-only">Tìm tàu hoặc mã chuyến</span><input type="search" value={query} placeholder="Tìm tàu hoặc mã chuyến…" onChange={(event) => { setQuery(event.target.value); setPage(1); }} /></label><span role="status">{formatNumber(results.total, 0)}/{formatNumber(count, 0)} chuyến</span></div>
     {results.items.length > 0 ? <>

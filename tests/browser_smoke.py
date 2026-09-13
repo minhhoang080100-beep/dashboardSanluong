@@ -89,7 +89,7 @@ def main():
         page.on("pageerror", lambda exc: errors.append(str(exc)))
         page.route("**/api/dashboard?*", respond)
         page.goto(args.url)
-        expect(page.get_by_role("heading", name="Bức tranh sản xuất")).to_be_visible()
+        expect(page.get_by_role("heading", name="Báo cáo sản lượng", exact=True)).to_be_visible()
         expect(page.locator(".kpi-card")).to_have_count(3)
         expect(page.locator(".kpi-value").first).to_contain_text("3.000,125")
         expect(page.get_by_text("Hai xí nghiệp. Một góc nhìn.", exact=True)).to_have_count(0)

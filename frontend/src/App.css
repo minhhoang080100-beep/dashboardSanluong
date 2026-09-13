@@ -10,7 +10,6 @@
 .main-content { margin-left: 230px; min-width: 0; }
 .top-header { height: 65px; display: flex; align-items: center; justify-content: space-between; padding: 0 36px; background: #fff; border-bottom: 1px solid var(--border-color); font-size: 12px; gap: 16px; }
 .breadcrumb-root { color: var(--text-muted); margin-right: 6px; }
-.header-tag { border-left: 1px solid var(--border-color); padding-left: 22px; color: var(--text-muted); }
 .skip-link { position: fixed; top: -80px; left: 250px; z-index: 100; padding: 14px 20px; background: white; border: 2px solid var(--primary-color); border-radius: 6px; }
 .skip-link:focus { top: 10px; }
 @media (max-width: 1100px) {
@@ -28,7 +27,6 @@
   .nav-item svg { width: 16px; }
   .main-content { margin-left: 0; }
   .top-header { height: 48px; padding: 0 20px; font-size: 11px; }
-  .header-tag { border: 0; padding: 0; }
   .skip-link { left: 12px; }
 }
 @media print {
