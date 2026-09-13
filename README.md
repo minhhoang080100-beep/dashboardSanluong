@@ -2,7 +2,7 @@
 
 Ứng dụng React/Vite và FastAPI đọc SQL Server `SmartTOS` / `SmartTOS_BenThuy`, có tài khoản nội bộ và phân quyền theo xí nghiệp. Báo cáo hỗ trợ tra cứu xuống dòng tác nghiệp, kế hoạch tháng/chuyến, đối soát, chốt phiên bản và xuất CSV/Excel.
 
-**Bản nâng cấp 13/09/2026:** đã triển khai các chức năng trên trong mã nguồn và chạy kiểm tra local với SQL thực. KPI tấn chỉ cộng phần khối lượng có cơ sở; giữ riêng đơn vị khác và dữ liệu thiếu. Dữ liệu nguồn TOS chỉ được đọc; tài khoản, kế hoạch và báo cáo chốt lưu trong SQLite riêng. Bản nâng cấp này chưa được triển khai lên Railway/Vercel; cần volume bền vững và quản trị viên đầu tiên theo hướng dẫn triển khai.
+**Bản nâng cấp 13/09/2026:** commit `beeb1f8` đã lên `main`, GitHub Actions thành công và Railway/Vercel đã chạy bản có đăng nhập nội bộ. [Dashboard production](https://dashboard-sanluong.vercel.app) đã được kiểm tra đăng nhập, báo cáo, chi tiết, tìm chuyến và xuất Excel với dữ liệu thật từ hai nguồn SQL. KPI tấn chỉ cộng phần khối lượng có cơ sở; giữ riêng đơn vị khác và dữ liệu thiếu. Dữ liệu nguồn TOS chỉ được đọc; tài khoản, kế hoạch và báo cáo chốt lưu trong SQLite riêng trên volume `/data`. Sao lưu thủ công production và kiểm tra khôi phục đã đạt. Tài khoản, phiên đăng nhập và bản báo cáo còn nguyên sau khởi động lại. Tài khoản bàn giao yêu cầu đổi mật khẩu ở lần đăng nhập đầu; lịch backup tự động chưa bật được do Railway trả về `Not Authorized`.
 
 ## Tài liệu
 
@@ -54,7 +54,7 @@ Mở URL Vite in ra. Frontend gọi `/api` qua proxy phát triển. Nếu API �
 
 ### Railway API và Vercel frontend
 
-Với bản có đăng nhập/kế hoạch, làm theo [hướng dẫn triển khai](docs/DEPLOYMENT.vi.md) để cấu hình volume `/data`, entrypoint và tài khoản quản trị. Healthcheck công khai là `/api/health/live`; `/api/health` kiểm tra SQL và yêu cầu quyền quản trị. Một instance/worker giữ kho SQLite và bộ nhớ bản báo cáo nhất quán.
+Với bản có đăng nhập/kế hoạch, làm theo [hướng dẫn triển khai](docs/DEPLOYMENT.vi.md) để cấu hình volume `/data`, entrypoint và tài khoản quản trị. Production hiện có volume 500 MB, `DASHBOARD_STATE_PATH=/data/control.sqlite3` và `RAILWAY_RUN_UID=0`; entrypoint hạ quyền API xuống UID `10001`. Đặt rõ `PORT=8000` để khớp Docker CMD và Target Port; runtime `PORT=8080` đã gây lỗi healthcheck ở lần triển khai đầu. Healthcheck công khai là `/api/health/live`; `/api/health` kiểm tra SQL và yêu cầu quyền quản trị. Một instance/worker giữ kho SQLite và bộ nhớ bản báo cáo nhất quán.
 
 Railway dùng biến môi trường của service, không tự đọc tệp `.env` trên máy phát triển. Trong **Variables** của service API, đặt `DB_SERVER`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DRIVER` và các lựa chọn TLS theo cấu hình SQL đã được quản trị xác nhận. Lưu thông tin đăng nhập trong Railway Variables, không ghi vào Git hoặc biến frontend. Dockerfile cài ODBC Driver 17; `DB_DRIVER` phải khớp driver này.
 
@@ -161,6 +161,6 @@ Kiểm thử không ghi database nguồn. Browser smoke test dùng dữ liệu f
 
 Dockerfile dùng build context `backend/`, chỉ copy module chạy API và chạy dưới user riêng. Cần cung cấp biến môi trường khi chạy; không đóng gói `.env` vào image. Cài ODBC theo [hướng dẫn chính thức Microsoft](https://learn.microsoft.com/en-us/sql/connect/odbc/linux-mac/installing-the-microsoft-odbc-driver-for-sql-server?view=sql-server-ver17).
 
-Đã build image Docker và kiểm tra container với volume thử riêng: hạ quyền API, đăng nhập/đổi mật khẩu, giữ tài khoản và kế hoạch sau khởi động lại, sao lưu online và kiểm tra khôi phục. Bản nâng cấp chưa phát hành lên cloud; phiên Railway CLI hiện chưa đăng nhập. Volume/sao lưu production và đối soát theo chứng từ cần được xác nhận tại môi trường triển khai. Xem [hướng dẫn triển khai](docs/DEPLOYMENT.vi.md).
+Đã build image Docker và kiểm tra container với volume thử riêng: hạ quyền API, đăng nhập/đổi mật khẩu, giữ tài khoản và kế hoạch sau khởi động lại, sao lưu online và kiểm tra khôi phục. Commit `beeb1f8` đã triển khai lên Railway/Vercel; API production chạy dưới UID `10001` và health có xác thực đã kết nối được cả hai nguồn SQL. Quản trị viên đầu tiên được khởi tạo trên database mới riêng, sao lưu online rồi tải vào volume đã xác nhận trống trước khi deploy. Bản sao thủ công từ volume production đã được kiểm tra khôi phục trên database tạm ở container/local với dấu vết nội dung khớp. Sau khởi động lại production, phiên đăng nhập vẫn hợp lệ và bản báo cáo cũ được phục hồi từ ổ đĩa mà không truy vấn lại SQL. Yêu cầu bật lịch backup volume trả `Not Authorized`, chưa xác định nguyên nhân. Xem [hướng dẫn triển khai](docs/DEPLOYMENT.vi.md).
 
 Workflow `.github/workflows/verify.yml` chạy kiểm thử backend, frontend, trình duyệt bằng dữ liệu tổng hợp và kiểm tra Docker khi push/PR. Có thể kiểm tra container local bằng `.\.venv-audit\Scripts\python.exe -B tests/container_smoke.py --image dashboard-sanluong:local-review` sau khi build image tương ứng.
