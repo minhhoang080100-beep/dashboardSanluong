@@ -24,6 +24,13 @@ def install_navigation_fixture(page, role="admin"):
             data["meta"]["source_read_at"] = data["meta"]["generated_at"]
             state["reports"].append({"filters": filters, "report_id": data["meta"]["report_id"]})
             route.fulfill(json=data)
+        elif path.endswith("/throughput-progress"):
+            report = next(item for item in state["reports"] if item["report_id"] == path.split("/")[2])
+            filters = report["filters"]
+            route.fulfill(json={"report_id": report["report_id"], "period": filters,
+                                "production_scope": filters["production_scope"], "berth_rule_version": "initial-berth-v1",
+                                "eligible": filters["production_scope"] == "nghe_tinh", "items": [], "available_periods": [],
+                                "reason": "Chưa có kế hoạch được duyệt khớp kỳ và phạm vi báo cáo."})
         elif path.endswith("/plan-progress"):
             route.fulfill(json={"eligible": True, "reason": None, "rows": []})
         elif path == "/admin/metrics":
@@ -82,6 +89,8 @@ def main():
         expect(page.locator(".kpi-value").first).to_contain_text("2.000")
         selected = dict(state["reports"][-1])
         report_count = len(state["reports"])
+        progress_path = f"/reports/{selected['report_id']}/throughput-progress"
+        progress_reads = state["requests"].count(progress_path)
         page.screenshot(path=str(output / "browser-navigation-reports.png"), full_page=True)
         go_view(page, "management")
         expect(page.locator("#management-content")).to_be_visible()
@@ -91,7 +100,16 @@ def main():
         expect(page.get_by_label("Đến ngày", exact=True)).to_have_value("2026-08-31")
         expect(page.get_by_label("Phạm vi xí nghiệp")).to_have_value("ben_thuy")
         expect(page.get_by_text("Chưa có kế hoạch trong kỳ và phạm vi đã chọn.", exact=True)).to_be_visible()
-        assert f"/reports/{selected['report_id']}/plan-progress" in state["requests"]
+        expect(page.locator("#management-content .throughput-progress")).to_contain_text("Chưa có kế hoạch được duyệt")
+        assert state["requests"].count(progress_path) > progress_reads
+        monthly_path = f"/reports/{selected['report_id']}/plan-progress"
+        assert monthly_path not in state["requests"], "secondary monthly comparison should load only when opened"
+        monthly = page.locator("#management-content .management-secondary-progress")
+        with page.expect_response(lambda response: urlparse(response.url).path.removeprefix("/api") == monthly_path):
+            monthly.locator("summary").click()
+        expect(monthly.get_by_role("heading", name="Thực hiện so với kế hoạch tháng", exact=True)).to_be_visible()
+        assert monthly_path in state["requests"]
+        monthly.locator("summary").click()
         assert len(state["reports"]) == report_count
         page.screenshot(path=str(output / "browser-navigation-management.png"), full_page=True)
         go_view(page, "admin")
