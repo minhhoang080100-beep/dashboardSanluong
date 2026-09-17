@@ -1,6 +1,11 @@
 import { todayInVietnam } from './dashboard-data.js';
 
 export const AUTO_REFRESH_MS = 120000;
+export function reportRequestRefresh(request, filterKey, handledRevision) {
+  // A refresh action belongs to one selection and is consumed when it starts.
+  // Returning to that selection later must use its cached report normally.
+  return request.revision !== handledRevision && request.filterKey === filterKey && request.forceRefresh === true;
+}
 export function currentReportPeriod(filters, today = todayInVietnam()) {
   return Boolean(filters?.start_date && filters.start_date <= today && filters.end_date === today);
 }

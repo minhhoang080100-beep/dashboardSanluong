@@ -10,10 +10,15 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.utils import get_column_letter
 
+if __package__:
+    from .control_store import ControlError, ControlStore, PRODUCTION_SCOPE_LABELS, production_scope_context
+else:
+    from control_store import ControlError, ControlStore, PRODUCTION_SCOPE_LABELS, production_scope_context
+
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_PLAN_ROWS = 500
-PLAN_COLUMNS = ['Xí nghiệp', 'Loại kế hoạch', 'Tháng', 'ID chuyến', 'Chỉ tiêu', 'Sản lượng', 'Số văn bản', 'Ghi chú']
-PLAN_KEYS = ['terminal', 'period_type', 'month', 'voyage_id', 'metric', 'amount', 'reference', 'note']
+PLAN_COLUMNS = ['Xí nghiệp', 'Loại kế hoạch', 'Tháng', 'ID chuyến', 'Chỉ tiêu', 'Sản lượng', 'Số văn bản', 'Ghi chú', 'Quý', 'Năm', 'Từ ngày', 'Đến ngày']
+PLAN_KEYS = ['terminal', 'period_type', 'month', 'voyage_id', 'metric', 'amount', 'reference', 'note', 'quarter', 'year', 'start_date', 'end_date']
 NAVY = '153D39'
 
 
@@ -71,26 +76,29 @@ def plan_template():
     sheet = book.active
     sheet.title = 'Kế hoạch'
     _table(sheet, PLAN_COLUMNS, [], {7: 30, 8: 45})
-    for column, values in [('A', 'cua_lo,ben_thuy'), ('B', 'month,voyage'), ('E', 'tonnage,teu')]:
+    for column, values in [('A', 'all,cua_lo,ben_thuy'), ('B', 'month,quarter,year,custom,voyage'), ('E', 'tonnage,teu')]:
         validation = DataValidation(type='list', formula1=f'"{values}"', allow_blank=False)
         validation.errorTitle = 'Giá trị không hợp lệ'
         validation.error = 'Chọn một giá trị trong danh sách.'
         validation.showErrorMessage = True
         sheet.add_data_validation(validation)
         validation.add(f'{column}2:{column}{MAX_PLAN_ROWS + 1}')
-    for row in sheet.iter_rows(min_row=2, max_row=31, min_col=1, max_col=8):
+    for row in sheet.iter_rows(min_row=2, max_row=31, min_col=1, max_col=len(PLAN_COLUMNS)):
         for cell in row:
             cell.fill = PatternFill('solid', fgColor='EEF4FC')
             cell.font = Font(name='Calibri', size=11, color='245D8C')
-            if cell.column in {3, 4, 7}:
+            if cell.column in {3, 4, 7, 9, 11, 12}:
                 cell.number_format = '@'
     guide = book.create_sheet('Hướng dẫn')
     _table(guide, ['Trường', 'Cách nhập'], [
-        ['Xí nghiệp', 'cua_lo hoặc ben_thuy. Mỗi dòng thuộc một xí nghiệp.'],
-        ['Loại kế hoạch', 'month: kế hoạch tháng; voyage: kế hoạch toàn chuyến.'],
+        ['Xí nghiệp', 'all: toàn công ty; cua_lo hoặc ben_thuy: từng cảng. Kế hoạch chuyến phải chọn một cảng.'],
+        ['Loại kế hoạch', 'month: tháng; quarter: quý; year: năm; custom: khoảng ngày; voyage: toàn chuyến. Chỉ điền các trường của loại kỳ được chọn.'],
         ['Tháng', 'YYYY-MM, chỉ điền với kế hoạch tháng.'],
+        ['Quý', 'YYYY-Q1 đến YYYY-Q4, ví dụ 2026-Q3. Chỉ điền với kế hoạch quý.'],
+        ['Năm', 'Số nguyên từ 2000 đến 2099, chỉ điền với kế hoạch năm.'],
+        ['Từ ngày / Đến ngày', 'YYYY-MM-DD hoặc ô ngày Excel; chỉ điền với custom. Khoảng ngày tối đa 366 ngày, có thể gồm ngày tương lai.'],
         ['ID chuyến', 'ID chuyến từ dashboard, chỉ điền với kế hoạch chuyến. Giữ dạng văn bản.'],
-        ['Chỉ tiêu', 'tonnage: tấn; teu: TEU. Mỗi chỉ tiêu ghi một dòng.'],
+        ['Chỉ tiêu', 'tonnage: tấn thông qua; teu: TEU. Mỗi chỉ tiêu ghi một dòng.'],
         ['Sản lượng', 'Ô số không âm, tối đa 3 chữ số thập phân. Không dùng công thức hoặc số kèm đơn vị.'],
         ['Số văn bản', 'Số hoặc tên văn bản kế hoạch để đối chiếu khi duyệt.'],
         ['Nhập và duyệt', 'Tối đa 500 dòng. Xem trước dữ liệu, nhập bản nháp rồi duyệt trong dashboard.'],
@@ -119,9 +127,12 @@ def parse_plan_workbook(content):
         sheet = book['Kế hoạch'] if 'Kế hoạch' in book.sheetnames else book.worksheets[0]
         if sheet.max_row and sheet.max_row > MAX_PLAN_ROWS + 1:
             raise ValueError('Mỗi lần nhập tối đa 500 dòng kế hoạch.')
-        iterator = sheet.iter_rows(max_row=MAX_PLAN_ROWS + 2, max_col=8)
+        iterator = sheet.iter_rows(max_row=MAX_PLAN_ROWS + 2, max_col=len(PLAN_COLUMNS))
         first = next(iterator, ())
-        if [cell.value for cell in first] not in [PLAN_COLUMNS, PLAN_KEYS]:
+        header = [cell.value for cell in first]
+        while header and header[-1] is None:
+            header.pop()
+        if header not in [PLAN_COLUMNS, PLAN_KEYS, PLAN_COLUMNS[:8], PLAN_KEYS[:8]]:
             raise ValueError('Các cột chưa đúng mẫu. Hãy tải mẫu Excel từ dashboard.')
         seen = set()
         for row_no, cells in enumerate(iterator, 2):
@@ -133,7 +144,7 @@ def parse_plan_workbook(content):
                 errors.append({'row': row_no, 'message': 'Chuyển công thức thành giá trị trước khi nhập.'})
                 continue
             record = dict(zip(PLAN_KEYS, [cell.value for cell in cells]))
-            for key in ['terminal', 'period_type', 'month', 'metric', 'reference', 'note']:
+            for key in ['terminal', 'period_type', 'month', 'quarter', 'metric', 'reference', 'note']:
                 record[key] = str(record[key] or '').strip()
             try:
                 amount = record['amount']
@@ -143,28 +154,36 @@ def parse_plan_workbook(content):
                 if not amount.is_finite() or amount < 0 or amount > Decimal('1000000000000') or amount != amount.quantize(Decimal('.001')):
                     raise ValueError('Sản lượng phải không âm, tối đa 3 chữ số thập phân.')
                 record['amount'] = str(amount)
-                if record['terminal'] not in {'cua_lo', 'ben_thuy'} or record['metric'] not in {'tonnage', 'teu'}:
+                if record['terminal'] not in {'all', 'cua_lo', 'ben_thuy'} or record['metric'] not in {'tonnage', 'teu'}:
                     raise ValueError('Xí nghiệp hoặc chỉ tiêu chưa đúng danh mục trong mẫu.')
-                if record['period_type'] == 'month':
-                    date.fromisoformat(record['month'] + '-01')
-                    if record['voyage_id'] not in {None, ''}:
-                        raise ValueError('Kế hoạch tháng không điền ID chuyến.')
-                    record['voyage_id'] = None
-                elif record['period_type'] == 'voyage':
+                for field in ['month', 'quarter', 'year', 'voyage_id', 'start_date', 'end_date']:
+                    if record[field] == '':
+                        record[field] = None
+                if record['voyage_id'] is not None:
                     value = Decimal(str(record['voyage_id']))
-                    if value != value.to_integral_value() or not 1 <= value <= 2147483647 or record['month']:
-                        raise ValueError('Kế hoạch chuyến cần ID nguyên dương và để trống tháng.')
+                    if value != value.to_integral_value() or not 1 <= value <= 2147483647:
+                        raise ValueError('Kế hoạch chuyến cần ID nguyên dương.')
                     record['voyage_id'] = int(value)
-                    record['month'] = None
-                else:
-                    raise ValueError('Loại kế hoạch phải là month hoặc voyage.')
+                if record['year'] is not None:
+                    value = Decimal(str(record['year']))
+                    if value != value.to_integral_value():
+                        raise ValueError('Năm kế hoạch phải là số nguyên.')
+                    record['year'] = int(value)
+                for field in ['start_date', 'end_date']:
+                    if isinstance(record[field], datetime):
+                        record[field] = record[field].date().isoformat()
+                    elif isinstance(record[field], date):
+                        record[field] = record[field].isoformat()
+                validated = ControlStore.validate_plan(record)
                 if len(record['reference']) > 300 or len(record['note']) > 2000:
                     raise ValueError('Số văn bản hoặc ghi chú quá dài.')
-                key = tuple(record.get(field) for field in ['terminal', 'period_type', 'month', 'voyage_id', 'metric'])
+                key = tuple(validated[field] for field in ['terminal', 'period_type', 'period_key', 'metric'])
                 if key in seen:
                     raise ValueError('Trùng xí nghiệp, kỳ/chuyến và chỉ tiêu trong cùng tệp.')
                 seen.add(key)
                 rows.append(record)
+            except ControlError as exc:
+                errors.append({'row': row_no, 'message': exc.message})
             except (ValueError, TypeError, InvalidOperation) as exc:
                 errors.append({'row': row_no, 'message': str(exc) if isinstance(exc, ValueError) else 'Số liệu hoặc kỳ kế hoạch không hợp lệ.'})
     finally:
@@ -183,27 +202,35 @@ def report_workbook(report, operations, *, title='Báo cáo sản lượng', shi
     overview = report.get('overview') or report.get('summary', {})
     tonnage = overview.get('total_tonnage', overview.get('tonnage'))
     teu = overview.get('total_teu', overview.get('teu'))
+    scope = production_scope_context(report)
     rows = [
         ['Báo cáo', title, None], ['Mã phiên dữ liệu', meta.get('report_id'), None],
         ['Từ ngày', date.fromisoformat(filters['start_date']) if filters.get('start_date') else None, None],
         ['Đến ngày', date.fromisoformat(filters['end_date']) if filters.get('end_date') else None, None],
         ['Xí nghiệp', filters.get('terminal'), None],
         ['Đọc nguồn lúc', meta.get('source_read_at', meta.get('generated_at')), None],
-        ['Sản lượng ghi nhận qua cảng', tonnage, 'Tấn'], ['Container tác nghiệp', teu, 'TEU'],
+        ['Sản lượng thông qua', tonnage, 'Tấn'], ['Container tác nghiệp', teu, 'TEU'],
         ['Số dòng nguồn', overview.get('record_count'), 'Dòng'],
         ['Trạng thái số liệu tấn', overview.get('tonnage_status'), None],
         ['Trạng thái số liệu TEU', overview.get('teu_status'), None],
         ['Bộ lọc dòng tác nghiệp', meta.get('operations_filter', 'all'), None],
         ['Số dòng trong tệp', len(operations), 'Dòng'],
+        ['Phạm vi sản lượng', scope['production_scope_label'], None],
+        ['Mã phạm vi sản lượng', scope['production_scope'] or 'legacy', None],
+        ['Phiên bản quy tắc cầu cập đầu tiên', scope['berth_rule_version'] or 'Chưa được lưu trong bản dữ liệu này', None],
     ]
+    if scope['legacy_scope']:
+        rows.append(['Phân loại theo cầu cập đầu tiên', 'Bản dữ liệu cũ chưa lưu phạm vi này; không tự áp dụng quy tắc hiện tại cho lịch sử.', None])
     planning = planning if planning is not None else report.get('planning')
     if planning is not None:
         rows.append(['Kế hoạch tại thời điểm chốt', 'Đã lưu' if planning.get('captured') else 'Chưa được lưu trong bản chốt này', None])
         rows.append(['Thời điểm lưu kế hoạch', planning.get('captured_at'), None])
         if planning.get('reason'):
             rows.append(['Phạm vi đối chiếu kế hoạch', planning['reason'], None])
+        if planning.get('eligible'):
+            rows.append(['Phạm vi kế hoạch đã chốt', scope['production_scope_label'], None])
     for field, value in meta.get('selection', {}).items():
-        if value is not None and field != 'operation_filter':
+        if value is not None and field not in {'operation_filter', 'production_scope'}:
             labels = {'day': 'Ngày tác nghiệp được chọn', 'terminal': 'Xí nghiệp được chọn', 'cargo': 'Nhóm hàng được chọn', 'customer_id': 'ID khách hàng', 'customer_terminal': 'Xí nghiệp khách hàng', 'voyage_id': 'ID chuyến', 'issue': 'Nhóm đối soát'}
             rows.append([labels.get(field, field), str(value) if field in {'customer_id', 'voyage_id'} else value, None])
     _table(summary_sheet, ['Nội dung', 'Giá trị', 'Đơn vị'], rows, {1: 34, 2: 48, 3: 18})
@@ -214,11 +241,29 @@ def report_workbook(report, operations, *, title='Báo cáo sản lượng', shi
         ('voyage_code', 'Mã chuyến'), ('cargo_name', 'Hàng hóa'), ('customer_name', 'Khách hàng'),
         ('direction', 'Hướng hàng'), ('quantity', 'Số lượng nguồn'), ('quantity_unit_name', 'Đơn vị số lượng'),
         ('weight', 'Trọng lượng nguồn'), ('weight_unit_name', 'Đơn vị trọng lượng'), ('tonnage', 'Tấn'), ('teu', 'TEU'),
+        ('production_scope', 'Phạm vi sản lượng'), ('berth_assignment_status', 'Trạng thái xác định cầu đầu tiên'),
+        ('initial_berth_id', 'ID cầu cập đầu tiên'), ('initial_berth_code', 'Mã cầu cập đầu tiên'),
+        ('initial_berth_at', 'Thời điểm cập cầu đầu tiên'),
     ]
     values = []
+    berth_status_labels = {'assigned': 'Đã xác định', 'missing': 'Thiếu dữ liệu cầu', 'ambiguous': 'Không xác định duy nhất'}
     for row in operations:
-        values.append([date.fromisoformat(row[key]) if key == 'operation_date' and row.get(key) else str(row[key]) if key in {'id', 'operation_code', 'voyage_code'} and row.get(key) is not None else row.get(key) for key, _ in columns])
-    _table(sheet, [label for _, label in columns], values, {1: 20, 2: 18, 3: 20, 4: 18, 8: 27, 9: 28})
+        exported = []
+        for key, _ in columns:
+            value = row.get(key)
+            if key == 'operation_date' and value:
+                value = date.fromisoformat(value)
+            elif key in {'id', 'operation_code', 'voyage_code', 'initial_berth_id', 'initial_berth_code'} and value is not None:
+                value = str(value)
+            elif key == 'initial_berth_at' and value is not None:
+                value = value.isoformat() if isinstance(value, (date, datetime)) else str(value)
+            elif key == 'production_scope':
+                value = scope['production_scope_label'] if value is None else PRODUCTION_SCOPE_LABELS.get(value, str(value))
+            elif key == 'berth_assignment_status':
+                value = berth_status_labels.get(value, value or 'Chưa lưu bằng chứng phân loại')
+            exported.append(value)
+        values.append(exported)
+    _table(sheet, [label for _, label in columns], values, {1: 20, 2: 18, 3: 20, 4: 18, 8: 27, 9: 28, 17: 24, 18: 32, 19: 22, 20: 24, 21: 32})
     if shifts:
         sheet = book.create_sheet('Theo ca')
         _table(sheet, ['Ngày', 'Ca', 'Xí nghiệp', 'Tấn', 'TEU', 'Dòng tác nghiệp'], [
@@ -245,4 +290,22 @@ def report_workbook(report, operations, *, title='Báo cáo sản lượng', shi
                  row.get('reference'), str(row['approved_by']) if row.get('approved_by') is not None else None, row.get('approved_at')]
                 for row in planning.get('rows', [])
             ], {1: 20, 2: 20, 10: 28, 11: 35, 12: 50, 14: 32})
+    throughput = report.get('throughput_progress')
+    if throughput is not None:
+        sheet = book.create_sheet('Mục tiêu thông qua')
+        labels = {'month': 'Tháng', 'quarter': 'Quý', 'year': 'Năm', 'custom': 'Khoảng ngày'}
+        if throughput.get('items'):
+            _table(sheet, ['Loại kỳ', 'Kỳ kế hoạch', 'Từ ngày', 'Đến ngày', 'Mục tiêu tấn', 'Thực hiện tấn',
+                           '% hoàn thành xác nhận', '% tạm tính', 'Đã đạt', 'Trạng thái', 'Nguồn mục tiêu',
+                           'ID / phiên bản kế hoạch', 'Căn cứ duyệt'], [
+                [labels.get(item['period_type'], item['period_type']), item['period_key'], item['start_date'], item['end_date'],
+                 item['target'], item['actual'], item['completion_percent'], item['provisional_completion_percent'],
+                 'Đã đạt' if item['achieved'] else 'Chưa xác nhận đạt' if item['provisional'] else 'Chưa đạt',
+                 item.get('reason') or item['status'], {'company': 'Toàn công ty', 'terminals': 'Tổng hai cảng', 'terminal': 'Cảng được chọn'}.get(item['target_source']),
+                 '; '.join(f"{plan['id']} / v{plan['version']}" for plan in item['plans']),
+                 '; '.join(plan['reference'] for plan in item['plans'])]
+                for item in throughput['items']
+            ], {2: 30, 7: 28, 8: 22, 10: 44, 12: 30, 13: 50})
+        else:
+            _table(sheet, ['Nội dung', 'Giá trị'], [['Trạng thái', throughput.get('reason')]], {1: 25, 2: 100})
     return _save(book)

@@ -19,7 +19,7 @@ def main():
     def respond(route):
         parsed = urlparse(route.request.url)
         query = {key: values[0] for key, values in parse_qs(parsed.query).items()}
-        filters = {key: query[key] for key in ("start_date", "end_date")}
+        filters = {key: query[key] for key in ("start_date", "end_date", "production_scope")}
         kind = "detail" if "/voyages/" in parsed.path else "dashboard"
         state[kind + "_calls"] += 1
         mode = state[kind + "_mode"]

@@ -25,6 +25,18 @@
 .management input[type="checkbox"] { accent-color: var(--primary-color); width: 16px; height: 16px; margin: 0; }
 .management-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 20px; }
 .management-wide { grid-column: 1 / -1; }
+.plan-entry-help { margin: 0; font-weight: 400; }
+.plan-field { min-width: 0; }
+.plan-field-help, .plan-field-error { margin: 7px 0 0; font-size: 12px; line-height: 1.6; }
+.plan-field-help { color: var(--text-muted); }
+.plan-field-help strong { display: block; color: var(--text-main); font-weight: 600; }
+.plan-field-error { color: var(--danger-color); }
+.management [aria-invalid="true"] { border-color: var(--danger-color); }
+.management tr.plan-saved-row { background: var(--surface-selected); }
+.management tr.plan-saved-row:focus { outline: 2px solid var(--primary-color); outline-offset: -2px; }
+.plan-approved-notice { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.management-secondary-progress > summary { color: var(--text-muted); font-size: 13px; cursor: pointer; }
+.management-secondary-progress > .management-caption { margin: 12px 0; }
 .management-actions, .management-row-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
 .management-actions > span { color: var(--text-muted); font-size: 12px; }
 .management-editor { margin: 18px 0; border: 1px solid var(--border-color); border-radius: 11px; padding: 16px 18px; background: var(--surface-muted); }
@@ -109,6 +121,64 @@
 .management-config dd { font-variant-numeric: tabular-nums; }
 .voyage-picker .management-caption { margin-bottom: 0; }
 
+.plans-section { container: plans / inline-size; }
+.plans-section > .management-heading { flex-wrap: wrap; }
+.plans-section > .management-heading > h3 { min-width: 0; }
+.management .plan-deleted-toggle { display: inline-flex; flex-direction: row; align-items: center; gap: 9px; margin: 0 0 18px; cursor: pointer; }
+.management .plans-table-scroll { position: relative; }
+.management .plans-table { min-width: 1000px; table-layout: fixed; width: 100%; }
+.plan-period-column { width: 16%; }
+.plan-metric-column { width: 14%; }
+.plan-amount-column { width: 14%; }
+.plan-version-column { width: 7%; }
+.plan-status-column { width: 14%; }
+.plan-reference-column { width: 17%; }
+.plan-actions-column { width: 18%; }
+.management .plans-table :is(th, td) { padding: 14px 12px; word-break: normal; overflow-wrap: normal; }
+.management .plans-table th:first-child, .management .plans-table td:last-child { overflow-wrap: normal; }
+.management .plans-table .plan-reference-cell { overflow-wrap: anywhere; }
+.management .plans-table .plan-amount-cell { overflow-wrap: anywhere; }
+.plan-period-cell strong, .plan-amount-cell strong { font-weight: 600; }
+.plan-cell-label { display: none; }
+.plans-table .management-row-actions { gap: 7px; }
+.plans-table .management-row-actions .button { white-space: normal; text-align: left; }
+.management .plan-deleted-row { background: var(--surface-muted); color: var(--text-muted); }
+.management-status.status-deleted { background: var(--surface); color: var(--text-muted); }
+.management .button.plan-delete-button { color: #995c51; border-color: #dcc9c2; background: var(--surface); }
+.management .button.plan-delete-button:hover:not(:disabled) { color: #7f493f; border-color: #c9a79b; background: #f6eeeb; }
+.plan-delete-dialog { width: min(540px, calc(100vw - 32px)); max-width: none; max-height: calc(100dvh - 32px); margin: auto; padding: 24px; border: 1px solid var(--border-color); border-radius: 12px; color: var(--text-main); background: var(--surface); box-shadow: 0 18px 60px #2d3d4326; overflow: auto; overscroll-behavior: contain; }
+.plan-delete-dialog::backdrop { background: #2c383a80; }
+.plan-delete-dialog h3 { font-size: 20px; line-height: 1.4; margin: 0 0 12px; }
+.plan-delete-dialog > p { color: var(--text-muted); font-size: 14px; line-height: 1.6; }
+.plan-delete-summary { display: grid; gap: 0; margin: 18px 0; padding: 0; }
+.plan-delete-summary > div { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(0, 2fr); gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border-color); font-size: 13px; line-height: 1.6; }
+.plan-delete-summary dt { color: var(--text-muted); }
+.plan-delete-summary dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.plan-delete-actions { justify-content: flex-end; margin-top: 20px; }
+.plan-delete-reload { margin-top: 4px; }
+@container plans (max-width: 1000px) {
+  .management .plans-table-scroll { overflow: visible; border: 0; border-radius: 0; }
+  .management .plans-table { display: block; min-width: 0; table-layout: auto; }
+  .plans-table colgroup { display: none; }
+  .plans-table thead { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .plans-table tbody { display: grid; gap: 14px; }
+  .management .plans-table tbody tr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); border: 1px solid var(--border-color); border-radius: 10px; padding: 16px; gap: 16px 24px; background: var(--surface); }
+  .management .plans-table tbody tr.plan-saved-row { background: var(--surface-selected); }
+  .management .plans-table tbody tr.plan-deleted-row { background: var(--surface-muted); }
+  .management .plans-table tbody :is(th, td) { display: block; min-width: 0; padding: 0; border: 0; white-space: normal; overflow-wrap: break-word; }
+  .management .plans-table .plan-period-cell { grid-column: 1 / -1; padding-bottom: 14px; border-bottom: 1px solid var(--border-color); font-size: 15px; }
+  .management .plans-table .plan-period-cell small { font-size: 13px; margin-top: 4px; }
+  .management .plans-table .plan-reference-cell { overflow-wrap: anywhere; }
+  .management .plans-table .plan-actions-cell { grid-column: 1 / -1; padding-top: 14px; border-top: 1px solid var(--border-color); }
+  .plan-cell-label { display: block; margin-bottom: 5px; color: var(--text-muted); font-size: 12px; font-weight: 400; }
+  .plans-table .management-row-actions { gap: 8px; }
+  .plans-table .management-row-actions .button { min-height: 42px; padding: 9px 12px; white-space: normal; }
+}
+@container plans (max-width: 440px) {
+  .management .plans-table tbody tr { grid-template-columns: minmax(0, 1fr); padding: 14px; gap: 14px; }
+  .management .plans-table .plan-actions-cell { grid-column: auto; }
+  .plans-table .management-row-actions .button { flex: 1 1 auto; justify-content: center; }
+}
 @media (max-width: 1000px) {
   .management-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -122,6 +192,9 @@
   .management-metrics strong { font-size: 20px; }
   .management-search { flex-wrap: wrap; }
   .management-search label { flex-basis: 100%; }
+  .plan-delete-dialog { padding: 18px; }
+  .plan-delete-summary > div { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+  .plan-delete-actions .button { flex: 1 1 auto; justify-content: center; }
 }
 @media (pointer: coarse) {
   .management-row-actions .button { min-height: 42px; }

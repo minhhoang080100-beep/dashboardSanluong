@@ -1,4 +1,5 @@
 import { fetchReportResponse } from './report-request.js';
+import { BERTH_RULE_VERSION, isProductionScope } from './production-scope.js';
 
 const terminals = new Set(['cua_lo', 'ben_thuy']);
 const number = (value) => typeof value === 'number' && Number.isFinite(value);
@@ -12,6 +13,9 @@ const fail = () => { throw new Error('Dữ liệu chuyến tàu chưa đúng c�
 export function validateVoyage(row) {
   if (!row || !terminals.has(row.terminal_id) || typeof row.voyage_id !== 'string' || !row.voyage_id) fail();
   if (typeof row.terminal_name !== 'string') fail();
+  if (!isProductionScope(row.production_scope) || !['assigned', 'missing', 'ambiguous'].includes(row.berth_assignment_status)) fail();
+  if (row.initial_berth_id !== null && !['string', 'number'].includes(typeof row.initial_berth_id)) fail();
+  for (const key of ['initial_berth_code', 'initial_berth_at']) if (!dateText(row[key])) fail();
   for (const key of ['vessel_name', 'voyage_code']) if (row[key] !== null && typeof row[key] !== 'string') fail();
   for (const key of ['arrival_at', 'departure_at', 'first_operation_date', 'last_operation_date']) if (!dateText(row[key])) fail();
   for (const key of ['tonnage', 'teu']) if (!nullableNumber(row[key])) fail();
@@ -21,11 +25,12 @@ export function validateVoyage(row) {
 }
 
 export function validateVoyageList(rows, count, filters) {
-  if (!Array.isArray(rows) || rows.length !== count) fail();
+  if (!isProductionScope(filters.production_scope) || !Array.isArray(rows) || rows.length !== count) fail();
   const keys = new Set();
   for (const row of rows) {
     validateVoyage(row);
     if (filters.terminal !== 'all' && row.terminal_id !== filters.terminal) fail();
+    if (!isProductionScope(filters.production_scope) || row.production_scope !== filters.production_scope) fail();
     const key = `${row.terminal_id}/${row.voyage_id}`;
     if (keys.has(key)) fail();
     keys.add(key);
@@ -62,7 +67,8 @@ export function validateVoyageDetail(data, selected, filters, page, pageSize, op
   if (!operationFilters.has(operationFilter) || !Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1) fail();
   validateVoyage(data.header);
   if (data.header.terminal_id !== selected.terminal_id || data.header.voyage_id !== selected.voyage_id) fail();
-  const expected = { start_date: filters.start_date, end_date: filters.end_date, terminal: selected.terminal_id, voyage_id: selected.voyage_id, operation_filter: operationFilter };
+  if (!isProductionScope(filters.production_scope) || data.header.production_scope !== filters.production_scope || data.meta.berth_rule_version !== BERTH_RULE_VERSION) fail();
+  const expected = { start_date: filters.start_date, end_date: filters.end_date, terminal: selected.terminal_id, voyage_id: selected.voyage_id, production_scope: filters.production_scope, operation_filter: operationFilter };
   for (const [key, value] of Object.entries(expected)) if (data.meta.filters?.[key] !== value) fail();
   for (const key of ['tonnage', 'teu']) if (!nullableNumber(data.summary[key])) fail();
   if (!Number.isInteger(data.summary.record_count) || data.summary.record_count < 0) fail();
@@ -93,9 +99,17 @@ export function validateVoyageDetail(data, selected, filters, page, pageSize, op
   return data;
 }
 
+export function validateVoyageProgress(data, selected, productionScope) {
+  if (!data || !isProductionScope(productionScope) || data.meta?.filters?.production_scope !== productionScope || data.meta.berth_rule_version !== BERTH_RULE_VERSION) fail();
+  validateVoyage(data.header);
+  if (data.header.terminal_id !== selected.terminal_id || data.header.voyage_id !== selected.voyage_id || data.header.production_scope !== productionScope) fail();
+  if (!Array.isArray(data.planning) || !Array.isArray(data.shifts)) fail();
+  return data;
+}
+
 export async function fetchVoyageDetail(selected, filters, page, { signal, fetcher = fetch, baseUrl = '/api', pageSize = 25, operationFilter = 'all', reportId } = {}) {
   if (!operationFilters.has(operationFilter)) fail();
-  const query = new URLSearchParams({ start_date: filters.start_date, end_date: filters.end_date, page: String(page), page_size: String(pageSize), operation_filter: operationFilter });
+  const query = new URLSearchParams({ start_date: filters.start_date, end_date: filters.end_date, production_scope: filters.production_scope, page: String(page), page_size: String(pageSize), operation_filter: operationFilter });
   if (reportId) query.set('report_id', reportId);
   const url = `${baseUrl.replace(/\/+$/, '')}/voyages/${encodeURIComponent(selected.terminal_id)}/${encodeURIComponent(selected.voyage_id)}?${query}`;
   const response = await fetchReportResponse(url, { signal, fetcher });

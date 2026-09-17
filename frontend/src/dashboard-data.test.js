@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { csvCell, dashboardCsv, dashboardResourceView, fetchDashboard, formatNumber, formatTimestamp, isCurrentDayPeriod, presetDates, ratioAvailability, todayInVietnam, validateDashboard, validateFilters } from './dashboard-data.js';
+import { csvCell, dashboardCsv, dashboardRequestTimeout, dashboardResourceView, fetchDashboard, formatNumber, formatTimestamp, isCurrentDayPeriod, presetDates, ratioAvailability, todayInVietnam, validateDashboard, validateFilters } from './dashboard-data.js';
 
-const filters = { start_date: '2026-09-01', end_date: '2026-09-09', terminal: 'all' };
+const filters = { start_date: '2026-09-01', end_date: '2026-09-09', terminal: 'all', production_scope: 'nghe_tinh' };
 function fixture() {
   return {
     overview: { total_tonnage: 100, total_measured_tonnage: 90, total_teu: 2, vessel_calls: 1, record_count: 3 },
@@ -11,8 +11,8 @@ function fixture() {
     terminals: [{ name: 'Cửa Lò', tonnage: 100, teu: 2 }],
     directions: [{ name: 'Hàng xếp', tonnage: 100, value: 100 }],
     customers: [{ name: '=HYPERLINK("https://example.com")', terminal_name: 'Cửa Lò', volume: 100 }],
-    voyages: [{ terminal_id: 'cua_lo', terminal_name: 'Cửa Lò', voyage_id: '1', vessel_name: 'Tàu kiểm thử', voyage_code: 'TEST-1', arrival_at: null, departure_at: null, first_operation_date: '2026-09-01', last_operation_date: '2026-09-01', tonnage: 100, teu: 2, record_count: 3, cargo_names: ['Hàng tổng hợp'] }],
-    meta: { status: 'ok', generated_at: '2026-09-09T00:00:00Z', filters: { ...filters }, warnings: ['Quy tắc chưa đối soát'], definitions: { tonnage: 'Tấn' } },
+    voyages: [{ production_scope: 'nghe_tinh', initial_berth_id: 1, initial_berth_code: 'C1', initial_berth_at: '2026-09-01T07:00:00', berth_assignment_status: 'assigned', terminal_id: 'cua_lo', terminal_name: 'Cửa Lò', voyage_id: '1', vessel_name: 'Tàu kiểm thử', voyage_code: 'TEST-1', arrival_at: null, departure_at: null, first_operation_date: '2026-09-01', last_operation_date: '2026-09-01', tonnage: 100, teu: 2, record_count: 3, cargo_names: ['Hàng tổng hợp'] }],
+    meta: { berth_rule_version: 'initial-berth-v1', status: 'ok', generated_at: '2026-09-09T00:00:00Z', filters: { ...filters }, warnings: ['Quy tắc chưa đối soát'], definitions: { tonnage: 'Tấn' } },
   };
 }
 
@@ -129,6 +129,81 @@ test('reject a wrong filter response instead of displaying mismatched report', (
   assert.throws(() => validateDashboard(wrong, filters), /cấu trúc/);
 });
 
+test('dashboard timeout stays 45 seconds for 92 days and allows 90 seconds for valid 93–366 day periods', () => {
+  const timeout = (start_date, end_date) => dashboardRequestTimeout({ ...filters, start_date, end_date });
+  assert.equal(timeout('2026-07-01', '2026-09-30'), 45000);
+  assert.equal(timeout('2026-07-01', '2026-10-01'), 90000);
+  assert.equal(timeout('2024-01-01', '2024-12-31'), 90000);
+  assert.equal(timeout('2026-01-01', '2026-12-31'), 90000);
+  assert.equal(timeout('2026-09-17', '2026-09-17'), 45000);
+  assert.equal(timeout('2024-01-01', '2025-01-01'), 45000);
+  assert.equal(timeout('2026-09-17', '2026-09-16'), 45000);
+  for (const value of [null, undefined, {}, { start_date: '2026-02-30', end_date: '2026-12-31' },
+    { start_date: '2026-01-01', end_date: '2026-09-31' }, { start_date: '2026-01-01', end_date: 'invalid' },
+    { start_date: '2026-01-01T00:00:00Z', end_date: '2026-12-31' }, { start_date: 20260101, end_date: '2026-12-31' }]) {
+    assert.equal(dashboardRequestTimeout(value), 45000);
+  }
+});
+
+test('quarter presets use full past quarters and clamp only the current quarter to Vietnam today', () => {
+  const today = '2026-09-17';
+  assert.deepEqual(presetDates('quarter-1', today), { start_date: '2026-01-01', end_date: '2026-03-31' });
+  assert.deepEqual(presetDates('quarter-2', today), { start_date: '2026-04-01', end_date: '2026-06-30' });
+  assert.deepEqual(presetDates('quarter-3', today), { start_date: '2026-07-01', end_date: today });
+  assert.equal(presetDates('quarter-4', today), null);
+  assert.deepEqual(presetDates('quarter-4', today, 2025), { start_date: '2025-10-01', end_date: '2025-12-31' });
+  assert.deepEqual(presetDates('quarter-1', '2024-03-31'), { start_date: '2024-01-01', end_date: '2024-03-31' });
+  const newYear = todayInVietnam(new Date('2025-12-31T17:00:00Z'));
+  assert.deepEqual(presetDates('quarter-1', newYear), { start_date: '2026-01-01', end_date: '2026-01-01' });
+  for (const [preset, year] of [['quarter-2', 2026], ['quarter-0', 2025], ['quarter-5', 2025], ['quarter-1', 1999], ['quarter-1', 2100], ['quarter-1', 'invalid']]) assert.equal(presetDates(preset, newYear, year), null);
+  const scoped = { ...filters, ...presetDates('quarter-2', today), production_scope: 'vietsun', terminal: 'cua_lo' };
+  assert.equal(validateFilters(scoped, today), '');
+  assert.equal(scoped.production_scope, 'vietsun');
+  assert.equal(scoped.terminal, 'cua_lo');
+});
+
+test('production scope and initial berth version must match even when dates and terminal agree', () => {
+  for (const mutate of [
+    (data) => { delete data.meta.filters.production_scope; },
+    (data) => { data.meta.filters.production_scope = 'vietsun'; },
+    (data) => { delete data.meta.berth_rule_version; },
+    (data) => { data.meta.berth_rule_version = 'operation-berth-v0'; },
+    (data) => { data.voyages[0].production_scope = 'vietsun'; },
+    (data) => { delete data.voyages[0].production_scope; },
+  ]) {
+    const data = fixture(); mutate(data);
+    assert.throws(() => validateDashboard(data, filters));
+    assert.equal(dashboardResourceView({ status: 'stale', key: JSON.stringify(filters), data }, filters).data, null);
+  }
+  const old = { status: 'success', key: JSON.stringify(filters), data: fixture() };
+  assert.equal(dashboardResourceView(old, { ...filters, production_scope: 'vietsun' }).status, 'loading');
+});
+
+test('Vietsun and unclassified scope requests accept only the selected scoped response', async () => {
+  for (const scope of ['vietsun', 'unclassified']) {
+    const selected = { ...filters, production_scope: scope };
+    const data = fixture();
+    data.meta.filters = selected;
+    data.voyages[0].production_scope = scope;
+    let request;
+    await fetchDashboard(selected, { fetcher: async (url) => { request = url; return { ok: true, json: async () => data }; } });
+    assert.equal(new URL(request, 'http://localhost').searchParams.get('production_scope'), scope);
+  }
+  assert.ok(validateFilters({ ...filters, production_scope: 'all' }, '2026-09-09'));
+  assert.ok(validateFilters({ ...filters, production_scope: undefined }, '2026-09-09'));
+});
+
+test('CSV includes selected production scope and original berth evidence without altering totals', () => {
+  const data = fixture();
+  data.meta.filters.production_scope = data.voyages[0].production_scope = 'vietsun';
+  Object.assign(data.voyages[0], { initial_berth_id: 13, initial_berth_code: 'C5', initial_berth_at: '2026-08-31T07:00:00' });
+  const csv = dashboardCsv(data);
+  assert.ok(csv.includes('"Cầu 5","Mã phạm vi","vietsun"'));
+  assert.ok(csv.includes('"13","C5","2026-08-31T07:00:00","assigned"'));
+  assert.ok(csv.includes('initial-berth-v1'));
+  assert.equal(data.overview.total_tonnage, 100);
+});
+
 test('malformed numbers, collections and renderable metadata fail visibly', () => {
   for (const mutate of [
     (data) => { data.overview = null; },
@@ -157,7 +232,7 @@ test('fetch sends one complete filter set and passes cancellation signal', async
     return { ok: true, json: async () => fixture() };
   };
   await fetchDashboard(filters, { fetcher, signal: controller.signal, baseUrl: '/api/' });
-  assert.equal(requested.url, '/api/dashboard?start_date=2026-09-01&end_date=2026-09-09&terminal=all');
+  assert.equal(requested.url, '/api/dashboard?start_date=2026-09-01&end_date=2026-09-09&terminal=all&production_scope=nghe_tinh');
   assert.equal(requested.options.signal, controller.signal);
 });
 

@@ -2,6 +2,21 @@ const API_BASE = import.meta.env?.VITE_API_URL || '/api';
 const SESSION_KEY = 'port-dashboard-session';
 let memoryToken = null;
 
+const FIELD_LABELS = { terminal: 'Xí nghiệp', period_type: 'Loại kế hoạch', month: 'Tháng kế hoạch', quarter: 'Quý kế hoạch', year: 'Năm kế hoạch', start_date: 'Ngày bắt đầu', end_date: 'Ngày kết thúc', voyage_id: 'Chuyến tàu', metric: 'Chỉ tiêu', amount: 'Giá trị kế hoạch', reference: 'Văn bản / nguồn phê duyệt', note: 'Ghi chú', expected_revision: 'Phiên bản dữ liệu' };
+
+function validationFields(detail) {
+  if (!Array.isArray(detail)) return {};
+  const fields = {};
+  for (const issue of detail) {
+    const field = Array.isArray(issue?.loc) ? issue.loc.at(-1) : null;
+    if (!Object.hasOwn(FIELD_LABELS, field)) continue;
+    fields[field] = issue.type === 'missing' ? `Vui lòng nhập ${FIELD_LABELS[field].toLowerCase()}.`
+      : field === 'amount' ? 'Giá trị kế hoạch phải từ 0 đến 1.000.000.000.000 và tối đa 6 chữ số thập phân.'
+      : `${FIELD_LABELS[field]} chưa hợp lệ. Vui lòng kiểm tra lại.`;
+  }
+  return fields;
+}
+
 export function getSessionToken() {
   // An explicit login/logout is authoritative when storage can be read but not written.
   if (memoryToken !== null) return memoryToken;
@@ -69,10 +84,12 @@ export async function apiRequest(path, { body, method = 'GET', signal, baseUrl =
       let detail;
       try { detail = (await wait(response.json())).detail; } catch { /* Use the safe HTTP message unless cancelled. */ }
       if (controller.signal.aborted) throw controller.signal.reason;
-      const message = typeof detail === 'string' ? detail : detail?.message;
+      const fieldErrors = validationFields(detail);
+      const message = typeof detail === 'string' ? detail : detail?.message || (Object.keys(fieldErrors).length ? Object.values(fieldErrors).join(' ') : null);
       const error = new Error(message || (response.status === 401 ? 'Phiên đăng nhập đã hết hạn.' : response.status === 403 ? 'Bạn không có quyền thực hiện thao tác này.' : `Yêu cầu chưa thành công (HTTP ${response.status}).`));
       error.status = response.status;
       error.detail = detail;
+      error.fieldErrors = fieldErrors;
       throw error;
     }
     // Only low-level raw callers finish at headers. Downloads share the full deadline.

@@ -54,7 +54,7 @@ def main():
 
     def respond(route):
         query = parse_qs(urlparse(route.request.url).query)
-        filters = {key: query[key][0] for key in ("start_date", "end_date", "terminal")}
+        filters = {key: query[key][0] for key in ("start_date", "end_date", "terminal", "production_scope")}
         data = fixture(filters, empty=state["case"] == "empty")
         # Override only the card under test; these labelled synthetic rows are
         # deliberately unsorted and cover states absent from the basic fixture.

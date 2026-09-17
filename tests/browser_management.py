@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlparse
 
 from browser_auth_support import install_auth_fixture
 from browser_voyages import report_fixture
+from backend.control_store import plan_period, saved_plan_period, throughput_progress_item
 from playwright.sync_api import expect, sync_playwright
 
 
@@ -33,8 +34,14 @@ def main():
              "terminals": ["cua_lo", "ben_thuy"], "must_change_password": False, "is_active": True}
     viewer = {**admin, "id": 9002, "username": "test_viewer", "display_name": "NGƯỜI XEM KIỂM THỬ", "role": "viewer"}
     state = {"user": None, "plans": [], "closed": [], "issues": [], "users": [admin], "calls": [],
-             "filters": None, "expire_plans": False, "dashboard_unavailable": False, "report_id": "synthetic-management-report"}
+             "filters": None, "expire_plans": False, "dashboard_unavailable": False, "report_id": "synthetic-management-report",
+             "hold_delete": False, "pending_delete": None}
     checks, errors = [], []
+
+    def plan_values(body):
+        key, _, _ = plan_period(body)
+        return {**body, **saved_plan_period(body['period_type'], key),
+                'amount': float(body['amount']), 'amount_decimal': str(body['amount'])}
 
     def respond(route):
         request = route.request
@@ -62,15 +69,31 @@ def main():
             state["user"] = None
             route.fulfill(json={"ok": True})
         elif path == "/dashboard":
-            state["filters"] = {key: query[key] for key in ("start_date", "end_date", "terminal")}
+            state["filters"] = {key: query[key] for key in ("start_date", "end_date", "terminal", "production_scope")}
             if state["dashboard_unavailable"]:
                 route.fulfill(status=503, json={"detail": {"code": "DATABASE_UNAVAILABLE", "message": "Nguồn sản xuất tạm thời chưa truy cập được."}})
                 return
             data = report_fixture(state["filters"])
             data["meta"].update(report_id=state["report_id"], source_read_at=data["meta"]["generated_at"])
             route.fulfill(json=data)
+        elif path.endswith("/throughput-progress"):
+            filters = state['filters']
+            eligible = filters['production_scope'] == 'nghe_tinh'
+            response = {'report_id': state['report_id'], 'period': dict(filters), 'production_scope': filters['production_scope'],
+                        'berth_rule_version': 'initial-berth-v1', 'eligible': eligible, 'items': [], 'available_periods': [],
+                        'reason': 'Chưa có kế hoạch được duyệt khớp kỳ và phạm vi báo cáo.'}
+            report = report_fixture(filters)
+            for plan in state['plans']:
+                if not eligible or plan.get('is_deleted') or plan['status'] != 'approved' or not plan['is_current'] or plan['metric'] != 'tonnage' or plan['period_type'] == 'voyage' or plan['terminal'] != filters['terminal']:
+                    continue
+                response['available_periods'].append({'key': f"{plan['period_type']}:{plan['period_key']}",
+                    'period_type': plan['period_type'], 'period_key': plan['period_key'], 'terminal': plan['terminal'],
+                    'start_date': plan['period_start'], 'end_date': plan['period_end'], 'target': plan['amount'], 'plans': [plan]})
+                if plan['period_start'] == filters['start_date'] and filters['end_date'] <= plan['period_end']:
+                    response['items'].append(throughput_progress_item(plan, [plan], report['overview']['total_tonnage'], report['overview']['tonnage_status'], 'company'))
+            route.fulfill(json=response)
         elif path.endswith("/plan-progress"):
-            approved = next((plan for plan in state["plans"] if plan["status"] == "approved" and plan["metric"] == "tonnage"), None)
+            approved = next((plan for plan in state["plans"] if not plan.get("is_deleted") and plan["status"] == "approved" and plan["metric"] == "tonnage"), None)
             route.fulfill(json={"eligible": True, "reason": None, "period": state["filters"], "rows": [{
                 "terminal": "cua_lo", "terminal_name": "Cửa Lò", "metric": "tonnage", "plan_id": approved["id"] if approved else None,
                 "plan_version": approved["version"] if approved else None, "target": approved["amount"] if approved else None,
@@ -80,16 +103,18 @@ def main():
             if state["expire_plans"]:
                 route.fulfill(status=401, json={"detail": {"message": "Phiên đăng nhập đã hết hạn."}})
                 return
-            items = [plan for plan in state["plans"] if plan["period_type"] == query.get("period_type", plan["period_type"])]
-            route.fulfill(json={"items": items, "total": len(items), "page": 1, "page_size": 25})
+            items = [plan for plan in state["plans"] if plan["period_type"] == query.get("period_type", plan["period_type"])
+                     and (query.get("include_deleted") == "true" or not plan.get("is_deleted"))]
+            page_number = int(query.get("page", 1))
+            route.fulfill(json={"items": items[(page_number - 1) * 25:page_number * 25], "total": len(items), "page": page_number, "page_size": 25})
         elif path == "/plans" and method == "POST":
-            plan = {**body, "id": len(state["plans"]) + 1, "version": 1, "revision": 1, "status": "draft", "is_current": False}
+            plan = {**plan_values(body), "id": len(state["plans"]) + 1, "version": 1, "revision": 1, "status": "draft", "is_current": False}
             state["plans"].append(plan)
             route.fulfill(status=201, json=plan)
         elif path.startswith("/plans/") and path.endswith("/approve"):
             plan = next(item for item in state["plans"] if str(item["id"]) == path.split("/")[2])
             assert body == {"expected_revision": plan["revision"]}
-            plan.update(status="approved", is_current=True)
+            plan.update(status="approved", is_current=True, revision=plan['revision'] + 1)
             route.fulfill(json=plan)
         elif path == "/planning/voyages":
             assert "start_date" not in query and "end_date" not in query
@@ -99,24 +124,37 @@ def main():
             assert body["expected_revision"] == plan["revision"] and body["note"]
             plan.update(status="cancelled", revision=plan["revision"] + 1)
             route.fulfill(json=plan)
+        elif path.startswith("/plans/") and method == "DELETE":
+            plan = next(item for item in state["plans"] if str(item["id"]) == path.split("/")[2])
+            assert set(body) == {"revision"}
+            if body["revision"] != plan["revision"]:
+                route.fulfill(status=409, json={"detail": {"code": "PLAN_CONFLICT", "message": "Kế hoạch đã thay đổi. Tải lại danh sách trước khi xóa."}})
+            elif state["hold_delete"]:
+                state["pending_delete"] = (route, plan)
+            else:
+                plan.update(is_deleted=True, deleted_at="2026-09-13T08:00:00Z", deleted_by=9001, revision=plan["revision"] + 1, is_current=False)
+                route.fulfill(json=plan)
         elif path.startswith("/plans/") and method == "PATCH":
             plan = next(item for item in state["plans"] if str(item["id"]) == path.split("/")[2])
             if body.pop("expected_revision") != plan["revision"]:
                 route.fulfill(status=409, json={"detail": {"code": "PLAN_CONFLICT", "message": "Nháp đã thay đổi. Tải lại danh sách và kiểm tra trước khi sửa."}})
                 return
             assert plan["status"] == "draft"
-            plan.update(**body, revision=plan["revision"] + 1)
+            plan.update(**plan_values(body), revision=plan["revision"] + 1)
             route.fulfill(json=plan)
         elif path.startswith("/plans/") and method == "GET" and path.split("/")[-1].isdigit():
             plan = next(item for item in state["plans"] if str(item["id"]) == path.split("/")[2])
-            route.fulfill(json={**plan, "created_by": 9001, "created_at": "2026-09-13T07:00:00Z", "history": [{"id": 1, "action": "created", "actor_id": 9001, "created_at": "2026-09-13T07:00:00Z", "snapshot": plan, "note": "KIỂM THỬ LỊCH SỬ"}]})
+            history = [{"id": 1, "action": "created", "actor_id": 9001, "created_at": "2026-09-13T07:00:00Z", "snapshot": plan, "note": "KIỂM THỬ LỊCH SỬ"}]
+            if plan.get("is_deleted"):
+                history.append({"id": 2, "action": "deleted", "actor_id": 9001, "created_at": plan["deleted_at"], "snapshot": plan, "note": ""})
+            route.fulfill(json={**plan, "created_by": 9001, "created_at": "2026-09-13T07:00:00Z", "history": history})
         elif path == "/plans/import/preview":
             row = {"terminal": "cua_lo", "period_type": "month", "month": state["filters"]["start_date"][:7],
                    "metric": "teu", "amount": 30, "reference": "KIỂM THỬ EXCEL", "note": ""}
             route.fulfill(json={"valid": True, "errors": [], "rows": [row]})
         elif path == "/plans/import":
             assert set(body) == {"rows"}
-            items = [{**row, "id": len(state["plans"]) + index + 1, "version": 1, "revision": 1, "status": "draft", "is_current": False} for index, row in enumerate(body["rows"])]
+            items = [{**plan_values(row), "id": len(state["plans"]) + index + 1, "version": 1, "revision": 1, "status": "draft", "is_current": False} for index, row in enumerate(body["rows"])]
             state["plans"].extend(items)
             route.fulfill(status=201, json={"items": items, "count": len(items)})
         elif path.endswith("/operations"):
@@ -138,7 +176,7 @@ def main():
             route.fulfill(json={"items": state["closed"], "total": len(state["closed"]), "page": 1, "page_size": 25})
         elif path == "/closed-reports" and method == "POST":
             assert set(body) == {"report_id", "title", "note"} and body["report_id"] == state["report_id"]
-            item = {"id": 1, **state["filters"], "version": 1, "title": body["title"], "note": body["note"],
+            item = {"id": 1, **state["filters"], "berth_rule_version": "initial-berth-v1", "version": 1, "title": body["title"], "note": body["note"],
                     "source_fact_count": 56, "created_at": "2026-09-13T07:00:00Z", "created_by": 9001}
             state["closed"].append(item)
             route.fulfill(status=201, json=item)
@@ -200,16 +238,16 @@ def main():
         expect(management.get_by_role("tab")).to_have_count(3)
         checks.append("login rejects invalid credentials; first login requires password change before reports")
 
-        management.get_by_text("Tạo phiên bản kế hoạch", exact=True).click()
+        management.get_by_role("button", name="Tạo kế hoạch", exact=True).click()
         management.get_by_label("Giá trị kế hoạch", exact=True).fill("100")
         management.get_by_label("Số văn bản / nguồn phê duyệt", exact=True).fill("KIỂM THỬ KH-01")
         management.get_by_role("button", name="Lưu bản nháp", exact=True).click()
-        expect(management.get_by_text("KIỂM THỬ KH-01", exact=True)).to_be_visible()
+        expect(management.locator(".plans-table").get_by_role("cell", name="KIỂM THỬ KH-01", exact=True)).to_be_visible()
         draft_row = management.get_by_role("row").filter(has_text="KIỂM THỬ KH-01")
         draft_row.get_by_role("button", name="Sửa nháp", exact=True).click()
         editor = management.get_by_role("region", name="Sửa bản nháp kế hoạch", exact=True)
         editor.get_by_label("Giá trị kế hoạch", exact=True).fill("120")
-        state["plans"][0].update(amount=105, revision=2)
+        state["plans"][0].update(amount=105, amount_decimal='105', revision=2)
         editor.get_by_role("button", name="Lưu thay đổi", exact=True).click()
         expect(editor.get_by_role("alert")).to_contain_text("Nháp đã thay đổi")
         expect(editor.get_by_label("Giá trị kế hoạch", exact=True)).to_have_value("120")
@@ -256,11 +294,87 @@ def main():
         create.get_by_label("Giá trị kế hoạch", exact=True).fill("200")
         create.get_by_label("Số văn bản / nguồn phê duyệt", exact=True).fill("CHUYẾN NGOÀI KỲ")
         create.get_by_role("button", name="Lưu bản nháp", exact=True).click()
-        expect(management.get_by_text("CHUYẾN NGOÀI KỲ", exact=True)).to_be_visible()
+        expect(management.locator(".plans-table").get_by_role("cell", name="CHUYẾN NGOÀI KỲ", exact=True)).to_be_visible()
         assert state["plans"][2]["voyage_id"] == 901
         management.get_by_role("combobox", name="Danh sách kế hoạch", exact=True).select_option("month")
         checks.append("plan edit/cancel send revisions, approved versions stay immutable, history and out-of-period voyage lookup work")
         checks.append("Excel preview requires explicit import and creates cancellable drafts")
+
+        # This extra approved TEU target exists only in the intercepted fixture.
+        deletion_plan = {**deepcopy(state["plans"][0]), "id": 900, "metric": "teu", "reference": "KIỂM THỬ XÓA",
+                         "amount": 30, "amount_decimal": "30", "revision": 1, "status": "approved", "is_current": True}
+        state["plans"].append(deletion_plan)
+        management.get_by_role("button", name="Tải lại", exact=True).click()
+        deletion_row = management.locator(".plans-table tbody tr").filter(has_text="KIỂM THỬ XÓA")
+        expect(deletion_row).to_be_visible()
+        for width in (390, 700, 1024, 1366):
+            page.set_viewport_size({"width": width, "height": 900})
+            deletion_row.scroll_into_view_if_needed()
+            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), width
+            assert deletion_row.evaluate("""row => {
+              const section = row.closest('.plans-section'); const style = getComputedStyle(section);
+              const width = section.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+              return getComputedStyle(row).display === (width <= 1000 ? 'grid' : 'table-row')
+                && [...row.querySelectorAll('button')].every(button => {
+                  const box = button.getBoundingClientRect(); return box.left >= 0 && box.right <= innerWidth;
+                });
+            }"""), width
+        page.set_viewport_size({"width": 1440, "height": 1050})
+        delete_button = deletion_row.get_by_role("button", name="Xóa", exact=True)
+        delete_button.click()
+        confirmation = page.get_by_role("dialog", name="Xóa kế hoạch?", exact=True)
+        expect(confirmation.get_by_role("button", name="Giữ kế hoạch", exact=True)).to_be_focused()
+        expect(confirmation).to_contain_text("Lịch sử và báo cáo đã chốt vẫn được giữ nguyên")
+        page.keyboard.press("Escape")
+        expect(confirmation).to_have_count(0)
+        expect(delete_button).to_be_focused()
+        assert not any(call["method"] == "DELETE" for call in state["calls"])
+        delete_button.click()
+        deletion_plan.update(revision=2, amount=31, amount_decimal="31")
+        confirmation.get_by_role("button", name="Xóa kế hoạch", exact=True).click()
+        expect(confirmation.get_by_role("alert")).to_contain_text("Kế hoạch đã thay đổi")
+        assert not deletion_plan.get("is_deleted")
+        confirmation.get_by_role("button", name="Đóng và tải lại danh sách", exact=True).click()
+        expect(deletion_row.get_by_role("cell", name="31", exact=True)).to_be_visible()
+        deletion_row.get_by_role("button", name="Lịch sử", exact=True).click()
+        history = management.get_by_role("region", name="Lịch sử kế hoạch", exact=True)
+        expect(history).to_be_visible()
+        state["hold_delete"] = True
+        delete_button.click()
+        before_deletes = len([call for call in state["calls"] if call["method"] == "DELETE"])
+        before_progress = len([call for call in state["calls"] if call["path"].endswith("/throughput-progress")])
+        before_reports = len([call for call in state["calls"] if call["path"] == "/dashboard"])
+        confirmation.get_by_role("button", name="Xóa kế hoạch", exact=True).click()
+        busy = confirmation.get_by_role("button", name="Đang xóa…", exact=True)
+        expect(busy).to_be_disabled()
+        busy.dispatch_event("click")
+        page.keyboard.press("Escape")
+        expect(confirmation).to_be_visible()
+        for _ in range(50):
+            if state["pending_delete"]:
+                break
+            page.wait_for_timeout(10)
+        pending_route, pending_plan = state["pending_delete"]
+        assert len([call for call in state["calls"] if call["method"] == "DELETE"]) == before_deletes + 1
+        pending_plan.update(is_deleted=True, deleted_at="2026-09-13T08:00:00Z", deleted_by=9001, revision=3, is_current=False)
+        pending_route.fulfill(json=pending_plan)
+        state["hold_delete"] = False
+        state["pending_delete"] = None
+        expect(confirmation).to_have_count(0)
+        expect(deletion_row).to_have_count(0)
+        expect(history).to_have_count(0)
+        expect(management.get_by_role("heading", name="Kế hoạch và phiên bản", exact=True)).to_be_focused()
+        assert len([call for call in state["calls"] if call["path"] == "/dashboard"]) == before_reports
+        expect(management.locator(".throughput-progress-empty").filter(has_text="Đang đọc kế hoạch")).to_have_count(0)
+        assert len([call for call in state["calls"] if call["path"].endswith("/throughput-progress")]) > before_progress
+        management.get_by_role("checkbox", name="Hiện kế hoạch đã xóa", exact=True).check()
+        expect(deletion_row).to_contain_text("Đã xóa")
+        expect(deletion_row.get_by_role("button")).to_have_count(1)
+        deletion_row.get_by_role("button", name="Lịch sử", exact=True).click()
+        expect(history).to_contain_text("Xóa kế hoạch")
+        history.get_by_role("button", name="Đóng lịch sử", exact=True).click()
+        management.get_by_role("checkbox", name="Hiện kế hoạch đã xóa", exact=True).uncheck()
+        checks.append("plans use one responsive table/card tree at 390/700/1024/1366; deletion confirms, handles conflicts, prevents doubles and preserves readable history")
 
         management.get_by_role("tab", name="Đối soát", exact=True).click()
         expect(management.locator(".management-operations")).to_contain_text("KIỂM THỬ-001")
@@ -286,8 +400,16 @@ def main():
         expect(management.get_by_label("Kết quả so sánh báo cáo")).to_contain_text("Chênh lệch")
         with page.expect_download() as download:
             management.get_by_role("button", name="Excel", exact=True).click()
-        assert download.value.suggested_filename.endswith(".xlsx")
+        assert download.value.suggested_filename == "bao-cao-da-chot-nghe_tinh-1-v1.xlsx"
         checks.append("closing sends only the trusted report ID; closed/current comparison and authenticated download work")
+
+        for scope in ("Cầu 5", "Chưa xác định cầu"):
+            page.get_by_role("tab", name=scope, exact=True).click()
+            expect(management.get_by_role("button", name="Chốt báo cáo hiện tại", exact=True)).to_be_enabled()
+            expect(management.get_by_role("button", name="So sánh", exact=True)).to_be_disabled()
+        page.get_by_role("tab", name="Cảng Nghệ Tĩnh", exact=True).click()
+        expect(management.get_by_role("button", name="So sánh", exact=True)).to_be_enabled()
+        checks.append("closed reports retain their scope; comparison is disabled for Vietsun and unclassified views")
 
         management = open_workspace(page, "admin")
         expect(management.get_by_role("tab")).to_have_count(2)
@@ -373,6 +495,11 @@ def main():
         expect(management.get_by_role("tab")).to_have_count(3)
         expect(page.locator('.top-nav a[href="#admin"]')).to_have_count(0)
         expect(management.get_by_role("tab", name="Tài khoản", exact=True)).to_have_count(0)
+        expect(management.get_by_role("button", name="Xóa", exact=True)).to_have_count(0)
+        management.get_by_role("checkbox", name="Hiện kế hoạch đã xóa", exact=True).check()
+        deleted_viewer_row = management.locator(".plans-table tbody tr").filter(has_text="KIỂM THỬ XÓA")
+        expect(deleted_viewer_row).to_contain_text("Đã xóa")
+        expect(deleted_viewer_row.get_by_role("button")).to_have_count(1)
         expect(management.get_by_text("Tạo phiên bản kế hoạch", exact=True)).to_have_count(0)
         expect(management.get_by_role("button", name="Duyệt", exact=True)).to_have_count(0)
         management.get_by_role("tab", name="Đối soát", exact=True).click()

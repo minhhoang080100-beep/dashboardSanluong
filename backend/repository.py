@@ -13,8 +13,10 @@ from time import perf_counter
 
 if __package__:
     from .database import DatabaseQueryError, DatabaseUnavailable, get_db_connection, log_database_failure
+    from .berth_scope import BERTH_RULE_VERSION, PRODUCTION_SCOPES, initial_berth_query, validate_production_scope
 else:
     from database import DatabaseQueryError, DatabaseUnavailable, get_db_connection, log_database_failure
+    from berth_scope import BERTH_RULE_VERSION, PRODUCTION_SCOPES, initial_berth_query, validate_production_scope
 
 logger = logging.getLogger(__name__)
 MAX_QUERY_ROWS = 250_000
@@ -177,17 +179,29 @@ def _panel_values(values):
             "teu_status": values["coverage"]["teu"]["status"]}
 
 
+def _berth_evidence(row, production_scope="nghe_tinh"):
+    # SQL always supplies these fields. Defaults only support old unit fixtures,
+    # not stored reports (their rule version is checked by ReportingService).
+    return {"initial_berth_id": row.get("initial_berth_id"),
+            "initial_berth_code": row.get("initial_berth_code"),
+            "initial_berth_at": _timestamp(row.get("initial_berth_at")),
+            "berth_assignment_status": row.get("berth_assignment_status", "missing"),
+            "production_scope": row.get("production_scope", production_scope)}
+
+
 class DashboardRepository:
+    production_scope_filter = "COALESCE(berth_scope.production_scope, 'unclassified') = ?"
     physical_voyage_filter = """v.vesselVoyageId > 0 AND s.vesselId IS NOT NULL
         AND ISNULL(v.rowDeleted, 0) = 0 AND ISNULL(s.rowDeleted, 0) = 0
         AND ISNULL(v.isVirtualVesselVoyage, 0) = 0 AND ISNULL(s.isVirtualVessel, 0) = 0"""
-    throughput_filter = """t.cargoDirectId IN (1, 2) AND EXISTS (
+    job_method_membership_filter = """EXISTS (
         SELECT 1 FROM {schema}.StatisticsGroupType sg
         WHERE sg.statisticsGroupTypeCode = N'SANLUONG-QUACANG'
           AND ISNULL(sg.rowDeleted, 0) = 0
           AND ',' + REPLACE(ISNULL(j.statisticsGroupTypeIdList, ''), ' ', '') + ','
               LIKE '%,' + CAST(sg.statisticsGroupTypeId AS varchar(20)) + ',%'
     )"""
+    throughput_filter = "t.cargoDirectId IN (1, 2) AND " + job_method_membership_filter
     row_active_filter = "ISNULL(t.rowDeleted, 0) = 0"
     teu_logic = """CASE
         WHEN c.cargoName IN ('20F', '20E', '20R') THEN ISNULL(t.quantityTotalSum, 0)
@@ -214,6 +228,11 @@ class DashboardRepository:
             phase = "execute"
             cursor.execute(query, params)
             phase = "fetch"
+            # SET/DECLARE/INSERT in the report's table-variable batch can
+            # expose no-column results on some ODBC driver configurations.
+            while cursor.description is None:
+                if not cursor.nextset():
+                    raise ValueError("Report query returned no result set.")
             columns = [column[0] for column in cursor.description]
             rows = []
             while True:
@@ -243,7 +262,22 @@ class DashboardRepository:
             except Exception:
                 logger.warning("Database connection close failed.")
 
-    def _source_joins(self, schema):
+    @staticmethod
+    def _berth_columns():
+        return {"initial_berth_id": "berth_scope.initial_berth_id",
+                "initial_berth_code": "berth_scope.initial_berth_code",
+                "initial_berth_at": "berth_scope.initial_berth_at",
+                "berth_assignment_status": "COALESCE(berth_scope.berth_assignment_status, 'missing')",
+                "production_scope": "COALESCE(berth_scope.production_scope, 'unclassified')"}
+
+    @staticmethod
+    def _berth_joins(schema, voyage_column="t.vesselVoyageId", *, selection="all"):
+        if voyage_column not in {"t.vesselVoyageId", "v.vesselVoyageId"}:
+            raise ValueError("Nguồn chuyến tàu không hợp lệ.")
+        terminal = next((key for key, value in TERMINALS.items() if value[0] == schema), None)
+        return f"LEFT JOIN ({initial_berth_query(schema, terminal, selection=selection)}) berth_scope ON berth_scope.vesselVoyageId = {voyage_column}"
+
+    def _source_joins(self, schema, *, berth_selection="all", include_berth=True):
         return f"""FROM {schema}.TallyShift t
             LEFT JOIN {schema}.Cargo c ON t.cargoId = c.cargoId
             LEFT JOIN {schema}.Partner p ON t.consigneeId = p.partnerId
@@ -261,7 +295,8 @@ class DashboardRepository:
                 GROUP BY cu.baseUnitId
                 HAVING COUNT(DISTINCT cu.unitValue) = 1 AND MIN(cu.unitValue) > 0
             ) mass_conversion ON mass_conversion.baseUnitId = u.baseUnitId
-            JOIN {schema}.JobMethod j ON t.jobMethodId = j.jobMethodId"""
+            JOIN {schema}.JobMethod j ON t.jobMethodId = j.jobMethodId
+            {self._berth_joins(schema, selection=berth_selection) if include_berth else ''}"""
 
     def search_voyages(self, terminal: str, search: str = "", limit: int = 30):
         """Find existing physical calls, including calls with no production yet."""
@@ -288,14 +323,16 @@ class DashboardRepository:
         query = f"""SELECT TOP (?) '{terminal}' AS terminal,
             CAST(v.vesselVoyageId AS nvarchar(128)) AS voyage_id,
             v.vesselVoyageCode AS voyage_code, s.vesselName AS vessel_name,
-            v.ATA AS arrival_date, v.ATD AS departure_date
+            v.ATA AS arrival_date, v.ATD AS departure_date,
+            {', '.join(f'{expression} AS {key}' for key, expression in self._berth_columns().items())}
             FROM {schema}.VesselVoyage v
             JOIN {schema}.Vessel s ON v.vesselId = s.vesselId
+            {self._berth_joins(schema, 'v.vesselVoyageId')}
             WHERE {self.physical_voyage_filter} {predicate}
             ORDER BY v.vesselVoyageId DESC"""
         return [{**row, "voyage_id": str(row["voyage_id"]),
                  "arrival_date": _timestamp(row.get("arrival_date")),
-                 "departure_date": _timestamp(row.get("departure_date"))}
+                 "departure_date": _timestamp(row.get("departure_date")), **_berth_evidence(row, "unclassified")}
                 for row in self._execute_query(query, tuple(params))]
 
     def validate_voyages(self, pairs) -> set[tuple[str, str]]:
@@ -337,7 +374,8 @@ class DashboardRepository:
         rows = self._execute_query("\nUNION ALL\n".join(parts), tuple(params))
         return {(row["terminal"], str(row["voyage_id"])) for row in rows}
 
-    def _fact_query(self, start: date, end_exclusive: date, terminal: str, voyage_id: int | None = None):
+    def _fact_query(self, start: date, end_exclusive: date, terminal: str, voyage_id: int | None = None, *, production_scope="nghe_tinh"):
+        validate_production_scope(production_scope)
         parts = []
         params = []
         selected = TERMINALS if terminal == "all" else {terminal: TERMINALS[terminal]}
@@ -345,7 +383,7 @@ class DashboardRepository:
             throughput = self.throughput_filter.format(schema=schema)
             # Only identifiers from the fixed allowlist enter SQL text.
             columns = {
-                "kind": "'fact'", "terminal_id": f"'{terminal_id}'",
+                "kind": "'fact'", "terminal_id": f"'{terminal_id}'", **self._berth_columns(),
                 "terminal_name": f"N'{name}'", "operation_day": "CAST(t.shiftDate AS date)",
                 "vessel_id": f"CASE WHEN {self.physical_voyage_filter} THEN CAST(t.vesselVoyageId AS nvarchar(128)) ELSE NULL END",
                 "vessel_name": "s.vesselName", "voyage_code": "v.vesselVoyageCode",
@@ -371,43 +409,62 @@ class DashboardRepository:
             source_select = ",\n".join(f"{value} AS {key}" for key, value in source_columns.items())
             parts.append(f"""
                 SELECT {fact_select}
-                {self._source_joins(schema)}
+                {self._source_joins(schema, berth_selection='voyage' if voyage_id is not None else 'all')}
                 WHERE t.shiftDate >= ? AND t.shiftDate < ?
-                    AND {throughput} AND {self.row_active_filter}
+                    AND {throughput} AND {self.row_active_filter} AND {self.production_scope_filter}
                     {"AND t.vesselVoyageId = ?" if voyage_id is not None else ""}
                 GROUP BY CAST(t.shiftDate AS date), t.vesselVoyageId, c.cargoName,
                     t.cargoDirectId, t.consigneeId, p.partnerShortName,
                     u.baseUnitCode, u.baseUnitName, u.TONE, u.KG, mass_conversion.tonne_factor,
                     v.vesselVoyageId, v.rowDeleted, v.isVirtualVesselVoyage,
                     s.vesselId, s.rowDeleted, s.isVirtualVessel,
-                    s.vesselName, v.vesselVoyageCode, v.ATA, v.ATD
+                    s.vesselName, v.vesselVoyageCode, v.ATA, v.ATD,
+                    berth_scope.initial_berth_id, berth_scope.initial_berth_code,
+                    berth_scope.initial_berth_at, berth_scope.berth_assignment_status, berth_scope.production_scope
                 UNION ALL
                 SELECT {source_select}
                 FROM {schema}.TallyShift t
                 JOIN {schema}.JobMethod j ON t.jobMethodId = j.jobMethodId
                 WHERE {throughput} AND {self.row_active_filter}
             """)
-            params.extend((start, end_exclusive))
             if voyage_id is not None:
                 params.append(voyage_id)
-        return "\nUNION ALL\n".join(parts), tuple(params)
+            params.extend((start, end_exclusive, production_scope))
+            if voyage_id is not None:
+                params.append(voyage_id)
+        # Scope/date selectivity varies greatly. Compile this statement for its
+        # actual parameters instead of reusing an unsuitable report plan.
+        return "\nUNION ALL\n".join(parts) + "\nOPTION (RECOMPILE)", tuple(params)
 
-    def get_dashboard(self, start_date=None, end_date=None, terminal="all", *, voyage_id: int | None = None) -> dict[str, Any]:
+    def get_dashboard(self, start_date=None, end_date=None, terminal="all", *, voyage_id: int | None = None, production_scope="nghe_tinh") -> dict[str, Any]:
         start, end = date_range(start_date, end_date, terminal)
         length = (end - start).days + 1
         previous_start = start - timedelta(days=length)
         previous_end = start - timedelta(days=1)
-        query, params = self._fact_query(previous_start, end + timedelta(days=1), terminal, voyage_id)
+        query, params = self._fact_query(previous_start, end + timedelta(days=1), terminal, voyage_id, production_scope=production_scope)
         fetched = self._execute_query(query, params)
-        return self._dashboard_from_rows(fetched, start, end, terminal)
+        return self._dashboard_from_rows(fetched, start, end, terminal, production_scope=production_scope)
 
-    def _report_query(self, start: date, end_exclusive: date, terminal: str):
-        """One raw fact read for an immutable report and all later drill-downs."""
-        parts, params = [], []
+    def _report_query(self, start: date, end_exclusive: date, terminal: str, *, production_scope="nghe_tinh"):
+        """Read facts and one-row voyage assignments without a correlated join.
+
+        Materialize the small eligible-method catalogue once per source. The
+        following UNION still reads all raw facts and voyage assignments in one
+        statement, before scope attribution and report aggregation. Table
+        variables are request-local; no source table is modified.
+        """
+        validate_production_scope(production_scope)
+        parts, params, method_tables = [], [], []
         selected = TERMINALS if terminal == "all" else {terminal: TERMINALS[terminal]}
         for terminal_id, (schema, name) in selected.items():
+            method_table = f"@eligible_{terminal_id}"
+            method_tables.append(f"""DECLARE {method_table} TABLE(jobMethodId int NOT NULL PRIMARY KEY);
+                INSERT INTO {method_table}(jobMethodId)
+                SELECT DISTINCT j.jobMethodId FROM {schema}.JobMethod j
+                WHERE {self.job_method_membership_filter.format(schema=schema)};""")
             columns = {
                 "kind": "'fact'", "id": "CAST(t.tallyShiftId AS nvarchar(128))",
+                **{key: "NULL" for key in self._berth_columns()},
                 "operation_code": "t.tallyShiftCode", "operation_day": "CAST(t.shiftDate AS date)",
                 "terminal_id": f"'{terminal_id}'", "terminal_name": f"N'{name}'",
                 "vessel_id": f"CASE WHEN {self.physical_voyage_filter} THEN CAST(t.vesselVoyageId AS nvarchar(128)) ELSE NULL END",
@@ -443,9 +500,14 @@ class DashboardRepository:
             }
             fact_select = ",\n".join(f"{value} AS {key}" for key, value in columns.items())
             source_select = ",\n".join(f"{value} AS {key}" for key, value in source_columns.items())
-            throughput = self.throughput_filter.format(schema=schema)
+            berth_values = {"kind": "'berth'", "terminal_id": f"'{terminal_id}'",
+                            "source_voyage_id": "CAST(berth_scope.vesselVoyageId AS nvarchar(128))",
+                            **self._berth_columns()}
+            berth_select = ",\n".join(f"{berth_values.get(key, 'NULL')} AS {key}" for key in columns)
+            throughput = f"""t.cargoDirectId IN (1, 2) AND EXISTS (
+                SELECT 1 FROM {method_table} em WHERE em.jobMethodId = j.jobMethodId)"""
             parts.append(f"""SELECT {fact_select}
-                {self._source_joins(schema)}
+                {self._source_joins(schema, include_berth=False)}
                 LEFT JOIN {schema}.BaseUnit qu ON t.quantityUnitId = qu.baseUnitId
                 LEFT JOIN {schema}.Shift sh ON t.shiftId = sh.shiftId
                 WHERE t.shiftDate >= ? AND t.shiftDate < ?
@@ -453,21 +515,53 @@ class DashboardRepository:
                 UNION ALL SELECT {source_select}
                 FROM {schema}.TallyShift t
                 JOIN {schema}.JobMethod j ON t.jobMethodId = j.jobMethodId
-                WHERE {throughput} AND {self.row_active_filter}""")
+                WHERE {throughput} AND {self.row_active_filter}
+                UNION ALL SELECT {berth_select}
+                FROM ({initial_berth_query(schema, terminal_id)}) berth_scope""")
             params.extend((start, end_exclusive))
-        return "\nUNION ALL\n".join(parts), tuple(params)
+        query = "SET NOCOUNT ON;\n" + "\n".join(method_tables) + "\n" + "\nUNION ALL\n".join(parts)
+        return query + "\nOPTION (RECOMPILE)", tuple(params)
 
-    def read_report(self, start_date=None, end_date=None, terminal="all"):
+    @staticmethod
+    def _scope_report_rows(fetched, production_scope):
+        """Join by source identity once; never multiply facts or infer a berth."""
+        validate_production_scope(production_scope)
+        assignments = {}
+        for row in fetched:
+            if row["kind"] != "berth":
+                continue
+            if row["source_voyage_id"] is None:
+                # Match SQL equality semantics: NULL identities never join.
+                continue
+            key = (row["terminal_id"], row["source_voyage_id"])
+            if key in assignments:
+                # The classifier GROUP BY guarantees uniqueness. Fail closed
+                # if a future source/query change violates that invariant.
+                raise DatabaseQueryError()
+            assignments[key] = _berth_evidence(row, "unclassified")
+        selected = []
+        for row in fetched:
+            if row["kind"] == "source":
+                selected.append(row)
+            elif row["kind"] == "fact":
+                evidence = assignments.get((row["terminal_id"], row.get("source_voyage_id")),
+                                           _berth_evidence({}, "unclassified"))
+                if evidence["production_scope"] == production_scope:
+                    selected.append({**row, **evidence})
+        return selected
+
+    def read_report(self, start_date=None, end_date=None, terminal="all", *, production_scope="nghe_tinh"):
         """Read current/prior facts once; preserve unassigned throughput rows."""
         start, end = date_range(start_date, end_date, terminal)
         previous_start = start - timedelta(days=(end - start).days + 1)
-        query, params = self._report_query(previous_start, end + timedelta(days=1), terminal)
-        fetched = self._execute_query(query, params)
-        report = self._dashboard_from_rows(fetched, start, end, terminal)
+        query, params = self._report_query(previous_start, end + timedelta(days=1), terminal, production_scope=production_scope)
+        fetched = self._scope_report_rows(self._execute_query(query, params), production_scope)
+        report = self._dashboard_from_rows(fetched, start, end, terminal, production_scope=production_scope)
         current = [row for row in fetched if row["kind"] == "fact" and start <= row["operation_day"] <= end]
         return {"report": report, "rows": current}
 
-    def _dashboard_from_rows(self, fetched, start: date, end: date, terminal: str):
+    def _dashboard_from_rows(self, fetched, start: date, end: date, terminal: str, *, production_scope="nghe_tinh"):
+        validate_production_scope(production_scope)
         length = (end - start).days + 1
         previous_start = start - timedelta(days=length)
         previous_end = start - timedelta(days=1)
@@ -567,6 +661,7 @@ class DashboardRepository:
                 "terminal_id": terminal_id, "terminal_name": label["terminal_name"],
                 "voyage_id": selected_voyage_id, "vessel_name": label.get("vessel_name"),
                 "voyage_code": label.get("voyage_code"),
+                **_berth_evidence(label, production_scope),
                 "arrival_at": _timestamp(label.get("arrival_at")),
                 "departure_at": _timestamp(label.get("departure_at")),
                 "first_operation_date": min(row["operation_day"] for row in rows).isoformat(),
@@ -634,7 +729,8 @@ class DashboardRepository:
             "meta": {
                 "status": "ok" if current else "empty",
                 "generated_at": datetime.now(timezone.utc).isoformat(),
-                "filters": {"start_date": start.isoformat(), "end_date": end.isoformat(), "terminal": terminal, "timezone": "Asia/Ho_Chi_Minh"},
+                "filters": {"start_date": start.isoformat(), "end_date": end.isoformat(), "terminal": terminal, "timezone": "Asia/Ho_Chi_Minh", "production_scope": production_scope},
+                "berth_rule_version": BERTH_RULE_VERSION,
                 "previous_period": {"start_date": previous_start.isoformat(), "end_date": previous_end.isoformat(), "label": f"{length} ngày liền trước", "record_count": prev["record_count"], "metric_coverage": previous_coverage},
                 "sources": source_meta,
                 "metric_coverage": metric_coverage,
@@ -645,13 +741,14 @@ class DashboardRepository:
                     "measured_tonnage": "Trường tương thích, cùng giá trị tổng trọng lượng ghi nhận đã chuẩn hóa về tấn; không phải KPI khối lượng thứ hai.",
                     "teu": "20F/20E/20R ×1; 40F/40E/40R/45F/45E ×2 theo quantityTotalSum. Các mã khác chưa có quy tắc quy đổi.",
                     "throughput": "TallyShift đang hoạt động (rowDeleted NULL hoặc 0), cargoDirectId 1 hoặc 2, JobMethod thuộc StatisticsGroupType có mã SANLUONG-QUACANG bằng quan hệ ID đầy đủ trong statisticsGroupTypeIdList. Không tìm theo từ khóa tên phương án.",
+                    "production_scope": "Phân loại toàn chuyến theo cầu cập thực tế đầu tiên, ưu tiên ATB rồi ATA. Cầu 5 (berthId 13) tại Cửa Lò thuộc Cầu 5 – Vietsun; cầu khác thuộc Nghệ Tĩnh. Thiếu hoặc mơ hồ về cầu đầu được giữ riêng ở Chưa xác định cầu. Chuyển cầu sau không đổi phân loại.",
                     "vessel_calls": "Số cặp xí nghiệp + vesselVoyageId dương có chuyến và tàu vật lý còn hợp lệ, không ảo/đã xóa, phát sinh dòng qua cảng trong kỳ. Dòng không đủ điều kiện đếm chuyến vẫn giữ trong khối lượng. Không đồng nghĩa số tàu cập cảng.",
                     "voyages": "Danh sách gồm đúng các chuyến được đếm trong KPI. Khối lượng của mỗi chuyến giới hạn theo kỳ lọc; ATA/ATD là thời điểm thực tế ghi tại VesselVoyage, không thay bằng ETA/ETD. Tổng khối lượng công ty còn có thể gồm dòng chưa gắn chuyến hợp lệ.",
                     "cargo": "Cơ cấu hàng hóa gộp các mã 20F/20E/20R/40F/40E/40R/45F/45E thành Hàng container; hàng khác giữ Cargo.cargoName, dòng thiếu danh mục giữ nhãn Chưa phân loại. Phiếu tác nghiệp và danh sách hàng của từng chuyến vẫn giữ mã hàng gốc. Việc gộp nhóm không thay đổi tấn, TEU hoặc tổng sản lượng.",
                     "customers": "Top 5 theo cặp xí nghiệp + consigneeId, hiển thị partnerShortName; giữ tách khách trùng tên. Khách thiếu consigneeId gộp vào Chưa xác định trong từng xí nghiệp. Chưa hợp nhất định danh giữa các nguồn; top 5 không đại diện toàn bộ tổng.",
                     "history": "Tổng theo tháng nằm trong khoảng ngày đã chọn; tháng đầu/cuối có thể chưa đủ tháng.",
                     "daily_history": "Tổng từng ngày trong khoảng đã chọn từ cùng tập dòng; ngày không có dòng trả 0, không tự kết luận mất dữ liệu hay ngừng sản xuất.",
-                    "sources": "latest_operation_at là shiftDate mới nhất trong từng nguồn theo bộ lọc thông qua, không giới hạn kỳ; không phải thời điểm đồng bộ hay thời điểm sửa dữ liệu. record_count là số dòng trong kỳ đã chọn.",
+                    "sources": "latest_operation_at là shiftDate mới nhất của dòng thông qua tại toàn nguồn xí nghiệp, không giới hạn kỳ hoặc phạm vi Nghệ Tĩnh/Vietsun; không phải thời điểm đồng bộ hay sửa dữ liệu. latest_selected_operation_at và record_count chỉ phản ánh kỳ và phạm vi sản lượng đã chọn.",
                     "comparison": "So sánh phần trăm với khoảng liền trước có cùng số ngày; không tính khi mẫu số bằng 0, không có dữ liệu, hoặc dữ liệu tấn/TEU của một trong hai kỳ chưa đầy đủ.",
                     "native_units": "Tổng weightNetSum theo weightUnitId ở từng xí nghiệp; giữ nguyên đơn vị nguồn. Không cộng chung giữa các đơn vị và không diễn giải là tấn.",
                     "consistency": "Các biểu đồ được tổng hợp từ cùng một tập dữ liệu của một câu lệnh SQL; chưa bật snapshot isolation trên nguồn.",
@@ -674,7 +771,8 @@ class DashboardRepository:
             },
         }
 
-    def _operation_query(self, start: date, end: date, terminal: str, voyage_id: int):
+    def _operation_query(self, start: date, end: date, terminal: str, voyage_id: int, *, production_scope="nghe_tinh"):
+        validate_production_scope(production_scope)
         schema, name = TERMINALS[terminal]
         query = f"""SELECT 'fact' AS kind, CAST(t.tallyShiftId AS nvarchar(128)) AS id,
             t.tallyShiftCode AS operation_code, CAST(t.shiftDate AS date) AS operation_day,
@@ -683,6 +781,7 @@ class DashboardRepository:
             CAST(t.vesselVoyageId AS nvarchar(128)) AS vessel_id,
             s.vesselName AS vessel_name, v.vesselVoyageCode AS voyage_code,
             v.ATA AS arrival_at, v.ATD AS departure_at,
+            {', '.join(f'{expression} AS {key}' for key, expression in self._berth_columns().items())},
             CAST(t.consigneeId AS nvarchar(128)) AS customer_id,
             COALESCE(NULLIF(p.partnerShortName, N''), N'Chưa xác định') AS customer_name,
             t.shiftDate AS latest_operation_at,
@@ -703,16 +802,18 @@ class DashboardRepository:
             CASE WHEN t.weightNetSum IS NULL AND t.quantityTotalSum = 0 THEN 1 ELSE 0 END AS empty_unweighed_count,
             CASE WHEN t.weightNetSum IS NULL AND t.quantityTotalSum IS NULL THEN 1 ELSE 0 END AS unweighed_unknown_quantity_count,
             CASE WHEN t.weightNetSum IS NULL AND t.quantityTotalSum <> 0 THEN 1 ELSE 0 END AS missing_weight_with_quantity_count
-            {self._source_joins(schema)}
+            {self._source_joins(schema, berth_selection='voyage')}
             LEFT JOIN {schema}.BaseUnit qu ON t.quantityUnitId = qu.baseUnitId
             LEFT JOIN {schema}.Shift sh ON t.shiftId = sh.shiftId
             WHERE t.shiftDate >= ? AND t.shiftDate < ? AND t.vesselVoyageId = ?
               AND {self.throughput_filter.format(schema=schema)} AND {self.row_active_filter}
               AND {self.physical_voyage_filter}
-            ORDER BY t.shiftDate DESC, t.tallyShiftId DESC"""
-        return query, (start, end + timedelta(days=1), voyage_id)
+              AND {self.production_scope_filter}
+            ORDER BY t.shiftDate DESC, t.tallyShiftId DESC
+            OPTION (RECOMPILE)"""
+        return query, (voyage_id, start, end + timedelta(days=1), voyage_id, production_scope)
 
-    def get_voyage_detail(self, terminal: str, voyage_id: int, start_date=None, end_date=None, page=1, page_size=25, operation_filter="all"):
+    def get_voyage_detail(self, terminal: str, voyage_id: int, start_date=None, end_date=None, page=1, page_size=25, operation_filter="all", *, production_scope="nghe_tinh"):
         if terminal not in TERMINALS:
             raise ValueError("Chọn một xí nghiệp hợp lệ để xem chuyến tàu.")
         if isinstance(voyage_id, bool) or not isinstance(voyage_id, int) or not 1 <= voyage_id <= 2147483647:
@@ -727,9 +828,9 @@ class DashboardRepository:
         # Summary, charts and the requested page share this one read. Pagination
         # is applied to the bounded voyage set after aggregation, so same-count
         # source edits cannot make a response combine two different row sets.
-        query, params = self._operation_query(start, end, terminal, voyage_id)
+        query, params = self._operation_query(start, end, terminal, voyage_id, production_scope=production_scope)
         raw_operations = self._execute_query(query, params)
-        dashboard = self._dashboard_from_rows(raw_operations, start, end, terminal)
+        dashboard = self._dashboard_from_rows(raw_operations, start, end, terminal, production_scope=production_scope)
         header = next((row for row in dashboard["voyages"] if row["terminal_id"] == terminal and row["voyage_id"] == str(voyage_id)), None)
         if header is None:
             raise VoyageNotFound("Không có chuyến tàu hợp lệ phát sinh sản lượng trong phạm vi đã chọn.")
@@ -767,6 +868,7 @@ class DashboardRepository:
                 "weight_unit": row["unit_code"], "weight_unit_name": row["unit_name"],
                 "tonnage": values["tonnage"], "teu": values["teu"],
                 "tonnage_status": values["tonnage_status"], "teu_status": values["teu_status"],
+                **_berth_evidence(row, production_scope),
             })
         summary = {key: header[key] for key in ("tonnage", "teu", "record_count", "tonnage_status", "teu_status")}
         return {"header": header, "summary": summary, "cargo": dashboard["cargo"],
@@ -774,19 +876,20 @@ class DashboardRepository:
                 "native_units": dashboard["native_units"],
                 "operations": {"page": page, "page_size": page_size, "total": total, "total_pages": total_pages, "rows": operations,
                                "filter": operation_filter, "total_all": counts["all"], "counts": counts},
-                "meta": {"filters": {"terminal": terminal, "voyage_id": str(voyage_id), "start_date": start.isoformat(), "end_date": end.isoformat(), "timezone": "Asia/Ho_Chi_Minh", "operation_filter": operation_filter},
+                "meta": {"filters": {"terminal": terminal, "voyage_id": str(voyage_id), "start_date": start.isoformat(), "end_date": end.isoformat(), "timezone": "Asia/Ho_Chi_Minh", "operation_filter": operation_filter, "production_scope": production_scope},
+                         "berth_rule_version": BERTH_RULE_VERSION,
                          "generated_at": dashboard["meta"]["generated_at"], "metric_coverage": dashboard["meta"]["metric_coverage"],
                          "operations_order": "shiftDate DESC, tallyShiftId DESC",
                           "read_consistency": "single_fact_set"}}
 
-    def read_voyage_lifetime(self, terminal: str, voyage_id: int):
+    def read_voyage_lifetime(self, terminal: str, voyage_id: int, *, production_scope="nghe_tinh"):
         """Whole-call progress, separate from the selected reporting period."""
         if terminal not in TERMINALS:
             raise ValueError("Chọn một xí nghiệp hợp lệ.")
         if isinstance(voyage_id, bool) or not isinstance(voyage_id, int) or not 1 <= voyage_id <= 2147483647:
             raise ValueError("Mã chuyến tàu không hợp lệ.")
         start, end = date(1900, 1, 1), vietnam_today()
-        query, params = self._operation_query(start, end, terminal, voyage_id)
+        query, params = self._operation_query(start, end, terminal, voyage_id, production_scope=production_scope)
         rows = self._execute_query(query, params)
         if not rows:
             raise VoyageNotFound("Không có tác nghiệp qua cảng của chuyến tàu.")
@@ -803,9 +906,14 @@ class DashboardRepository:
                   "first_operation_date": min(row["operation_day"] for row in rows).isoformat(),
                   "last_operation_date": max(row["operation_day"] for row in rows).isoformat(),
                   "cargo_names": sorted({row["cargo_name"] for row in rows}), **values}
+        header.update(_berth_evidence(label, production_scope))
         return {"header": header, "summary": values, "rows": rows,
                 "meta": {"scope": "whole_voyage", "terminal": terminal, "voyage_id": str(voyage_id),
                          "start_date": start.isoformat(), "end_date": end.isoformat(),
+                         "filters": {"terminal": terminal, "voyage_id": str(voyage_id),
+                                     "start_date": start.isoformat(), "end_date": end.isoformat(),
+                                     "production_scope": production_scope},
+                         "berth_rule_version": BERTH_RULE_VERSION,
                          "source_read_at": datetime.now(timezone.utc).isoformat(),
                          "read_consistency": "single_fact_set"}}
 

@@ -26,7 +26,7 @@ def make_plan(rows=None, headers=None):
 def month_row(**changes):
     values = {"terminal": "cua_lo", "period_type": "month", "month": "2026-09", "voyage_id": None,
               "metric": "tonnage", "amount": 120.125, "reference": "PLAN-EXAMPLE", "note": None, **changes}
-    return [values[key] for key in workbook_io.PLAN_KEYS]
+    return [values.get(key) for key in workbook_io.PLAN_KEYS]
 
 
 def replace_zip_member(content, name, replacement):
@@ -124,7 +124,7 @@ def test_row_count_and_forged_dimensions_are_bounded():
     with pytest.raises(ValueError, match="500"):
         workbook_io.parse_plan_workbook(make_plan([month_row()] * 501))
     original = make_plan([month_row()])
-    forged = replace_zip_member(original, "xl/worksheets/sheet1.xml", lambda xml: xml.replace(b'A1:H2', b'A1:H1048576'))
+    forged = replace_zip_member(original, "xl/worksheets/sheet1.xml", lambda xml: xml.replace(b'A1:L2', b'A1:L1048576'))
     with pytest.raises(ValueError, match="500"):
         workbook_io.parse_plan_workbook(forged)
 
@@ -165,7 +165,7 @@ def test_export_includes_full_row_count_and_preserves_types_native_units_and_nul
     summary = {row[0].value: row[1] for row in book["Tổng hợp"].iter_rows(min_row=2)}
     assert summary["Số dòng trong tệp"].value == 63
     assert summary["Số dòng nguồn"].value == 63
-    assert summary["Sản lượng ghi nhận qua cảng"].value is None
+    assert summary["Sản lượng thông qua"].value is None
     assert summary["Container tác nghiệp"].value == 0
     assert summary["ID khách hàng"].value == "000012" and summary["ID khách hàng"].data_type == "s"
     book.close()
@@ -203,4 +203,55 @@ def test_numeric_metadata_identifiers_are_exported_as_text():
     summary = {row[0].value: row[1] for row in book["Tổng hợp"].iter_rows(min_row=2)}
     assert summary["ID khách hàng"].value == "123" and summary["ID khách hàng"].data_type == "s"
     assert summary["ID chuyến"].value == "101" and summary["ID chuyến"].data_type == "s"
+    book.close()
+
+
+def test_export_preserves_scope_rule_and_first_berth_evidence_as_literal_values():
+    from datetime import timezone
+    rows = [{**operation(1), 'production_scope': 'vietsun', 'berth_assignment_status': 'assigned',
+             'initial_berth_id': 13, 'initial_berth_code': '=Cau5',
+             'initial_berth_at': datetime(2026, 8, 31, 9, 15, tzinfo=timezone.utc)}]
+    snapshot = report(rows)
+    snapshot['meta']['filters']['production_scope'] = 'vietsun'
+    snapshot['meta']['berth_rule_version'] = 'initial-berth-v1'
+    book = load_workbook(BytesIO(workbook_io.report_workbook(snapshot, rows)), data_only=False)
+    summary = {row[0].value: row[1].value for row in book['Tổng hợp'].iter_rows(min_row=2)}
+    assert summary['Phạm vi sản lượng'] == 'Cầu 5'
+    assert summary['Mã phạm vi sản lượng'] == 'vietsun'
+    assert summary['Phiên bản quy tắc cầu cập đầu tiên'] == 'initial-berth-v1'
+    sheet = book['Tác nghiệp']
+    assert sheet['Q2'].value == 'Cầu 5' and sheet['R2'].value == 'Đã xác định'
+    assert sheet['S2'].value == '13' and sheet['S2'].data_type == 's'
+    assert sheet['T2'].value == '=Cau5' and sheet['T2'].data_type == 's'
+    assert sheet['U2'].value == '2026-08-31T09:15:00+00:00'
+    book.close()
+
+
+@pytest.mark.parametrize('status', ['missing', 'ambiguous'])
+def test_unclassified_export_keeps_unknown_berth_empty(status):
+    rows = [{**operation(1), 'production_scope': 'unclassified', 'berth_assignment_status': status,
+             'initial_berth_id': None, 'initial_berth_code': None, 'initial_berth_at': None}]
+    snapshot = report(rows)
+    snapshot['meta']['filters']['production_scope'] = 'unclassified'
+    snapshot['meta']['berth_rule_version'] = 'initial-berth-v1'
+    book = load_workbook(BytesIO(workbook_io.report_workbook(snapshot, rows)))
+    sheet = book['Tác nghiệp']
+    assert sheet['Q2'].value == 'Chưa xác định cầu'
+    assert sheet['R2'].value == {'missing': 'Thiếu dữ liệu cầu', 'ambiguous': 'Không xác định duy nhất'}[status]
+    assert all(sheet.cell(2, col).value is None for col in (19, 20, 21))
+    book.close()
+
+
+def test_legacy_export_is_labelled_without_reclassifying_or_mutating_saved_report():
+    from copy import deepcopy
+    rows = [operation(1)]
+    snapshot = report(rows)
+    unchanged = deepcopy(snapshot)
+    book = load_workbook(BytesIO(workbook_io.report_workbook(snapshot, rows)))
+    summary = {row[0].value: row[1].value for row in book['Tổng hợp'].iter_rows(min_row=2)}
+    assert summary['Phạm vi sản lượng'].startswith('Phạm vi cũ')
+    assert summary['Mã phạm vi sản lượng'] == 'legacy'
+    assert summary['Phiên bản quy tắc cầu cập đầu tiên'] == 'Chưa được lưu trong bản dữ liệu này'
+    assert book['Tác nghiệp']['R2'].value == 'Chưa lưu bằng chứng phân loại'
+    assert snapshot == unchanged
     book.close()

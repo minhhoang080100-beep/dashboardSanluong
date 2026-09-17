@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir --upgrade pip==26.2.1 \
     && useradd --create-home --uid 10001 dashboard
 
 # Keep diagnostics, snapshots, and business data out of the runtime image.
-COPY config.py database.py repository.py reporting.py snapshot_store.py state_backup.py control_store.py control_api.py manage_users.py workbook_io.py integration.py runtime_entrypoint.py main.py ./
+COPY config.py database.py berth_scope.py repository.py reporting.py snapshot_store.py state_backup.py control_store.py control_api.py manage_users.py workbook_io.py integration.py runtime_entrypoint.py main.py ./
 RUN mkdir -p /app/.data && chown -R dashboard:dashboard /app/.data
 ENV DASHBOARD_STATE_PATH=/app/.data/control.sqlite3
 USER dashboard

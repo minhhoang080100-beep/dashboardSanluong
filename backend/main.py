@@ -70,12 +70,13 @@ def filters(
     start_date: date | None = None,
     end_date: date | None = None,
     terminal: Literal["all", "cua_lo", "ben_thuy"] = "all",
+    production_scope: Literal["nghe_tinh", "vietsun", "unclassified"] = "nghe_tinh",
 ):
     try:
         start, end = date_range(start_date, end_date, terminal)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
-    return {"start_date": start, "end_date": end, "terminal": terminal}
+    return {"start_date": start, "end_date": end, "terminal": terminal, "production_scope": production_scope}
 
 
 @app.get("/")
@@ -138,6 +139,7 @@ def get_voyage_detail(
     page_size: int = Query(default=25, ge=1, le=100),
     operation_filter: Literal["all", "with_values", "missing_weight"] = "all",
     report_id: str | None = Query(default=None, max_length=128),
+    production_scope: Literal["nghe_tinh", "vietsun", "unclassified"] = "nghe_tinh",
     user: dict = Depends(require_user), service=Depends(get_reporting),
 ):
     require_scope(user, terminal)
@@ -147,10 +149,12 @@ def get_voyage_detail(
             selected_start, selected_end = date_range(start_date, end_date, terminal)
             if report['meta']['filters']['start_date'] != selected_start.isoformat() or report['meta']['filters']['end_date'] != selected_end.isoformat():
                 raise ValueError('Kỳ chi tiết không khớp phiên báo cáo.')
+            if report['meta']['filters'].get('production_scope') != production_scope:
+                raise ValueError('Phạm vi sản lượng chi tiết không khớp phiên báo cáo.')
             return service.get_voyage_from_report(report_id, terminal, voyage_id, page, page_size, operation_filter)
         options = {} if operation_filter == "all" else {"operation_filter": operation_filter}
         return dashboard_repo.get_voyage_detail(
-            terminal, voyage_id, start_date, end_date, page, page_size, **options
+            terminal, voyage_id, start_date, end_date, page, page_size, production_scope=production_scope, **options
         )
     except VoyageNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None

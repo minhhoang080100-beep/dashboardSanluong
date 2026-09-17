@@ -1,12 +1,15 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, ArrowDownRight, ArrowUpRight, ArrowUpRight as OpenArrow, BarChart3, Boxes, CalendarDays, Check, CircleAlert, Clock3, Database, Download, Info, MapPin, Package, RefreshCw, Ship, SlidersHorizontal, Users, Warehouse } from 'lucide-react';
-import { dashboardCsv, dashboardResourceView, fetchDashboard, formatDate, formatNumber, formatTimestamp, isNumber, presetDates, ratioAvailability, TERMINALS, todayInVietnam, validateFilters } from '../dashboard-data';
+import { dashboardCsv, dashboardRequestTimeout, dashboardResourceView, fetchDashboard, formatDate, formatNumber, formatTimestamp, isNumber, presetDates, ratioAvailability, TERMINALS, todayInVietnam, validateFilters } from '../dashboard-data';
 import Voyages from './Voyages';
 import CargoBreakdown from './CargoBreakdown';
 import Management from './Management';
+import ThroughputProgress from './ThroughputProgress';
 import OperationsExplorer from './OperationsExplorer';
 import { allowedTerminals, rememberFilters, restoreFilters } from '../filter-preferences';
-import { AUTO_REFRESH_MS, currentReportPeriod, rememberAutoRefresh, restoreAutoRefresh, shouldAutoRefresh } from '../report-refresh';
+import { AUTO_REFRESH_MS, currentReportPeriod, rememberAutoRefresh, reportRequestRefresh, restoreAutoRefresh, shouldAutoRefresh } from '../report-refresh';
+import { PRODUCTION_SCOPES, isProductionScope, productionScopeDescription, productionScopeLabel } from '../production-scope';
+import { reportSelectionForPlan } from '../throughput-progress';
 import './Dashboard.css';
 
 const COLORS = ['#64877b', '#8094a0', '#ac966e', '#8c91a1', '#8b9b7d', '#a08a96'];
@@ -92,7 +95,7 @@ function Customers({ rows, total, hasSignedInput, onInspect }) {
   </section>;
 }
 
-const definitionNames = { tonnage: 'Sản lượng qua cảng', measured_tonnage: 'Khối lượng ghi nhận', native_units: 'Các đơn vị nguồn khác', teu: 'Container (TEU)', throughput: 'Phạm vi sản lượng', vessel_calls: 'Chuyến tàu có phát sinh', cargo: 'Nhóm hàng', customers: 'Khách hàng', history: 'Chuỗi thời gian theo tháng', daily_history: 'Chuỗi thời gian theo ngày', sources: 'Thời điểm dữ liệu nguồn', comparison: 'Kỳ so sánh', consistency: 'Tính nhất quán số liệu' };
+const definitionNames = { tonnage: 'Sản lượng thông qua', measured_tonnage: 'Khối lượng ghi nhận', native_units: 'Các đơn vị nguồn khác', teu: 'Container (TEU)', throughput: 'Phạm vi sản lượng', vessel_calls: 'Chuyến tàu có phát sinh', cargo: 'Nhóm hàng', customers: 'Khách hàng', history: 'Chuỗi thời gian theo tháng', daily_history: 'Chuỗi thời gian theo ngày', sources: 'Thời điểm dữ liệu nguồn', comparison: 'Kỳ so sánh', consistency: 'Tính nhất quán số liệu' };
 function DataQuality({ meta }) {
   const sources = Array.isArray(meta.sources) ? meta.sources : [];
   return <details className="panel quality-panel" id="data-quality">
@@ -128,18 +131,26 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
   const [reportRequested, setReportRequested] = useState(activeView !== 'admin');
   const [filters, setFilters] = useState(() => restoreFilters(user));
   const [draft, setDraft] = useState(filters);
-  const [reload, setReload] = useState(0);
+  const [quarterYear, setQuarterYear] = useState(() => Math.max(2000, Number(filters.start_date.slice(0, 4))));
+  const [preferredPeriodType, setPreferredPeriodType] = useState(null);
+  const [preferredPeriodKey, setPreferredPeriodKey] = useState('');
+  const [reportRequest, setReportRequest] = useState({ revision: 0, filterKey: '', forceRefresh: false });
   const [formError, setFormError] = useState('');
   const [exportMessage, setExportMessage] = useState('');
   const [resource, setResource] = useState({ status: 'loading', data: null, error: '', key: '' });
   const [inspection, setInspection] = useState(null);
   const [autoRefresh, setAutoRefresh] = useState(() => restoreAutoRefresh(user));
   const [clock, setClock] = useState(Date.now);
-  const lastReload = useRef(0);
+  const handledRequest = useRef(0);
   const lastScrolledAnchor = useRef('');
+  const scopeButtons = useRef([]);
   const filterKey = JSON.stringify(filters);
+  const requestReport = useCallback((forceRefresh) => {
+    setReportRequest((previous) => ({ revision: previous.revision + 1, filterKey, forceRefresh }));
+  }, [filterKey]);
   const view = useMemo(() => dashboardResourceView(resource, filters), [resource, filters]);
   const loading = ['loading', 'recovering', 'refreshing'].includes(view.status);
+  const reportTimeout = dashboardRequestTimeout(filters);
   const data = view.data;
   const error = view.status === 'error' ? view.error : '';
   const hasDraft = JSON.stringify(draft) !== filterKey;
@@ -149,6 +160,14 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
   const sourceTime = Date.parse(data?.meta.source_read_at || data?.meta.generated_at || '');
   const oldSource = currentPeriod && Number.isFinite(sourceTime) && clock - sourceTime > 180000;
 
+  useEffect(() => {
+    // Fast Refresh may retain pre-scope filters. Migrate the selection, then
+    // fetch a new scoped report; never relabel a retained legacy payload.
+    if (!isProductionScope(filters.production_scope)) {
+      setFilters((current) => ({ ...current, production_scope: 'nghe_tinh' }));
+      setDraft((current) => ({ ...current, production_scope: 'nghe_tinh' }));
+    }
+  }, [filters.production_scope]);
   useEffect(() => { rememberAutoRefresh(user, autoRefresh); }, [user, autoRefresh]);
   useEffect(() => { const timer = setInterval(() => setClock(Date.now()), 60000); return () => clearInterval(timer); }, []);
   useEffect(() => {
@@ -156,11 +175,11 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
     const timer = setInterval(() => {
       if (shouldAutoRefresh({ enabled: autoRefresh, filters, visible: !document.hidden, reportView: isReportView, loading, hasDraft,
         modalOpen: Boolean(document.querySelector('dialog[open]')), editing: Boolean(document.activeElement?.matches('input, textarea, select, [contenteditable="true"]')) })) {
-        setReload((value) => value + 1);
+        requestReport(true);
       }
     }, AUTO_REFRESH_MS);
     return () => clearInterval(timer);
-  }, [autoRefresh, isReportView, currentPeriod, filters, loading, hasDraft]);
+  }, [autoRefresh, isReportView, currentPeriod, filters, loading, hasDraft, requestReport]);
 
   useEffect(() => { rememberFilters(user, filters); setInspection(null); }, [user, filters]);
   useEffect(() => {
@@ -190,11 +209,11 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
   useEffect(() => {
     // Recover retained state once. A malformed fresh response becomes an explicit
     // fetch error below, so it cannot trigger an automatic retry loop.
-    if (view.status === 'recovering') setReload((value) => value + 1);
-  }, [view.status]);
+    if (view.status === 'recovering') requestReport(false);
+  }, [view.status, requestReport]);
 
   useEffect(() => {
-    if (!reportRequested) return;
+    if (!reportRequested || !isProductionScope(filters.production_scope)) return;
     const controller = new AbortController();
     let active = true;
     let timedOut = false;
@@ -204,22 +223,22 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
       return retained.data ? { ...previous, data: retained.data, status: 'refreshing', error: '' }
         : { status: 'loading', data: null, error: '', key: filterKey };
     });
-    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 45000);
-    const refresh = reload !== lastReload.current;
-    lastReload.current = reload;
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, reportTimeout);
+    const refresh = reportRequestRefresh(reportRequest, filterKey, handledRequest.current);
+    handledRequest.current = reportRequest.revision;
     fetchDashboard(filters, { signal: controller.signal, baseUrl: API_BASE, refresh })
       .then((result) => { if (active) { setResource({ status: 'success', data: result, error: '', key: filterKey }); setClock(Date.now()); } })
       .catch((failure) => {
         if (!active) return;
         if (controller.signal.aborted && !timedOut) return;
-        const message = timedOut ? 'Truy vấn mất quá 45 giây. Vui lòng thu hẹp kỳ báo cáo hoặc thử lại.' : failure instanceof SyntaxError ? 'Máy chủ trả về dữ liệu không hợp lệ. Vui lòng thử lại hoặc liên hệ bộ phận CNTT.' : failure instanceof TypeError ? 'Không kết nối được máy chủ báo cáo. Vui lòng kiểm tra kết nối và thử lại.' : failure.message;
+        const message = timedOut ? `Truy vấn mất quá ${reportTimeout / 1000} giây. Vui lòng thử lại; nếu tiếp tục lỗi, liên hệ bộ phận CNTT.` : failure instanceof SyntaxError ? 'Máy chủ trả về dữ liệu không hợp lệ. Vui lòng thử lại hoặc liên hệ bộ phận CNTT.' : failure instanceof TypeError ? 'Không kết nối được máy chủ báo cáo. Vui lòng kiểm tra kết nối và thử lại.' : failure.message;
         setResource((previous) => previous.key === filterKey && previous.data
           ? { ...previous, status: 'stale', error: message }
           : { status: 'error', data: null, error: message, key: filterKey });
       })
       .finally(() => clearTimeout(timer));
     return () => { active = false; clearTimeout(timer); controller.abort(); };
-  }, [filters, filterKey, reload, reportRequested]);
+  }, [filters, filterKey, reportRequest, reportRequested, reportTimeout]);
 
   function applyFilters(event) {
     event.preventDefault();
@@ -227,15 +246,59 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
     setFormError(validation);
     if (validation) return;
     setExportMessage('');
+    setQuarterYear(Number(draft.start_date.slice(0, 4)));
+    setPreferredPeriodType('custom');
+    setPreferredPeriodKey('');
     setFilters({ ...draft });
   }
 
   function applyPreset(preset) {
-    const next = { ...draft, ...presetDates(preset) };
+    const dates = presetDates(preset, todayInVietnam(), quarterYear);
+    if (!dates) return;
+    const next = { ...draft, ...dates };
+    setQuarterYear(Number(dates.start_date.slice(0, 4)));
+    setPreferredPeriodType(preset.startsWith('quarter-') ? 'quarter' : preset === 'year' ? 'year' : ['month', 'previous'].includes(preset) ? 'month' : 'custom');
+    setPreferredPeriodKey('');
     setDraft(next);
     setFilters(next);
     setFormError('');
     setExportMessage('');
+  }
+
+  function selectScope(production_scope) {
+    if (production_scope === filters.production_scope) return;
+    setFilters((current) => ({ ...current, production_scope }));
+    setDraft((current) => ({ ...current, production_scope }));
+    setInspection(null);
+    setExportMessage('');
+  }
+
+  function selectPlan(plan) {
+    try {
+      const next = reportSelectionForPlan(plan, filters.terminal, todayInVietnam());
+      if (!allowedTerminals(user).includes(next.filters.terminal)) throw new Error('Kế hoạch nằm ngoài phạm vi xí nghiệp được cấp.');
+      setPreferredPeriodType(next.periodType);
+      setPreferredPeriodKey(next.periodKey);
+      setQuarterYear(Number(next.filters.start_date.slice(0, 4)));
+      setDraft(next.filters);
+      if (JSON.stringify(filters) === JSON.stringify(next.filters) && (!data || view.status === 'stale')) requestReport(view.status === 'stale');
+      setFilters((current) => JSON.stringify(current) === JSON.stringify(next.filters) ? current : next.filters);
+      setInspection(null);
+      setFormError('');
+      setExportMessage('');
+      window.location.hash = '#overview';
+    } catch (error) {
+      setFormError(error.message);
+    }
+  }
+
+  function navigateScopes(event, index) {
+    const scopes = Object.keys(PRODUCTION_SCOPES);
+    const next = event.key === 'ArrowRight' ? (index + 1) % scopes.length : event.key === 'ArrowLeft' ? (index + scopes.length - 1) % scopes.length : event.key === 'Home' ? 0 : event.key === 'End' ? scopes.length - 1 : null;
+    if (next === null) return;
+    event.preventDefault();
+    selectScope(scopes[next]);
+    scopeButtons.current[next]?.focus();
   }
 
   function exportCsv() {
@@ -244,7 +307,7 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `san-luong-${filters.terminal}-${filters.start_date}-${filters.end_date}.csv`;
+    link.download = `san-luong-${filters.production_scope}-${filters.terminal}-${filters.start_date}-${filters.end_date}.csv`;
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -258,6 +321,11 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
       {isReportView && <nav className="report-shortcuts" aria-label="Tra cứu báo cáo"><a href="#production"><BarChart3 size={14} aria-hidden="true" />Phân tích sản lượng</a><a href="#voyages"><Ship size={14} aria-hidden="true" />Chuyến tàu</a><a href="#customers"><Users size={14} aria-hidden="true" />Khách hàng</a></nav>}</div>
       {isReportView && <button className="button secondary export-button" type="button" aria-label="Xuất báo cáo CSV" title="Xuất báo cáo CSV" onClick={exportCsv} disabled={!data || hasDraft}><Download size={16} aria-hidden="true" /><span>Xuất báo cáo CSV</span></button>}
     </section>
+    {activeView !== 'admin' && <div className="production-scope-selector">
+      <div className="production-scope-tabs" role="tablist" aria-label="Phạm vi sản lượng">{Object.entries(PRODUCTION_SCOPES).map(([scope, label], index) => <button key={scope} ref={(element) => { scopeButtons.current[index] = element; }} id={`production-scope-${scope}`} type="button" role="tab" aria-selected={filters.production_scope === scope} aria-controls="production-scope-report" tabIndex={filters.production_scope === scope ? 0 : -1} onClick={() => selectScope(scope)} onKeyDown={(event) => navigateScopes(event, index)}>{label}</button>)}</div>
+      <p>{filters.production_scope === 'unclassified' ? productionScopeDescription(filters.production_scope) : 'Theo cầu ban đầu của toàn chuyến; chuyển cầu không đổi phạm vi.'}</p>
+    </div>}
+    <div id="production-scope-report" role={activeView !== 'admin' ? 'tabpanel' : undefined} aria-labelledby={activeView !== 'admin' ? `production-scope-${filters.production_scope}` : undefined}>
     {activeView !== 'admin' && <>
     <section className="filter-panel" aria-label="Bộ lọc báo cáo">
       <div className="filter-top"><span><SlidersHorizontal size={16} aria-hidden="true" />Kỳ báo cáo</span><div className="preset-buttons" role="group" aria-label="Chọn nhanh kỳ báo cáo">
@@ -266,48 +334,58 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
           return <button type="button" key={key} aria-pressed={filters.start_date === dates.start_date && filters.end_date === dates.end_date} onClick={() => applyPreset(key)}>{label}</button>;
         })}
       </div></div>
+      <div className="quarter-filter">
+        <label htmlFor="quarter-year">Năm xem quý<select id="quarter-year" value={quarterYear} onChange={(event) => setQuarterYear(Number(event.target.value))}>{Array.from({ length: Number(todayInVietnam().slice(0, 4)) - 1999 }, (_, index) => Number(todayInVietnam().slice(0, 4)) - index).map((year) => <option key={year} value={year}>{year}</option>)}</select></label>
+        <div className="preset-buttons quarter-buttons" role="group" aria-label="Chọn quý báo cáo">{[1, 2, 3, 4].map((quarter) => {
+          const dates = presetDates(`quarter-${quarter}`, todayInVietnam(), quarterYear);
+          return <button key={quarter} type="button" disabled={!dates} title={!dates ? 'Quý chưa bắt đầu' : undefined} aria-pressed={Boolean(dates && filters.start_date === dates.start_date && filters.end_date === dates.end_date)} onClick={() => applyPreset(`quarter-${quarter}`)}>Quý {quarter}</button>;
+        })}</div>
+        <span>Quý hiện tại tính đến hôm nay.</span>
+      </div>
       <form className="filter-form" onSubmit={applyFilters}>
         <label htmlFor="start-date">Từ ngày<input id="start-date" type="date" required max={todayInVietnam()} value={draft.start_date} onChange={(event) => { setDraft({ ...draft, start_date: event.target.value }); setFormError(''); }} /></label>
         <label htmlFor="end-date">Đến ngày<input id="end-date" type="date" required max={todayInVietnam()} value={draft.end_date} onChange={(event) => { setDraft({ ...draft, end_date: event.target.value }); setFormError(''); }} /></label>
         <label htmlFor="terminal">Phạm vi xí nghiệp<select id="terminal" value={draft.terminal} onChange={(event) => setDraft({ ...draft, terminal: event.target.value })}>{allowedTerminals(user).map((key) => <option key={key} value={key}>{TERMINALS[key]}</option>)}</select></label>
         <button className="button primary" type="submit"><Check size={16} aria-hidden="true" />Áp dụng</button>
-        <button className="button icon-button" type="button" aria-label="Tải lại báo cáo đang chọn" title="Tải lại báo cáo đang chọn" disabled={loading} onClick={() => { setReload((value) => value + 1); setExportMessage(''); }}><RefreshCw size={17} aria-hidden="true" /></button>
+        <button className="button icon-button" type="button" aria-label="Tải lại báo cáo đang chọn" title="Tải lại báo cáo đang chọn" disabled={loading} onClick={() => { requestReport(true); setExportMessage(''); }}><RefreshCw size={17} aria-hidden="true" /></button>
       </form>
       {formError && <p className="form-error" role="alert">{formError}</p>}
       {hasDraft && !formError && <p className="draft-note">Bộ lọc đã thay đổi. Chọn “Áp dụng” để cập nhật báo cáo.</p>}
     </section>
     <div className="report-toolbar">
-      <div className="report-context"><span><CalendarDays size={15} aria-hidden="true" /><strong>{formatDate(filters.start_date)} – {formatDate(filters.end_date)}</strong><span className="context-divider" aria-hidden="true">·</span>{TERMINALS[filters.terminal]}</span><span className="source-status">{data ? `Đọc nguồn: ${formatTimestamp(data.meta.source_read_at || data.meta.generated_at)}` : 'Giờ Việt Nam · UTC+7'}{incomplete && <a className="data-status-tag" href="#data-quality" onClick={() => { const details = document.getElementById('data-quality'); if (details) details.open = true; }}>Số liệu chưa đầy đủ</a>}{data && (view.status === 'stale' || oldSource) && <span className="data-status-tag">{view.status === 'stale' ? 'Chưa cập nhật được' : 'Dữ liệu hơn 3 phút trước'}</span>}</span></div>
+      <div className="report-context"><span><CalendarDays size={15} aria-hidden="true" /><strong>{formatDate(filters.start_date)} – {formatDate(filters.end_date)}</strong><span className="context-divider" aria-hidden="true">·</span>{TERMINALS[filters.terminal]}<span className="context-divider" aria-hidden="true">·</span><strong>{productionScopeLabel(filters.production_scope)}</strong></span><span className="source-status">{data ? `Đọc nguồn: ${formatTimestamp(data.meta.source_read_at || data.meta.generated_at)}` : 'Giờ Việt Nam · UTC+7'}{incomplete && <a className="data-status-tag" href="#data-quality" onClick={() => { const details = document.getElementById('data-quality'); if (details) details.open = true; }}>Số liệu chưa đầy đủ</a>}{data && (view.status === 'stale' || oldSource) && <span className="data-status-tag">{view.status === 'stale' ? 'Chưa cập nhật được' : 'Dữ liệu hơn 3 phút trước'}</span>}</span></div>
       {isReportView && <div className="report-refresh-control"><label title={currentPeriod ? 'Tạm dừng khi đang nhập, mở chi tiết hoặc chuyển khỏi báo cáo.' : 'Chỉ cập nhật tự động với kỳ kết thúc hôm nay.'}><input type="checkbox" aria-describedby="refresh-help" checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} />Tự cập nhật mỗi 2 phút</label><span id="refresh-help" className="sr-only">{currentPeriod ? 'Tạm dừng khi đang nhập, mở chi tiết hoặc chuyển khỏi báo cáo.' : 'Chỉ cập nhật tự động với kỳ kết thúc hôm nay.'}</span></div>}
     </div>
-    {data && view.status === 'stale' && <div className="refresh-error" role="alert"><span>{view.error} Đang giữ số liệu lần đọc trước.</span><button type="button" className="button" onClick={() => setReload((value) => value + 1)}>Thử cập nhật lại</button></div>}
+    {data && view.status === 'stale' && <div className="refresh-error" role="alert"><span>{view.error} Đang giữ số liệu lần đọc trước.</span><button type="button" className="button" onClick={() => requestReport(true)}>Thử cập nhật lại</button></div>}
     {data && view.status === 'refreshing' && <p className="refresh-progress" role="status">Đang cập nhật số liệu…</p>}
     {isReportView && exportMessage && <p className="export-message" role="status">{exportMessage}</p>}
     <div aria-live="polite" aria-busy={loading}>
-      {loading && !data && <div className="loading-region" role="status"><div className="loading-label"><span className="spinner" /><div><strong>Đang tổng hợp báo cáo</strong><p>Đang lấy dữ liệu cho kỳ và xí nghiệp đã chọn…</p></div></div><div className="skeleton-grid" aria-hidden="true"><div /><div /><div /></div><div className="skeleton-chart" aria-hidden="true" /></div>}
-      {error && <div className="error-state" role="alert"><CircleAlert size={32} aria-hidden="true" /><h2>Chưa tải được báo cáo</h2><p>{error}</p><button className="button primary" type="button" onClick={() => setReload((value) => value + 1)}><RefreshCw size={16} aria-hidden="true" />Thử lại</button></div>}
+      {loading && !data && <div className="loading-region" role="status"><div className="loading-label"><span className="spinner" /><div><strong>Đang tổng hợp báo cáo</strong><p>{reportTimeout > 45000 ? 'Kỳ báo cáo dài có thể cần khoảng một phút. Trang sẽ chờ tối đa 90 giây.' : 'Đang lấy dữ liệu cho kỳ và xí nghiệp đã chọn…'}</p></div></div><div className="skeleton-grid" aria-hidden="true"><div /><div /><div /></div><div className="skeleton-chart" aria-hidden="true" /></div>}
+      {error && <div className="error-state" role="alert"><CircleAlert size={32} aria-hidden="true" /><h2>Chưa tải được báo cáo</h2><p>{error}</p><button className="button primary" type="button" onClick={() => requestReport(false)}><RefreshCw size={16} aria-hidden="true" />Thử lại</button></div>}
     </div>
     </>}
     {isReportView && data && <>
       {data.meta.status === 'empty' && <div className="notice empty-notice" role="status"><Info size={19} aria-hidden="true" /><div><strong>Không có phát sinh trong kỳ đã chọn</strong><p>Hệ thống đã truy vấn thành công. Hãy chọn kỳ khác để xem dữ liệu sản xuất.</p></div></div>}
       <section className="kpi-grid" aria-label="Chỉ tiêu tổng quan">
-        <Kpi title="Sản lượng qua cảng" value={data.overview.total_tonnage} unit="tấn" trend={data.overview.trend_tonnage} status={data.overview.tonnage_status} icon={Activity} accent onInspect={data.meta.report_id ? (event) => inspect({}, 'Sản lượng qua cảng', event) : null} />
+        <Kpi title="Sản lượng thông qua" value={data.overview.total_tonnage} unit="tấn" trend={data.overview.trend_tonnage} status={data.overview.tonnage_status} icon={Activity} accent onInspect={data.meta.report_id ? (event) => inspect({}, 'Sản lượng thông qua', event) : null} />
         <Kpi title="Container qua tác nghiệp" value={data.overview.total_teu} unit="TEU" trend={data.overview.trend_teu} status={data.overview.teu_status} icon={Boxes} onInspect={data.meta.report_id ? (event) => inspect({ cargo: 'Hàng container' }, 'Container qua tác nghiệp', event) : null} />
         <Kpi title="Chuyến tàu có phát sinh" value={data.overview.vessel_calls} unit="chuyến" trend={data.overview.trend_vessels} icon={Ship} digits={0} listLink="#voyages" />
       </section>
       <div className="comparison-note"><Info size={14} aria-hidden="true" /><span>So sánh với {formatDate(data.meta.previous_period?.start_date)} – {formatDate(data.meta.previous_period?.end_date)}. {data.meta.previous_period?.label}</span></div>
+      <ThroughputProgress report={data} user={user} apiBase={API_BASE} preferredPeriodType={preferredPeriodType} preferredPeriodKey={preferredPeriodKey} onSelectPeriod={selectPlan} />
       <section id="production" aria-labelledby="production-title">
         <div className="section-heading"><h2 id="production-title">Phân tích sản lượng</h2><span className="section-meta">{formatNumber(data.overview.record_count)} bản ghi tác nghiệp</span></div>
         <div className="production-grid"><Suspense fallback={<div className="panel empty-panel" role="status">Đang tải biểu đồ…</div>}><History key={filterKey} monthlyRows={data.history} dailyRows={data.daily_history} hasRecords={data.overview.record_count > 0} onInspect={data.meta.report_id ? (day, event) => inspect({ day }, `Sản lượng ngày ${formatDate(day)}`, event) : null} /></Suspense><Terminals rows={data.terminals} total={data.overview.total_tonnage} hasSignedInput={hasSignedInput} onInspect={data.meta.report_id ? (row, event) => inspect({ terminal: row.terminal_id }, row.name, event) : null} /></div>
         <div className="breakdown-grid"><CargoBreakdown key={filterKey} rows={data.cargo} onInspect={data.meta.report_id ? (row, event) => inspect({ cargo: row.name }, row.name, event) : null} /><Breakdown title="Cơ cấu hướng hàng" subtitle="Tỷ trọng trên tổng tấn" rows={data.directions} total={data.overview.total_tonnage} hasSignedInput={hasSignedInput} icon={Ship} /></div>
       </section>
-      <Voyages rows={data.voyages} count={data.overview.vessel_calls} filters={filters} reportId={data.meta.report_id} apiBase={API_BASE} onRetry={() => setReload((value) => value + 1)} />
+      <Voyages key={filterKey} rows={data.voyages} count={data.overview.vessel_calls} filters={filters} reportId={data.meta.report_id} apiBase={API_BASE} onRetry={() => requestReport(true)} />
       <NativeUnits rows={data.native_units} />
       <Customers rows={data.customers} total={data.overview.total_tonnage} hasSignedInput={hasSignedInput} onInspect={data.meta.report_id ? (row, event) => inspect({ customer_id: row.drilldown_customer_id || row.customer_id || 'unassigned', customer_terminal: row.terminal_id }, row.name, event) : null} />
     </>}
-    {!isReportView && <Management key={activeView} mode={activeView} user={user} filters={filters} report={view.status === 'stale' || loading ? null : data} apiBase={API_BASE} onReportChange={() => setReload((value) => value + 1)} />}
+    {!isReportView && <Management key={activeView} mode={activeView} user={user} filters={filters} report={view.status === 'stale' || loading ? null : data} apiBase={API_BASE} preferredPeriodType={preferredPeriodType} preferredPeriodKey={preferredPeriodKey} onSelectPlan={selectPlan} onSelectPeriod={selectPlan} onReportChange={() => requestReport(true)} />}
     {isReportView && data && <><DataQuality meta={data.meta} /><footer className="dashboard-footer"><span>CẢNG NGHỆ TĨNH <span aria-hidden="true">/</span> Báo cáo sản lượng</span><span>{TERMINALS[filters.terminal]} · {formatDate(filters.end_date)}</span></footer></>}
-    {isReportView && data && inspection && <OperationsExplorer key={data.meta.report_id} report={data} {...inspection} apiBase={API_BASE} onClose={() => setInspection(null)} onReloadReport={() => { setInspection(null); setReload((value) => value + 1); }} />}
+    {isReportView && data && inspection && <OperationsExplorer key={data.meta.report_id} report={data} {...inspection} apiBase={API_BASE} onClose={() => setInspection(null)} onReloadReport={() => { setInspection(null); requestReport(true); }} />}
+    </div>
   </div>;
 }
 

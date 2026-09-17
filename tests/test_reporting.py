@@ -21,7 +21,8 @@ def fixed_today(monkeypatch):
 
 
 def fact(identifier, *, day=12, terminal="cua_lo", voyage="101", source_voyage=None,
-         weight="10", quantity="0", unit="TAN", cargo="Stone", customer="7", shift="2"):
+         weight="10", quantity="0", unit="TAN", cargo="Stone", customer="7", shift="2",
+         production_scope="nghe_tinh"):
     operation_day = date(2026, 9, day)
     weight = Decimal(weight) if weight is not None else None
     quantity = Decimal(quantity) if quantity is not None else None
@@ -33,6 +34,10 @@ def fact(identifier, *, day=12, terminal="cua_lo", voyage="101", source_voyage=N
         "source_voyage_id": voyage if source_voyage is None else source_voyage,
         "vessel_name": "Synthetic vessel", "voyage_code": "SYNTHETIC-101",
         "arrival_at": datetime(2026, 9, 12, 8), "departure_at": None,
+        "production_scope": production_scope,
+        "initial_berth_id": 13 if production_scope == "vietsun" else 11,
+        "initial_berth_code": "CẦU 5" if production_scope == "vietsun" else "CẦU 1",
+        "initial_berth_at": datetime(2026, 9, 12, 8), "berth_assignment_status": "assigned",
         "latest_operation_at": datetime.combine(operation_day, datetime.min.time()),
         "cargo_name": cargo, "direction_id": 1, "customer_id": customer,
         "customer_name": "Synthetic customer", "native_weight": weight,
@@ -66,14 +71,33 @@ class StubRepository(repository.DashboardRepository):
             assert self.release.wait(3), "Test did not release source read"
         if self.failure:
             raise DatabaseUnavailable()
-        start, end = params[:2]
+        is_voyage_query = isinstance(params[0], int)
+        start, end = params[1:3] if is_voyage_query else params[:2]
         selected = [row for row in self.rows if start <= row["operation_day"] < end]
-        if len(params) == 3:
-            selected = [row for row in selected if row["vessel_id"] == str(params[2])]
+        if is_voyage_query:
+            selected = [row for row in selected if row["vessel_id"] == str(params[0])]
+        production_scope = next((value for value in params[2:]
+                                 if isinstance(value, str) and value in repository.PRODUCTION_SCOPES), None)
+        if production_scope is not None:
+            selected = [row for row in selected if row.get("production_scope") == production_scope]
         if "SmartTOS_BenThuy.dbo" not in query:
             selected = [row for row in selected if row["terminal_id"] == "cua_lo"]
         elif "SmartTOS.dbo" not in query:
             selected = [row for row in selected if row["terminal_id"] == "ben_thuy"]
+        if "'berth' AS kind" in query:
+            selected = deepcopy(selected)
+            assignments = {}
+            fields = ("initial_berth_id", "initial_berth_code", "initial_berth_at",
+                      "berth_assignment_status", "production_scope")
+            for row in selected:
+                identifier = row.get("source_voyage_id")
+                if identifier is not None:
+                    key = (row["terminal_id"], str(identifier))
+                    assignments.setdefault(key, {"kind": "berth", "terminal_id": key[0],
+                        "source_voyage_id": key[1], **{field: row.get(field) for field in fields}})
+                for field in fields:
+                    row[field] = None
+            selected.extend(assignments.values())
         return deepcopy(selected)
 
 
@@ -263,9 +287,9 @@ def test_export_drilldown_aggregates_once_and_keeps_filter_scope_explicit(mixed,
     aggregation_calls = []
     original = repo._dashboard_from_rows
 
-    def tracked_aggregation(*args):
+    def tracked_aggregation(*args, **kwargs):
         aggregation_calls.append(len(args[0]))
-        return original(*args)
+        return original(*args, **kwargs)
 
     monkeypatch.setattr(repo, "_dashboard_from_rows", tracked_aggregation)
     exported = service.export_drilldown(identifier, terminal="cua_lo", operation_filter="missing_weight")
@@ -426,7 +450,7 @@ def test_whole_voyage_progress_is_independent_of_reporting_period_and_cached():
     assert progress["summary"]["tonnage"] == 100
     assert progress["meta"]["scope"] == "whole_voyage"
     assert progress["header"]["first_operation_date"] == "2020-01-01"
-    assert repo.calls[1][1] == (date(1900, 1, 1), date(2026, 9, 14), 101)
+    assert repo.calls[1][1] == (101, date(1900, 1, 1), date(2026, 9, 14), 101, "nghe_tinh")
     assert len(progress["shifts"]) == 2 and "daily" not in progress
     progress["summary"]["tonnage"] = -999
     assert service.get_voyage_progress("cua_lo", 101)["summary"]["tonnage"] == 100

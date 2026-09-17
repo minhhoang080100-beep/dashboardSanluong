@@ -15,14 +15,14 @@ from playwright.sync_api import expect, sync_playwright
 
 
 def operation_fixture(report, selection):
-    filters = {key: report["meta"]["filters"][key] for key in ("start_date", "end_date", "terminal")}
+    filters = {key: report["meta"]["filters"][key] for key in ("start_date", "end_date", "terminal", "production_scope")}
     rows = []
     for terminal in ("cua_lo", "ben_thuy"):
         if filters["terminal"] not in ("all", terminal):
             continue
         detail = detail_fixture(filters, terminal, 1, 100, "all")
         for row in detail["operations"]["rows"]:
-            rows.append({**row, "source_id": row["id"], "source_type": "tally_shift",
+            rows.append({**row, **{key: detail["header"][key] for key in ("initial_berth_id", "initial_berth_code", "initial_berth_at", "berth_assignment_status", "production_scope")}, "source_id": row["id"], "source_type": "tally_shift",
                 "row_key": f"{terminal}:{row['id']}", "terminal_id": terminal,
                 "terminal_name": detail["header"]["terminal_name"], "voyage_id": "101",
                 "source_voyage_id": "101", "vessel_name": detail["header"]["vessel_name"],
@@ -46,7 +46,7 @@ def operation_fixture(report, selection):
                 "total_pages": (len(selected) + size - 1) // size,
                 "counts": {key: len(value) for key, value in groups.items()},
                 "rows": selected[(page - 1) * size:page * size]},
-            "meta": {"report_id": report["meta"]["report_id"], "filters": selection,
+            "meta": {"report_id": report["meta"]["report_id"], "filters": {**selection, "production_scope": filters["production_scope"]}, "berth_rule_version": "initial-berth-v1",
                      "source_read_at": report["meta"]["source_read_at"]}}
 
 
@@ -65,7 +65,7 @@ def main():
         query = {key: values[0] for key, values in parse_qs(parsed.query).items()}
         state["requests"].append({"path": path, "query": query})
         if path == "/dashboard":
-            filters = {key: query[key] for key in ("start_date", "end_date", "terminal")}
+            filters = {key: query[key] for key in ("start_date", "end_date", "terminal", "production_scope")}
             data = report_fixture(filters)
             identifier = f"synthetic-report-{len(state['reports']) + 1}"
             state["current_id"] = identifier
@@ -96,17 +96,17 @@ def main():
             terminal = path.split("/")[2]
             if path.endswith("/progress"):
                 data = state["reports"][state["current_id"]]
-                filters = {key: data["meta"]["filters"][key] for key in ("start_date", "end_date", "terminal")}
+                filters = {key: data["meta"]["filters"][key] for key in ("start_date", "end_date", "terminal", "production_scope")}
                 detail = detail_fixture(filters, terminal, 1, 25)
-                route.fulfill(json={"summary": detail["summary"], "shifts": [], "planning": [],
-                    "meta": {"scope": "whole_voyage", "source_read_at": data["meta"]["source_read_at"]}})
+                route.fulfill(json={"header": detail["header"], "summary": detail["summary"], "shifts": [], "planning": [],
+                    "meta": {"scope": "whole_voyage", "filters": {"production_scope": query["production_scope"]}, "berth_rule_version": "initial-berth-v1", "source_read_at": data["meta"]["source_read_at"]}})
                 return
             identifier = query.get("report_id")
             if identifier in state["expired"]:
                 route.fulfill(status=410, json={"detail": {"code": "REPORT_EXPIRED"}})
                 return
             data = state["reports"][identifier]
-            filters = {key: query[key] for key in ("start_date", "end_date")}
+            filters = {key: query[key] for key in ("start_date", "end_date", "production_scope")}
             detail = detail_fixture(filters, terminal, int(query.get("page", 1)), int(query.get("page_size", 25)),
                                     query.get("operation_filter", "all"))
             detail["meta"].update(report_id=identifier, source_read_at=data["meta"]["source_read_at"])
@@ -123,12 +123,12 @@ def main():
         page.on("pageerror", lambda error: errors.append(str(error)))
         page.goto(args.url)
         expect(page.locator(".kpi-card")).to_have_count(3)
-        expect(page.get_by_role("button", name="Xem chi tiết Sản lượng qua cảng", exact=True)).to_be_visible()
+        expect(page.get_by_role("button", name="Xem chi tiết Sản lượng thông qua", exact=True)).to_be_visible()
         inspector = page.get_by_role("dialog", name="Chi tiết sản lượng", exact=True)
         voyage_dialog = page.get_by_role("dialog", name="Chi tiết chuyến tàu", exact=True)
 
         def open_kpi():
-            page.get_by_role("button", name="Xem chi tiết Sản lượng qua cảng", exact=True).click()
+            page.get_by_role("button", name="Xem chi tiết Sản lượng thông qua", exact=True).click()
             expect(inspector).to_be_visible()
             expect(inspector.locator(".operations-table tbody tr")).to_have_count(25)
 

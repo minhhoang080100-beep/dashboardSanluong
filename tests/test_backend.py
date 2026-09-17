@@ -207,7 +207,7 @@ def test_half_open_sql_dates_same_formula_and_terminal_allowlist(monkeypatch):
     repo, calls = make_repository(monkeypatch, [])
     repo.get_dashboard("2026-03-01", "2026-03-31", "ben_thuy")
     query, params = calls[0]
-    assert params == (date(2026, 1, 29), date(2026, 4, 1))
+    assert params == (date(2026, 1, 29), date(2026, 4, 1), "nghe_tinh")
     assert "t.shiftDate >= ? AND t.shiftDate < ?" in query
     assert "2026-03" not in query
     assert "SmartTOS_BenThuy.dbo" in query
@@ -232,7 +232,7 @@ def test_defaults_use_vietnam_month_to_date_and_same_previous_length(monkeypatch
     result = repo.get_dashboard()
     assert result["meta"]["filters"]["start_date"] == "2026-09-01"
     assert result["meta"]["filters"]["end_date"] == "2026-09-09"
-    assert calls[0][1] == (date(2026, 8, 23), date(2026, 9, 10)) * 2
+    assert calls[0][1] == (date(2026, 8, 23), date(2026, 9, 10), "nghe_tinh") * 2
 
 
 def test_history_is_selected_range_and_zero_fills_only_months_in_range(monkeypatch):
@@ -555,7 +555,7 @@ def test_api_snapshot_and_legacy_routes_receive_identical_filters(monkeypatch, c
     legacy = client.get("/api/overview", params=params)
     assert response.status_code == 200
     assert legacy.json() == response.json()["overview"]
-    assert calls[0] == calls[1] == {"start_date": date(2026, 9, 1), "end_date": date(2026, 9, 2), "terminal": "ben_thuy"}
+    assert calls[0] == calls[1] == {"start_date": date(2026, 9, 1), "end_date": date(2026, 9, 2), "terminal": "ben_thuy", "production_scope": "nghe_tinh"}
 
 
 def test_health_failure_returns_503(monkeypatch, client):
@@ -712,7 +712,7 @@ def test_voyage_detail_summary_is_full_period_and_operations_are_paged(monkeypat
     assert detail["meta"]["filters"]["terminal"] == "cua_lo"
     assert detail["meta"]["filters"]["voyage_id"] == "101"
     assert len(calls) == 1
-    assert calls[0][1] == (date(2026, 9, 1), date(2026, 9, 10), 101)
+    assert calls[0][1] == (101, date(2026, 9, 1), date(2026, 9, 10), 101, "nghe_tinh")
     for query, _ in calls:
         assert "SANLUONG-QUACANG" in query
         assert "jobMethodName LIKE" not in query
@@ -778,7 +778,7 @@ def test_voyage_route_rejects_invalid_path_and_pagination(monkeypatch, client, p
 
 @pytest.mark.parametrize("error,status_code", [(VoyageNotFound, 404), (DatabaseUnavailable, 503), (DatabaseQueryError, 503)])
 def test_voyage_route_distinguishes_missing_from_database_error(monkeypatch, client, error, status_code):
-    def fail(*args):
+    def fail(*args, **kwargs):
         raise error()
     monkeypatch.setattr(main.dashboard_repo, "get_voyage_detail", fail)
     response = client.get("/api/voyages/ben_thuy/101?start_date=2026-09-01&end_date=2026-09-09")
@@ -788,13 +788,13 @@ def test_voyage_route_distinguishes_missing_from_database_error(monkeypatch, cli
 
 def test_voyage_route_passes_scope_and_page_to_repository(monkeypatch, client):
     calls = []
-    def detail(*args):
-        calls.append(args)
+    def detail(*args, **kwargs):
+        calls.append((args, kwargs))
         return {"header": {"voyage_id": "101"}, "operations": {"page": 2, "rows": []}}
     monkeypatch.setattr(main.dashboard_repo, "get_voyage_detail", detail)
     response = client.get("/api/voyages/ben_thuy/101?start_date=2026-09-01&end_date=2026-09-09&page=2&page_size=5")
     assert response.status_code == 200
-    assert calls == [("ben_thuy", 101, date(2026, 9, 1), date(2026, 9, 9), 2, 5)]
+    assert calls == [(("ben_thuy", 101, date(2026, 9, 1), date(2026, 9, 9), 2, 5), {"production_scope": "nghe_tinh"})]
 
 
 def test_voyage_http_contract_serializes_single_fact_set(monkeypatch, client):

@@ -51,10 +51,10 @@ def api(tmp_path, monkeypatch):
         del main.app.state.reporting_service
 
 
-def get_report(api, terminal='all', start='2026-09-11', end='2026-09-12', viewer=False, refresh=False):
+def get_report(api, terminal='all', start='2026-09-11', end='2026-09-12', viewer=False, refresh=False, production_scope='nghe_tinh'):
     client, _, _, _, admin, limited = api
     response = client.get('/api/dashboard', headers=limited if viewer else admin,
-                          params={'start_date': start, 'end_date': end, 'terminal': terminal, 'refresh': refresh})
+                          params={'start_date': start, 'end_date': end, 'terminal': terminal, 'refresh': refresh, 'production_scope': production_scope})
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -91,8 +91,9 @@ def test_snapshot_drilldown_excel_and_voyage_totals_match_original_source_read(a
     rid = report['meta']['report_id']
     repo.rows[2]['native_weight'] = 999  # Source later changes; current report stays fixed.
     detail = client.get(f'/api/reports/{rid}/operations', headers=admin).json()
-    assert detail['summary']['tonnage'] == report['overview']['total_tonnage'] == 42
-    assert detail['operations']['total'] == 4
+    # The 7t fact without a voyage/berth identity belongs to unclassified.
+    assert detail['summary']['tonnage'] == report['overview']['total_tonnage'] == 35
+    assert detail['operations']['total'] == 3
     assert len(repo.calls) == 1
     voyage = client.get('/api/voyages/cua_lo/101', headers=admin, params={
         'start_date': '2026-09-11', 'end_date': '2026-09-12', 'report_id': rid,
@@ -105,8 +106,8 @@ def test_snapshot_drilldown_excel_and_voyage_totals_match_original_source_read(a
     response = client.get(f'/api/reports/{rid}/export.xlsx', headers=admin)
     assert response.status_code == 200 and response.headers['cache-control'] == 'no-store'
     book = load_workbook(BytesIO(response.content), data_only=False)
-    assert book['Tác nghiệp'].max_row == 5
-    assert sum(row[14].value for row in list(book['Tác nghiệp'].rows)[1:]) == 42
+    assert book['Tác nghiệp'].max_row == 4
+    assert sum(row[14].value for row in list(book['Tác nghiệp'].rows)[1:]) == 35
     assert len(repo.calls) == 1
 
 
@@ -127,7 +128,7 @@ def test_closed_reports_are_trusted_immutable_and_compare_only_same_scope(api):
     assert comparison['changed'] is True
     assert next(row for row in comparison['changes'] if row['metric'] == 'total_tonnage')['delta'] == 5
     saved = client.get(f'/api/closed-reports/{identifier}', headers=admin).json()
-    assert saved['report']['overview']['total_tonnage'] == 42
+    assert saved['report']['overview']['total_tonnage'] == 35
     assert client.get(f'/api/closed-reports/{identifier}/export.xlsx', headers=admin).status_code == 200
     assert client.get(f'/api/closed-reports/{identifier}', headers=viewer).status_code == 403
     different = get_report(api, start='2026-09-01')
@@ -145,7 +146,7 @@ def test_plan_progress_requires_approved_matching_period_and_whole_voyage_scope(
     assert client.post(f"/api/plans/{plan['id']}/approve", headers=admin, json={'expected_revision': 1}).status_code == 200
     progress = client.get(progress_path, headers=admin).json()
     tonne_row = next(row for row in progress['rows'] if row['metric'] == 'tonnage')
-    assert tonne_row['target'] == 100 and tonne_row['actual'] == 87 and tonne_row['remaining'] == 13
+    assert tonne_row['target'] == 100 and tonne_row['actual'] == 80 and tonne_row['remaining'] == 20
     partial_period = get_report(api, terminal='cua_lo')
     assert client.get(f"/api/reports/{partial_period['meta']['report_id']}/plan-progress", headers=admin).json()['eligible'] is False
     voyage_plan = {**monthly, 'period_type': 'voyage', 'month': None, 'voyage_id': 101}
@@ -255,12 +256,12 @@ def test_closed_reports_freeze_approved_plan_version_actuals_and_excel(api):
     planning = saved['planning']
     assert planning == saved['report']['planning'] and planning['captured'] and planning['eligible']
     row = next(item for item in planning['rows'] if item['metric'] == 'tonnage')
-    assert (row['plan_id'], row['plan_version'], row['target'], row['actual'], row['completion_percent']) == (first['id'], 1, 100, 87, 87)
+    assert (row['plan_id'], row['plan_version'], row['target'], row['actual'], row['completion_percent']) == (first['id'], 1, 100, 80, 80)
     assert row['reference'] == '=Original document' and row['approved_at']
     response = client.get(f"/api/closed-reports/{closed['id']}/export.xlsx", headers=admin)
     book = load_workbook(BytesIO(response.content), data_only=False)
     sheet = book['Kế hoạch đã chốt']
-    assert sheet['F2'].value == 100 and sheet['G2'].value == 87 and sheet['I2'].value == 87
+    assert sheet['F2'].value == 100 and sheet['G2'].value == 80 and sheet['I2'].value == 80
     assert sheet['L2'].value == '=Original document' and sheet['L2'].data_type == 's'
     book.close()
 
@@ -305,3 +306,145 @@ def test_source_validation_cannot_approve_or_overwrite_concurrently_changed_draf
     assert response.status_code == 409 and response.json()['detail']['code'] == 'PLAN_CONFLICT'
     saved = client.get(path, headers=admin).json()
     assert saved['status'] == 'draft' and saved['amount'] == 200 and saved['revision'] == 2
+
+
+@pytest.mark.parametrize('scope', ['vietsun', 'unclassified'])
+def test_noncompany_scope_keeps_actuals_but_never_uses_or_freezes_company_plans(api, monkeypatch, scope):
+    client, store, repo, _, admin, _ = api
+    scoped_fact = fact(42, voyage='202', weight='50', production_scope=scope)
+    if scope == 'unclassified':
+        scoped_fact.update(initial_berth_id=None, initial_berth_code=None, initial_berth_at=None, berth_assignment_status='missing')
+    repo.rows.append(scoped_fact)
+    monthly = {'terminal': 'cua_lo', 'month': '2026-09', 'metric': 'tonnage', 'amount': 100, 'reference': 'Company plan'}
+    for body in [monthly, {**monthly, 'period_type': 'voyage', 'month': None, 'voyage_id': 202}]:
+        plan = client.post('/api/plans', headers=admin, json=body).json()
+        assert client.post(f"/api/plans/{plan['id']}/approve", headers=admin, json={'expected_revision': 1}).status_code == 200
+    def forbidden_company_plan_read(*args, **kwargs):
+        raise AssertionError('A separate production scope cannot select company targets')
+    monkeypatch.setattr(store, 'effective_plans', forbidden_company_plan_read)
+    report = get_report(api, terminal='cua_lo', start='2026-09-01', production_scope=scope)
+    rid = report['meta']['report_id']
+    progress = client.get(f'/api/reports/{rid}/plan-progress', headers=admin).json()
+    assert progress['eligible'] is False and progress['rows'] == [] and progress['reason']
+    assert progress['production_scope'] == scope
+    voyage = client.get('/api/voyages/cua_lo/202/progress', params={'production_scope': scope}, headers=admin)
+    assert voyage.status_code == 200, voyage.text
+    assert voyage.json()['summary']['tonnage'] == 50
+    assert voyage.json()['planning'] == [] and voyage.json()['planning_eligible'] is False and voyage.json()['planning_reason']
+    assert voyage.json()['meta']['filters']['production_scope'] == scope
+    assert client.get('/api/voyages/cua_lo/202/progress', headers=admin).status_code == 404
+    closed = client.post('/api/closed-reports', headers=admin, json={'report_id': rid})
+    assert closed.status_code == 201, closed.text
+    saved = client.get(f"/api/closed-reports/{closed.json()['id']}", headers=admin).json()
+    assert saved['production_scope'] == scope and saved['berth_rule_version'] == 'initial-berth-v1' and not saved['legacy_scope']
+    assert saved['report']['meta']['filters']['production_scope'] == scope
+    assert saved['planning']['eligible'] is False and saved['planning']['plans'] == [] and saved['planning']['rows'] == []
+    assert saved['planning']['period']['production_scope'] == scope
+    assert client.post(f"/api/closed-reports/{saved['id']}/compare", headers=admin, json={'report_id': rid}).json()['changed'] is False
+    exported = client.get(f"/api/closed-reports/{saved['id']}/export.xlsx", headers=admin)
+    assert exported.status_code == 200
+    book = load_workbook(BytesIO(exported.content))
+    assert 'Kế hoạch hiện tại áp dụng cho Cảng Nghệ Tĩnh' in book['Kế hoạch đã chốt']['B2'].value
+    book.close()
+
+
+def test_company_plan_progress_and_closure_use_only_nghe_tinh_actuals(api):
+    client, _, repo, _, admin, _ = api
+    repo.rows.append(fact(42, voyage='202', weight='500', production_scope='vietsun'))
+    plan = client.post('/api/plans', headers=admin, json={'terminal': 'cua_lo', 'month': '2026-09',
+        'metric': 'tonnage', 'amount': 100, 'reference': 'Company target'}).json()
+    client.post(f"/api/plans/{plan['id']}/approve", headers=admin, json={'expected_revision': 1})
+    report = get_report(api, terminal='cua_lo', start='2026-09-01')
+    rid = report['meta']['report_id']
+    progress = client.get(f'/api/reports/{rid}/plan-progress', headers=admin).json()
+    row = next(item for item in progress['rows'] if item['metric'] == 'tonnage')
+    assert progress['eligible'] and progress['production_scope'] == 'nghe_tinh' and progress['scope_label'] == 'Cảng Nghệ Tĩnh'
+    assert row['actual'] == 80 and row['target'] == 100 and row['completion_percent'] == 80
+    closed = client.post('/api/closed-reports', headers=admin, json={'report_id': rid}).json()
+    saved = client.get(f"/api/closed-reports/{closed['id']}", headers=admin).json()
+    assert saved['planning']['eligible'] and saved['production_scope'] == 'nghe_tinh'
+    assert next(item for item in saved['planning']['rows'] if item['metric'] == 'tonnage')['actual'] == 80
+
+
+def test_throughput_target_api_uses_snapshot_and_period_edit_keeps_audit(api):
+    client, _, repo, _, admin, viewer = api
+    payload = {'terminal': 'all', 'period_type': 'month', 'month': '2026-09',
+               'metric': 'tonnage', 'amount': 100, 'reference': 'Synthetic company target'}
+    assert client.post('/api/plans',headers=viewer,json=payload).status_code == 403
+    created = client.post('/api/plans',headers=admin,json=payload)
+    assert created.status_code == 201
+    plan = created.json()
+    changed = client.patch(f"/api/plans/{plan['id']}",headers=admin,json={
+        'expected_revision':1,'period_type':'quarter','month':None,'quarter':'2026-Q3'})
+    assert changed.status_code == 200
+    assert changed.json()['period_start'] == '2026-07-01' and changed.json()['period_end'] == '2026-09-30'
+    assert client.post(f"/api/plans/{plan['id']}/approve",headers=admin,json={'expected_revision':2}).status_code == 200
+    listed = client.get('/api/plans',headers=admin,params={'period_type':'quarter','quarter':'2026-Q3'})
+    assert listed.json()['total'] == 1
+    report = get_report(api,start='2026-07-01')
+    rid = report['meta']['report_id']
+    calls = len(repo.calls)
+    repo.failure = True  # Targets/progress must work with a frozen report during source outage.
+    path = f'/api/reports/{rid}/throughput-progress'
+    assert client.get(path).status_code == 401
+    assert client.get(path,headers=viewer).status_code == 403
+    progress = client.get(path,headers=admin)
+    assert progress.status_code == 200
+    item = progress.json()['items'][0]
+    assert item['actual'] == report['overview']['total_tonnage'] == 85
+    assert item['target'] == 100 and item['band'] == 'dark_green' and item['achieved'] is False
+    assert item['plans'][0]['version'] == changed.json()['version']
+    exported = client.get(f'/api/reports/{rid}/export.xlsx',headers=admin)
+    assert exported.status_code == 200
+    book = load_workbook(BytesIO(exported.content),data_only=True)
+    assert book['Mục tiêu thông qua']['E2'].value == 100
+    assert len(repo.calls) == calls
+
+
+def test_closed_comparison_rejects_other_scope_or_rule_and_preserves_legacy_exports(api):
+    client, store, repo, service, admin, _ = api
+    repo.rows.append(fact(42, voyage='202', weight='50', production_scope='vietsun'))
+    report = get_report(api, terminal='cua_lo')
+    rid = report['meta']['report_id']
+    closed = client.post('/api/closed-reports', headers=admin, json={'report_id': rid}).json()
+    vietsun = get_report(api, terminal='cua_lo', production_scope='vietsun')
+    refused = client.post(f"/api/closed-reports/{closed['id']}/compare", headers=admin,
+                          json={'report_id': vietsun['meta']['report_id']})
+    assert refused.status_code == 422 and refused.json()['detail']['code'] == 'REPORT_SCOPE_MISMATCH'
+    user = store.authenticate(admin['Authorization'].split()[1])
+    snapshot = service.export_snapshot(rid)
+    future = deepcopy(snapshot['report'])
+    future['meta']['berth_rule_version'] = 'initial-berth-v2'
+    different_rule = store.close_report(user, 'cua_lo', '2026-09-11', '2026-09-12', future, snapshot['operations'])
+    assert client.post(f"/api/closed-reports/{different_rule['id']}/compare", headers=admin, json={'report_id': rid}).status_code == 422
+    legacy = deepcopy(snapshot['report'])
+    legacy['meta']['filters'].pop('production_scope')
+    legacy['meta'].pop('berth_rule_version')
+    old = store.close_report(user, 'cua_lo', '2026-09-11', '2026-09-12', legacy, snapshot['operations'])
+    assert client.post(f"/api/closed-reports/{old['id']}/compare", headers=admin, json={'report_id': rid}).status_code == 422
+    saved = client.get(f"/api/closed-reports/{old['id']}", headers=admin).json()
+    assert saved['legacy_scope'] and saved['production_scope'] is None and saved['berth_rule_version'] is None
+    assert saved['production_scope_label'].startswith('Phạm vi cũ') and saved['report'] == legacy
+    exported = client.get(f"/api/closed-reports/{old['id']}/export.xlsx", headers=admin)
+    assert exported.status_code == 200
+    book = load_workbook(BytesIO(exported.content))
+    summary = {row[0].value: row[1].value for row in book['Tổng hợp'].iter_rows(min_row=2)}
+    assert summary['Phạm vi sản lượng'].startswith('Phạm vi cũ')
+    assert summary['Mã phạm vi sản lượng'] == 'legacy'
+    book.close()
+    headers = client.get('/api/closed-reports', headers=admin).json()['items']
+    assert next(item for item in headers if item['id'] == old['id'])['legacy_scope'] is True
+    assert next(item for item in headers if item['id'] == closed['id'])['production_scope'] == 'nghe_tinh'
+    assert client.get(f"/api/closed-reports/{old['id']}", headers=admin).json()['digest'] == old['digest']
+
+
+@pytest.mark.parametrize('suffix', ['operations', 'export.xlsx'])
+def test_drilldown_and_excel_accept_inferred_scope_but_reject_mismatched_request(api, suffix):
+    client, _, repo, _, admin, _ = api
+    repo.rows.append(fact(42, voyage='202', weight='50', production_scope='vietsun'))
+    report = get_report(api, terminal='cua_lo', production_scope='vietsun')
+    path = f"/api/reports/{report['meta']['report_id']}/{suffix}"
+    assert client.get(path, headers=admin).status_code == 200
+    assert client.get(path, headers=admin, params={'production_scope': 'vietsun'}).status_code == 200
+    assert client.get(path, headers=admin, params={'production_scope': 'nghe_tinh'}).status_code == 422
+    assert client.get(path, headers=admin, params={'production_scope': 'invalid'}).status_code == 422

@@ -1,6 +1,14 @@
 # Dashboard sản lượng Cảng Nghệ Tĩnh
 
-Ứng dụng React/Vite và FastAPI đọc SQL Server `SmartTOS` / `SmartTOS_BenThuy`, có tài khoản nội bộ và phân quyền theo xí nghiệp. Báo cáo hỗ trợ tra cứu xuống dòng tác nghiệp, kế hoạch tháng/chuyến, đối soát, chốt phiên bản và xuất CSV/Excel.
+Ứng dụng React/Vite và FastAPI đọc SQL Server `SmartTOS` / `SmartTOS_BenThuy`, có tài khoản nội bộ và phân quyền theo xí nghiệp. Báo cáo hỗ trợ tra cứu xuống dòng tác nghiệp, kế hoạch tháng/quý/năm/khoảng ngày/chuyến, đối soát, chốt phiên bản và xuất CSV/Excel.
+
+**Phạm vi chỉ tiêu chốt ngày 17/09/2026:** dashboard theo dõi sản lượng thông qua (tấn); không triển khai chỉ tiêu tấn bốc xếp hoặc công thức `2 × A + S + L`. Giữ cách cộng khối lượng ghi nhận đã chuẩn hóa đơn vị trong phạm vi `SANLUONG-QUACANG`, không nhân thêm hệ số tác nghiệp. TEU, chuyến tàu và các phần phân tích hiện có tiếp tục sử dụng. Tấn nguồn không tự được xem là số cân thực tế; định nghĩa và trạng thái dữ liệu thiếu vẫn được giữ trong báo cáo.
+
+**Phân loại theo cầu cập đầu tiên:** quy tắc `initial-berth-v1` áp dụng từ đầu dữ liệu và cho toàn bộ chuyến. Chuyến Cửa Lò cập Cầu 5 (`berthId=13`) đầu tiên thuộc **Cầu 5 – Vietsun**, không cộng vào phần **Nghệ Tĩnh**, kể cả chuyển sang cầu khác sau đó. Chuyến cập cầu khác trước rồi chuyển Cầu 5 vẫn thuộc Nghệ Tĩnh. Lấy ATB thực tế sớm nhất từ lịch sử `DoBerth` và danh mục `Berth` (đã đối chiếu với `vwDoBerthFull`), dùng ATA nếu thiếu ATB; không dùng cầu hiện tại, mã chuyến hoặc thứ tự ID. Bến Thủy có danh mục riêng, không loại theo số 13 chung cho cả hai nguồn.
+
+API báo cáo, chi tiết và tiến độ nhận `production_scope=nghe_tinh|vietsun|unclassified`, mặc định `nghe_tinh`. Thiếu bằng chứng hoặc hai cầu khác nhau trùng thời điểm đầu được để trong **Chưa xác định cầu**. Mọi KPI, kỳ so sánh, danh sách và CSV/Excel lấy cùng phạm vi của phiên báo cáo. Cache cũ trước quy tắc cầu đầu phải tải lại; bản chốt cũ vẫn được đọc/xuất theo phạm vi ban đầu và không so sánh trực tiếp với quy tắc mới. Kế hoạch công ty không được áp vào phần Vietsun hoặc chưa xác định; không sửa các mục tiêu đã duyệt.
+
+Khi máy local không kết nối được SQL Server, có thể chạy riêng frontend và dùng API Railway theo [hướng dẫn local qua Railway](docs/LOCAL_RAILWAY.vi.md). Chế độ này dùng tài khoản và dữ liệu quản trị trên Railway.
 
 **Bản nâng cấp 13/09/2026:** commit `beeb1f8` đã lên `main`, GitHub Actions thành công và Railway/Vercel đã chạy bản có đăng nhập nội bộ. [Dashboard production](https://dashboard-sanluong.vercel.app) đã được kiểm tra đăng nhập, báo cáo, chi tiết, tìm chuyến và xuất Excel với dữ liệu thật từ hai nguồn SQL. KPI tấn chỉ cộng phần khối lượng có cơ sở; giữ riêng đơn vị khác và dữ liệu thiếu. Dữ liệu nguồn TOS chỉ được đọc; tài khoản, kế hoạch và báo cáo chốt lưu trong SQLite riêng trên volume `/data`. Sao lưu thủ công production và kiểm tra khôi phục đã đạt. Tài khoản, phiên đăng nhập và bản báo cáo còn nguyên sau khởi động lại. Tài khoản bàn giao yêu cầu đổi mật khẩu ở lần đăng nhập đầu; lịch backup tự động chưa bật được do Railway trả về `Not Authorized`.
 
@@ -9,6 +17,7 @@
 - [Kế hoạch nâng cấp theo giai đoạn](docs/UPGRADE_PLAN.vi.md)
 - [Hướng dẫn frontend](frontend/README.md)
 - [Triển khai Railway/Vercel và sao lưu](docs/DEPLOYMENT.vi.md)
+- [Hiệu năng truy vấn, cache và kết quả đo](docs/QUERY_PERFORMANCE.vi.md)
 
 Hồ sơ đối soát, script kiểm tra SQL thực và kết quả kiểm tra cũ được nén trong `outputs/archive/cleanup-*.zip`, chỉ lưu cục bộ và không đưa vào Git. File ZIP giữ đường dẫn gốc cùng `CLEANUP_MANIFEST.json` để tra lại và kiểm tra tính toàn vẹn. Bộ kiểm thử tái lập trong `tests/` dùng fixture tổng hợp.
 
@@ -81,7 +90,9 @@ Deploy Logs chỉ ghi loại lỗi và SQLSTATE đã được lọc: `missing_co
 
 #### Theo dõi lỗi tải dữ liệu gián đoạn
 
-Dashboard và chi tiết chuyến tự thử lại GET **một lần** sau 500 ms khi `fetch` lỗi mạng hoặc HTTP 502/503/504. Cả hai lần dùng chung giới hạn 45 giây; đổi bộ lọc/trang hoặc đóng chi tiết sẽ hủy yêu cầu và lần thử lại. Lỗi cấu trúc/JSON và lỗi bộ lọc không được thử lại. Nếu vẫn thất bại, giao diện giữ thông báo lỗi và nút thử lại, không thay bằng dữ liệu cũ hay số 0.
+Dashboard và chi tiết chuyến tự thử lại GET **một lần** sau 500 ms khi `fetch` lỗi mạng hoặc HTTP 502/503/504. Hai lần dùng chung hạn chờ: 45 giây thông thường, 90 giây riêng báo cáo kỳ 93–366 ngày. Đổi bộ lọc/trang hoặc đóng chi tiết sẽ hủy yêu cầu và lần thử lại. Lỗi cấu trúc/JSON và lỗi bộ lọc không được thử lại. Nút **Thử lại** khi chưa tải được báo cáo cho phép dùng cache còn hạn; nút **Tải lại**, **Thử cập nhật lại** và lần cập nhật tự động chủ động đọc mới, bỏ qua cache.
+
+Nếu cập nhật thất bại khi đã có báo cáo của cùng bộ lọc, giao diện giữ số liệu lần đọc trước và hiện rõ cảnh báo chưa cập nhật được; thời điểm đọc nguồn không đổi. Khi chưa có báo cáo hoặc đổi bộ lọc, lỗi không được thay bằng dữ liệu kỳ khác hay số 0. Cơ chế này không coi số liệu cũ là số liệu mới.
 
 Log kết nối có `elapsed_ms`. Lỗi đọc báo cáo và kiểm tra sức khỏe còn có `operation=query|health`, `phase=cursor|execute|fetch|row_limit`, `category`, `sqlstate` và `elapsed_ms`. Ngoài nhóm lỗi kết nối, các nhóm truy vấn gồm `permission`, `schema`, `deadlock`, `transaction_conflict`, `cancelled`, `query` và `row_limit`. Log không chứa câu SQL, tham số, dữ liệu trả về hay nội dung lỗi driver nguyên bản.
 
@@ -101,9 +112,15 @@ GET /api/health/live
 
 API dữ liệu nhận `Authorization: Bearer <token>` từ `POST /api/auth/login`; người dùng chỉ xem xí nghiệp được cấp. Phiên có hạn 8 giờ, thu hồi khi đổi mật khẩu hoặc quyền. Các API kế hoạch, đối soát, báo cáo chốt yêu cầu quyền tương ứng; toàn bộ endpoint cũ cũng được bảo vệ.
 
-`meta.report_id` định danh tập dòng nguồn của lần đọc. Các tổng, drilldown, chi tiết chuyến với `report_id` và Excel dùng lại tập này, không đọc SQL riêng mỗi lần bấm. Dữ liệu được dùng lại tối đa 30 giây; nút **Tải lại** bỏ qua cache. Bản tra cứu có hạn 15 phút: RAM giữ 8 bản/100.000 dòng, `report-cache.sqlite3` giữ thêm tối đa 128 bản/1.000.000 dòng/128 MiB nội dung nén. Khi bản bị loại khỏi RAM hoặc API khởi động lại, có thể đọc lại từ ổ đĩa; hết hạn hoặc chạm giới hạn ổ đĩa vẫn cần tải báo cáo mới (HTTP 410). Mỗi báo cáo tối đa 100.000 dòng. Các yêu cầu trùng đang chạy được gom lại trong một worker; không cache lỗi, không trả số 0 thay lỗi nguồn. Đây là bản dữ liệu tại tầng ứng dụng, không phải bảo đảm snapshot giao dịch đồng thời giữa hai SQL database.
+`meta.report_id` định danh tập dòng nguồn của lần đọc. Các tổng, drilldown, chi tiết chuyến với `report_id` và Excel dùng lại tập này, không đọc SQL riêng mỗi lần bấm. Instance API dùng `REPORT_CACHE_TTL_SECONDS`, mặc định **120 giây**, chỉ nhận số nguyên **1–300**; cả cache RAM và thời hạn dùng lại cache ổ đĩa nhận cấu hình này. Nút **Tải lại** bỏ qua cache. Cache hit giữ nguyên `meta.source_read_at` và `report_id`; không cập nhật thời điểm nguồn chỉ vì người dùng mở lại màn hình.
 
-Kế hoạch nhập tay hoặc xem trước file `.xlsx` theo mẫu `/api/plans/template.xlsx`, lưu nháp rồi duyệt theo số văn bản. Hỗ trợ kế hoạch tháng và chuyến, tách tấn/TEU, giữ phiên bản. Không tự phân bổ kế hoạch tháng theo ngày; chỉ so thực hiện từ ngày 1 đến ngày cuối đã chọn của cùng tháng với kế hoạch cả tháng. Tiến độ toàn chuyến đọc riêng tất cả tác nghiệp qua cảng của chuyến và công bố thời điểm nguồn. Thiếu kế hoạch, mẫu số 0 hoặc thực hiện chưa đầy đủ không có phần trăm giả.
+Bản tra cứu vẫn có hạn 15 phút: RAM giữ 8 bản/100.000 dòng, `report-cache.sqlite3` giữ thêm tối đa 128 bản/1.000.000 dòng/128 MiB nội dung nén. Khi bản bị loại khỏi RAM hoặc API khởi động lại, có thể đọc lại từ ổ đĩa; hết hạn hoặc không còn bản lưu trả HTTP 410 và cần tải báo cáo mới. Mỗi báo cáo tối đa 100.000 dòng; giới hạn dung lượng không được tăng trong bản tối ưu này. Các yêu cầu trùng đang chạy được gom lại trong một worker; không cache lỗi, không trả số 0 thay lỗi nguồn. Đây là bản dữ liệu tại tầng ứng dụng, không phải bảo đảm snapshot giao dịch đồng thời giữa hai SQL database.
+
+Bản tối ưu ngày 17/09/2026 đã triển khai Railway thành công, deployment `1e75f49a-9a2c-42f0-8a41-2551d20ea92f`, hash module khớp gói phát hành. Truy vấn tạo danh sách `JobMethod` đủ điều kiện một lần cho mỗi nguồn, giữ nguyên điều kiện `SANLUONG-QUACANG`, quy tắc cầu đầu và KPI; không tạo index hay sửa bảng nguồn. Runtime giữ UID `10001`, timeout SQL 20 giây và cache 120 giây. Đo báo cáo 01/01–17/09/2026, `all`/`nghe_tinh`, trực tiếp trong tiến trình production: đọc mới **19,502 giây**, cache RAM **0,0057 giây**, đọc cache ổ đĩa bằng service mới **0,2262 giây**. Số liệu khớp bản trước, tấn vẫn `partial`; đây không phải độ trễ trình duyệt hay SLA. [Hồ sơ hiệu năng](docs/QUERY_PERFORMANCE.vi.md) giữ cả số đo bản cũ và ứng viên để đối chiếu.
+
+Kiểm thử bản này: **464 backend, 110 frontend đạt; lint/build đạt**. Payload thật đã qua các hàm kiểm tra của frontend bằng Node; health Railway và qua proxy Vite trả 200. Tài khoản, kế hoạch và lịch sử giữ nguyên; bản sao trước nâng cấp kiểm tra khôi phục đạt trên container và local. Frontend local tại `http://127.0.0.1:5173` đã cập nhật, nhưng chưa push Git hoặc triển khai lại Vercel; chưa kiểm tra trực quan bằng trình duyệt trong lượt này.
+
+Kế hoạch nhập tay hoặc xem trước file `.xlsx` theo mẫu `/api/plans/template.xlsx`, lưu nháp rồi duyệt theo số văn bản. Hỗ trợ kỳ tháng, quý, năm, khoảng ngày tùy chọn và chuyến tàu; tách tấn/TEU, giữ phiên bản. Dashboard có bộ lọc Quý 1–4 theo năm và thanh tiến độ tấn thông qua với 5 mức màu. Endpoint `/api/reports/{report_id}/throughput-progress` đối chiếu cùng phiên báo cáo với mục tiêu được duyệt, bắt đầu đúng ngày đầu kỳ và bao phủ khoảng thực tế; không tự chia chỉ tiêu theo ngày hoặc cộng chồng các loại kỳ. Thiếu kế hoạch hoặc mẫu số 0 không tính tỷ lệ; dữ liệu chưa đầy đủ chỉ có tỷ lệ tạm tính, chưa xác nhận đạt kế hoạch. [Hướng dẫn sử dụng kế hoạch](docs/KE_HOACH_SAN_LUONG.vi.md).
 
 Chốt báo cáo lưu bản tổng và các dòng nguồn tại máy chủ thành phiên bản bất biến. So sánh chỉ áp dụng cùng kỳ/xí nghiệp, nhận diện cả thay đổi chi tiết dù tổng không đổi. Ghi chú đối soát lưu theo xí nghiệp + ID tác nghiệp, có lịch sử; không cập nhật phiếu gốc TOS.
 

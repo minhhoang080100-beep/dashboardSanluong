@@ -4,6 +4,7 @@ from collections import OrderedDict, defaultdict
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from math import isfinite
 import os
 from pathlib import Path
@@ -12,15 +13,17 @@ from time import monotonic, perf_counter
 from uuid import uuid4
 
 if __package__:
+    from .config import settings
     from .snapshot_store import SnapshotStore, SnapshotStorageError, SnapshotStorageCapacity
-    from .database import DatabaseUnavailable
-    from .repository import (TERMINALS, DashboardRepository, VoyageNotFound, _aggregate,
+    from .database import DatabaseUnavailable, DatabaseQueryError
+    from .repository import (TERMINALS, PRODUCTION_SCOPES, BERTH_RULE_VERSION, DashboardRepository, VoyageNotFound, _aggregate,
                              _decimal, _number, _panel_values, _timestamp, _voyage_daily_history,
                              dashboard_repo, date_range)
 else:
+    from config import settings
     from snapshot_store import SnapshotStore, SnapshotStorageError, SnapshotStorageCapacity
-    from database import DatabaseUnavailable
-    from repository import (TERMINALS, DashboardRepository, VoyageNotFound, _aggregate,
+    from database import DatabaseUnavailable, DatabaseQueryError
+    from repository import (TERMINALS, PRODUCTION_SCOPES, BERTH_RULE_VERSION, DashboardRepository, VoyageNotFound, _aggregate,
                             _decimal, _number, _panel_values, _timestamp, _voyage_daily_history,
                             dashboard_repo, date_range)
 
@@ -68,6 +71,32 @@ _OPERATION_FILTERS = frozenset({"all", "with_values", "missing_weight"})
 _ISSUES = frozenset({"all", "missing_weight", "unknown_unit", "negative"})
 _METRIC_OPERATIONS = ("get_report", "get_report_snapshot", "drilldown", "get_voyage_from_report",
                       "export_snapshot", "export_drilldown", "get_voyage_progress", "source_read")
+_FACT_SCALAR_TYPES = frozenset({type(None), bool, int, float, str, bytes, Decimal, date})
+_FACT_TIMEZONE_TYPES = frozenset({type(None), timezone})
+
+
+def _copy_fact_rows(rows):
+    """Isolate SQL records without recursively copying their immutable scalars.
+
+    Exact types exclude mutable subclasses. Non-flat/custom records retain the
+    deepcopy contract, including shared references across records and cycles.
+    """
+    copied = []
+    memo = {id(rows): copied}
+    for row in rows:
+        if id(row) in memo:
+            copied.append(memo[id(row)])
+        elif type(row) is dict and all(
+            type(key) is str and (type(value) in _FACT_SCALAR_TYPES or
+                (type(value) is datetime and type(value.tzinfo) in _FACT_TIMEZONE_TYPES))
+            for key, value in row.items()
+        ):
+            clone = row.copy()
+            memo[id(row)] = clone
+            copied.append(clone)
+        else:
+            copied.append(deepcopy(row, memo))
+    return copied
 
 
 def _cargo_group(row):
@@ -98,6 +127,11 @@ def _operation(row):
         "voyage_id": str(row["vessel_id"]) if row.get("vessel_id") is not None else None,
         "source_voyage_id": str(row["source_voyage_id"]) if row.get("source_voyage_id") is not None else None,
         "vessel_name": row.get("vessel_name"), "voyage_code": row.get("voyage_code"),
+        "production_scope": row.get("production_scope"),
+        "initial_berth_id": row.get("initial_berth_id"),
+        "initial_berth_code": row.get("initial_berth_code"),
+        "initial_berth_at": _timestamp(row.get("initial_berth_at")),
+        "berth_assignment_status": row.get("berth_assignment_status"),
         "operation_code": row.get("operation_code"), "operation_date": row["operation_day"].isoformat(),
         "shift_id": str(row["shift_id"]) if row.get("shift_id") is not None else None,
         "shift_code": row.get("shift_code"), "cargo_name": row["cargo_name"], "cargo_group": _cargo_group(row),
@@ -234,6 +268,8 @@ class ReportingService:
             self._prune(self._clock())
             snapshot = self._snapshots.get(report_id)
             if snapshot is not None:
+                if not self._current_scope(snapshot.report):
+                    raise ReportSnapshotNotFound()
                 self._snapshots.move_to_end(report_id)
                 return snapshot
         # File I/O and decompression must not serialize unrelated source reads.
@@ -247,8 +283,15 @@ class ReportingService:
         return snapshot
 
     @staticmethod
-    def _storage_key(start, end, terminal):
-        return f"{start.isoformat()}:{end.isoformat()}:{terminal}"
+    def _storage_key(start, end, terminal, production_scope="nghe_tinh"):
+        return f"{BERTH_RULE_VERSION}:{production_scope}:{start.isoformat()}:{end.isoformat()}:{terminal}"
+
+    @staticmethod
+    def _current_scope(report, expected=None):
+        meta = report.get("meta", {})
+        scope = meta.get("filters", {}).get("production_scope")
+        return (meta.get("berth_rule_version") == BERTH_RULE_VERSION and isinstance(scope, str) and scope in PRODUCTION_SCOPES
+                and (expected is None or scope == expected))
 
     @staticmethod
     def _storage_call(function, *args, **kwargs):
@@ -260,6 +303,11 @@ class ReportingService:
             raise ReportStorageUnavailable() from None
 
     def _restore(self, stored):
+        if not self._current_scope(stored["report"]):
+            raise ReportSnapshotNotFound()
+        expected = stored["report"]["meta"]["filters"]["production_scope"]
+        if any(row.get("production_scope") != expected for row in stored["rows"]):
+            raise ReportSnapshotNotFound()
         if len(stored["rows"]) > self.max_snapshot_rows:
             raise ReportCapacityError()
         wall_now, now = self.snapshot_store.clock(), self._clock()
@@ -314,12 +362,14 @@ class ReportingService:
                 self._flights.pop(key, None)
                 flight.done.set()
 
-    def get_report(self, start_date=None, end_date=None, terminal="all", refresh=False):
-        return self._measure("get_report", lambda: self._get_report(start_date, end_date, terminal, refresh))
+    def get_report(self, start_date=None, end_date=None, terminal="all", refresh=False, production_scope="nghe_tinh"):
+        return self._measure("get_report", lambda: self._get_report(start_date, end_date, terminal, refresh, production_scope))
 
-    def _get_report(self, start_date, end_date, terminal, refresh):
+    def _get_report(self, start_date, end_date, terminal, refresh, production_scope):
+        if not isinstance(production_scope, str) or production_scope not in PRODUCTION_SCOPES:
+            raise ValueError("Phạm vi sản lượng không hợp lệ.")
         start, end = date_range(start_date, end_date, terminal)
-        key = ("report", start, end, terminal)
+        key = ("report", start, end, terminal, production_scope, BERTH_RULE_VERSION)
         with self._lock:
             self._prune(self._clock())
             observed_id = self._cache.get(key, (None, None))[0]
@@ -341,27 +391,31 @@ class ReportingService:
                 if current_id is not None and (not refresh or current_id != observed_id):
                     return self._snapshot(current_id)
             if not refresh and self.snapshot_store is not None:
-                stored = self._storage_call(self.snapshot_store.get_fresh, self._storage_key(start, end, terminal))
-                if stored is not None:
+                stored = self._storage_call(self.snapshot_store.get_fresh, self._storage_key(start, end, terminal, production_scope))
+                if stored is not None and self._current_scope(stored["report"], production_scope):
                     snapshot = self._restore(stored)
                     with self._lock:
                         self._remember(snapshot)
                         remaining = max(0, stored["fresh_until"] - self.snapshot_store.clock())
                         self._cache[key] = (snapshot.report_id, self._clock() + remaining)
                     return snapshot
-            data = self._measure("source_read", lambda: self.repo.read_report(start, end, terminal))
+            data = self._measure("source_read", lambda: self.repo.read_report(start, end, terminal, production_scope=production_scope))
             rows = data["rows"]
             if len(rows) > self.max_snapshot_rows:
                 raise ReportCapacityError()
+            if any(row.get("production_scope") != production_scope for row in rows):
+                raise DatabaseQueryError()
             report = _enrich_report(deepcopy(data["report"]))
+            if not self._current_scope(report, production_scope):
+                raise DatabaseQueryError()
             report_id = uuid4().hex
             report["meta"].update(report_id=report_id, source_read_at=datetime.now(timezone.utc).isoformat(),
                                   read_consistency="single_fact_set")
             created = self._clock()
-            snapshot = _Snapshot(report_id, report, tuple(deepcopy(sorted(rows, key=_sort_row, reverse=True))),
+            snapshot = _Snapshot(report_id, report, tuple(_copy_fact_rows(sorted(rows, key=_sort_row, reverse=True))),
                                  created, created + self.snapshot_ttl)
             if self.snapshot_store is not None:
-                self._storage_call(self.snapshot_store.put, report_id, self._storage_key(start, end, terminal), report,
+                self._storage_call(self.snapshot_store.put, report_id, self._storage_key(start, end, terminal, production_scope), report,
                                    snapshot.rows, ttl=self.snapshot_ttl, fresh_ttl=self.cache_ttl)
             with self._lock:
                 self._prune(created)
@@ -382,8 +436,10 @@ class ReportingService:
         return self._measure("export_snapshot", export)
 
     def _scope(self, snapshot, *, day=None, terminal=None, cargo=None, customer_id=None,
-               customer_terminal=None, voyage_id=None, issue="all"):
+               customer_terminal=None, voyage_id=None, issue="all", production_scope=None):
         filters = snapshot.report["meta"]["filters"]
+        if production_scope is not None and production_scope != filters["production_scope"]:
+            raise ValueError("Phạm vi sản lượng không khớp phiên báo cáo.")
         if not isinstance(issue, str) or issue not in _ISSUES:
             raise ValueError("Nhóm dữ liệu cần đối soát không hợp lệ.")
         if terminal == "all":
@@ -439,21 +495,24 @@ class ReportingService:
             rows.append(row)
         selected = {"day": day.isoformat() if day is not None else None, "terminal": terminal,
                     "cargo": cargo, "customer_id": customer_id, "customer_terminal": customer_terminal,
-                    "voyage_id": voyage_id, "issue": issue}
+                    "voyage_id": voyage_id, "issue": issue, "production_scope": filters["production_scope"]}
         return rows, selected
 
     def _aggregate_scope(self, snapshot, rows, terminal=None):
         filters = snapshot.report["meta"]["filters"]
         start, end = date.fromisoformat(filters["start_date"]), date.fromisoformat(filters["end_date"])
-        report = self.repo._dashboard_from_rows(deepcopy(rows), start, end, terminal or filters["terminal"])
+        report = self.repo._dashboard_from_rows(_copy_fact_rows(rows), start, end, terminal or filters["terminal"],
+                                               production_scope=filters["production_scope"])
         return _enrich_report(report)
 
     def drilldown(self, report_id, *, day=None, terminal=None, cargo=None, customer_id=None,
-                  customer_terminal=None, voyage_id=None, issue="all", operation_filter="all", page=1, page_size=25):
+                  customer_terminal=None, voyage_id=None, issue="all", operation_filter="all", page=1, page_size=25,
+                  production_scope=None):
         def drill():
             snapshot = self._snapshot(report_id)
             rows, selected = self._scope(snapshot, day=day, terminal=terminal, cargo=cargo,
-                customer_id=customer_id, customer_terminal=customer_terminal, voyage_id=voyage_id, issue=issue)
+                customer_id=customer_id, customer_terminal=customer_terminal, voyage_id=voyage_id, issue=issue,
+                production_scope=production_scope)
             operations = _paged(rows, operation_filter, page, page_size)
             report = self._aggregate_scope(snapshot, rows, selected["terminal"])
             selected["operation_filter"] = operation_filter
@@ -463,18 +522,20 @@ class ReportingService:
                 "native_units": report["native_units"], "shifts": _shift_totals(rows), "operations": operations,
                 "meta": {"report_id": report_id, "source_read_at": snapshot.report["meta"]["source_read_at"],
                          "filters": selected, "snapshot_filters": deepcopy(snapshot.report["meta"]["filters"]),
+                         "berth_rule_version": BERTH_RULE_VERSION,
                          "read_consistency": "immutable_report_snapshot"}}
         return self._measure("drilldown", drill)
 
     def export_drilldown(self, report_id, *, day=None, terminal=None, cargo=None, customer_id=None,
-                         customer_terminal=None, voyage_id=None, issue="all", operation_filter="all"):
+                         customer_terminal=None, voyage_id=None, issue="all", operation_filter="all", production_scope=None):
         """Export one selected bounded fact set without repeating per-page aggregation."""
         def export():
             if not isinstance(operation_filter, str) or operation_filter not in _OPERATION_FILTERS:
                 raise ValueError("Bộ lọc tác nghiệp không hợp lệ.")
             snapshot = self._snapshot(report_id)
             rows, selected = self._scope(snapshot, day=day, terminal=terminal, cargo=cargo,
-                customer_id=customer_id, customer_terminal=customer_terminal, voyage_id=voyage_id, issue=issue)
+                customer_id=customer_id, customer_terminal=customer_terminal, voyage_id=voyage_id, issue=issue,
+                production_scope=production_scope)
             report = self._aggregate_scope(snapshot, rows, selected["terminal"])
             included = rows if operation_filter == "all" else [row for row in rows if (
                 _has_values(row) if operation_filter == "with_values" else row.get("native_weight") is None)]
@@ -507,14 +568,17 @@ class ReportingService:
                 "native_units": report["native_units"], "shifts": _shift_totals(rows),
                 "operations": _paged(rows, operation_filter, page, page_size),
                 "meta": {"report_id": report_id, "source_read_at": snapshot.report["meta"]["source_read_at"],
+                    "berth_rule_version": BERTH_RULE_VERSION,
                     "generated_at": snapshot.report["meta"]["generated_at"], "metric_coverage": report["meta"]["metric_coverage"],
                     "filters": {**filters, "terminal": terminal, "voyage_id": str(voyage_id), "operation_filter": operation_filter},
                     "operations_order": "shiftDate DESC, tallyShiftId DESC", "read_consistency": "immutable_report_snapshot"}}
         return self._measure("get_voyage_from_report", detail)
 
-    def get_voyage_progress(self, terminal, voyage_id, refresh=False):
+    def get_voyage_progress(self, terminal, voyage_id, refresh=False, production_scope="nghe_tinh"):
+        if not isinstance(production_scope, str) or production_scope not in PRODUCTION_SCOPES:
+            raise ValueError("Phạm vi sản lượng không hợp lệ.")
         def progress():
-            key = ("progress", terminal, str(voyage_id))
+            key = ("progress", terminal, str(voyage_id), production_scope, BERTH_RULE_VERSION)
             with self._lock:
                 self._prune(self._clock())
                 observed = self._progress.get(key)
@@ -528,11 +592,14 @@ class ReportingService:
                     current = self._progress.get(key)
                     if current is not None and (not refresh or current is not observed):
                         return deepcopy(current[0])
-                result = self._measure("source_read", lambda: self.repo.read_voyage_lifetime(terminal, voyage_id))
+                result = self._measure("source_read", lambda: self.repo.read_voyage_lifetime(terminal, voyage_id, production_scope=production_scope))
                 if len(result["rows"]) > self.max_snapshot_rows:
                     raise ReportCapacityError()
                 value = {"header": result["header"], "summary": result["summary"],
                          "shifts": _shift_totals(result["rows"]), "meta": result["meta"]}
+                value["meta"].update(production_scope=production_scope, berth_rule_version=BERTH_RULE_VERSION,
+                    filters={**value["meta"].get("filters", {}), "terminal": terminal,
+                             "voyage_id": str(voyage_id), "production_scope": production_scope})
                 with self._lock:
                     while len(self._progress) >= self.max_snapshots:
                         self._progress.popitem(last=False)
@@ -561,4 +628,5 @@ class ReportingService:
 
 
 _state_path = Path(os.environ.get('DASHBOARD_STATE_PATH', str(Path(__file__).resolve().parent / '.data' / 'control.sqlite3')))
-reporting_service = ReportingService(snapshot_store=SnapshotStore(_state_path.with_name('report-cache.sqlite3')))
+reporting_service = ReportingService(cache_ttl=settings.REPORT_CACHE_TTL_SECONDS,
+    snapshot_store=SnapshotStore(_state_path.with_name('report-cache.sqlite3')))

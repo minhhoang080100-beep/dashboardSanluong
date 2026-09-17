@@ -88,6 +88,10 @@ def test_additive_migration_keeps_approved_values_and_legacy_baseline(state):
     with sqlite3.connect(store.path) as db:
         db.execute('DROP TRIGGER plan_events_no_delete')
         db.execute('DELETE FROM plan_events WHERE plan_id=?', (draft['id'],))
+        # Reconstruct the older schema before revision/audit/tombstone fields.
+        for trigger in ['approved_plans_no_update', 'cancelled_plans_no_update',
+                        'deleted_plans_no_update', 'deleted_plans_no_delete']:
+            db.execute(f'DROP TRIGGER {trigger}')
         for name in ['revision', 'updated_by', 'updated_at', 'cancelled_by', 'cancelled_at']:
             db.execute(f'ALTER TABLE plans DROP COLUMN {name}')
     migrated = ControlStore(store.path)

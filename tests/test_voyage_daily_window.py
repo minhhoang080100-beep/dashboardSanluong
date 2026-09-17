@@ -89,7 +89,7 @@ def test_recent_arrival_trims_only_voyage_daily_not_dashboard_period(monkeypatch
     assert detail["operations"]["total"] == detail["summary"]["record_count"] == 2
     assert detail["meta"]["filters"]["start_date"] == "2026-09-01"
     assert detail["meta"]["filters"]["end_date"] == "2026-09-12"
-    assert calls[1] == (date(2026, 9, 1), date(2026, 9, 13), 101)
+    assert calls[1] == (101, date(2026, 9, 1), date(2026, 9, 13), 101, "nghe_tinh")
 
 
 @pytest.mark.parametrize("arrival", [None, datetime(1, 1, 1), "invalid-timestamp"])

@@ -19,6 +19,12 @@ def install_auth_fixture(page, *, role="viewer", signed_in=True):
             route.fulfill(json=state["user"])
         elif path.endswith("/auth/logout"):
             route.fulfill(json={"ok": True})
+        elif path.endswith("/throughput-progress") and route.request.method == "GET":
+            # Unrelated browser suites do not supply a planning snapshot. Keep
+            # this expected read intercepted; browser_targets covers its data.
+            route.fulfill(status=503, json={"detail": {
+                "code": "SYNTHETIC_TARGET_UNAVAILABLE",
+                "message": "Kế hoạch không được cung cấp trong ca kiểm thử này."}})
         elif path.endswith(("/plans", "/issues", "/closed-reports", "/users")) and route.request.method == "GET":
             route.fulfill(json={"items": [], "total": 0, "page": 1, "page_size": 25})
         else:

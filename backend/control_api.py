@@ -1,5 +1,6 @@
 """Bearer-authenticated APIs for the dashboard's separate control database."""
 from functools import lru_cache
+from datetime import date
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -15,6 +16,8 @@ else:
 
 router = APIRouter(prefix="/api")
 Terminal = Literal["cua_lo", "ben_thuy"]
+PlanTerminal = Literal['all', 'cua_lo', 'ben_thuy']
+PlanPeriod = Literal['month', 'quarter', 'year', 'custom', 'voyage']
 
 
 @lru_cache(maxsize=1)
@@ -97,9 +100,13 @@ class UserUpdate(InputModel):
 
 
 class PlanBody(InputModel):
-    terminal: Terminal
-    period_type: Literal["month", "voyage"] = "month"
+    terminal: PlanTerminal
+    period_type: PlanPeriod = "month"
     month: str | None = None
+    quarter: str | None = None
+    year: int | None = Field(default=None, ge=2000, le=2099)
+    start_date: date | None = None
+    end_date: date | None = None
     voyage_id: int | None = Field(default=None, ge=1, le=2147483647)
     metric: Literal["tonnage", "teu"]
     amount: Decimal = Field(ge=0, le=1000000000000, decimal_places=6)
@@ -113,9 +120,13 @@ class PlanImportBody(InputModel):
 
 class PlanUpdate(InputModel):
     expected_revision: int = Field(ge=1)
-    terminal: Terminal | None = None
-    period_type: Literal['month', 'voyage'] | None = None
+    terminal: PlanTerminal | None = None
+    period_type: PlanPeriod | None = None
     month: str | None = None
+    quarter: str | None = None
+    year: int | None = Field(default=None, ge=2000, le=2099)
+    start_date: date | None = None
+    end_date: date | None = None
     voyage_id: int | None = Field(default=None, ge=1, le=2147483647)
     metric: Literal['tonnage', 'teu'] | None = None
     amount: Decimal | None = Field(default=None, ge=0, le=1000000000000, decimal_places=6)
@@ -129,6 +140,10 @@ class PlanRevision(InputModel):
 
 class PlanCancel(PlanRevision):
     note: str = Field(min_length=1, max_length=4000)
+
+
+class PlanDelete(InputModel):
+    revision: int = Field(ge=1, strict=True)
 
 
 class IssueBody(InputModel):
@@ -197,10 +212,14 @@ def reset_user_password(user_id: int, user: dict = Depends(require_user), store:
 def plans(terminal: Literal["all", "cua_lo", "ben_thuy"] | None = None,
           month: str | None = None, voyage_id: int | None = Query(default=None, ge=1),
           status: Literal["draft", "approved", "cancelled"] | None = None,
-          period_type: Literal["month", "voyage"] | None = None,
+          period_type: PlanPeriod | None = None,
+          quarter: str | None = None, year: int | None = Query(default=None, ge=2000, le=2099),
+          start_date: date | None = None, end_date: date | None = None,
           page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=100),
+          include_deleted: bool = False,
           user: dict = Depends(require_user), store: ControlStore = Depends(get_store)):
-    return store.list_plans(user, terminal, month, voyage_id, status, page, page_size, period_type=period_type)
+    return store.list_plans(user, terminal, month, voyage_id, status, page, page_size, period_type=period_type,
+                            quarter=quarter, year=year, start_date=start_date, end_date=end_date, include_deleted=include_deleted)
 
 
 @router.post("/plans", status_code=201)
@@ -256,6 +275,11 @@ def update_plan(plan_id: int, body: PlanUpdate, user: dict = Depends(require_use
 @router.post('/plans/{plan_id}/cancel')
 def cancel_plan(plan_id: int, body: PlanCancel, user: dict = Depends(require_user), store: ControlStore = Depends(get_store)):
     return store.cancel_plan(user, plan_id, body.expected_revision, body.note)
+
+
+@router.delete('/plans/{plan_id}')
+def delete_plan(plan_id: int, body: PlanDelete, user: dict = Depends(require_user), store: ControlStore = Depends(get_store)):
+    return store.delete_plan(user, plan_id, body.revision)
 
 
 @router.get("/issues")

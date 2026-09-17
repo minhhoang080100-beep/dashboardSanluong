@@ -61,7 +61,7 @@ def detail_fixture(filters, terminal, page, page_size, operation_filter="with_va
                        "counts": counts, "total_all": counts["all"], "total": len(rows),
                        "total_pages": (len(rows) + page_size - 1) // page_size,
                        "rows": rows[(page - 1) * page_size:page * page_size]},
-        "meta": {"filters": {**filters, "terminal": terminal, "voyage_id": "101", "operation_filter": operation_filter, "timezone": "Asia/Ho_Chi_Minh"},
+        "meta": {"berth_rule_version": "initial-berth-v1", "filters": {**filters, "terminal": terminal, "voyage_id": "101", "operation_filter": operation_filter, "timezone": "Asia/Ho_Chi_Minh"},
                  "generated_at": data["meta"]["generated_at"], "metric_coverage": coverage,
                  "operations_order": "operation_date, id"},
     }
@@ -77,14 +77,14 @@ def main():
 
     def respond_dashboard(route):
         query = parse_qs(urlparse(route.request.url).query)
-        filters = {key: query[key][0] for key in ("start_date", "end_date", "terminal")}
+        filters = {key: query[key][0] for key in ("start_date", "end_date", "terminal", "production_scope")}
         route.fulfill(json=report_fixture(filters))
 
     def respond_detail(route):
         parsed = urlparse(route.request.url)
         query = parse_qs(parsed.query)
         terminal, voyage_id = parsed.path.rstrip("/").split("/")[-2:]
-        filters = {key: query[key][0] for key in ("start_date", "end_date")}
+        filters = {key: query[key][0] for key in ("start_date", "end_date", "production_scope")}
         page = int(query.get("page", [1])[0])
         page_size = int(query.get("page_size", [25])[0])
         operation_filter = query.get("operation_filter", ["all"])[0]

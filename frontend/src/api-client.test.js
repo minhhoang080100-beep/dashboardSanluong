@@ -86,6 +86,20 @@ test('403 keeps the current session, preserves structured detail, and malformed 
   await assert.rejects(apiRequest('/plans', { fetcher: async () => new Response('bad gateway html', { status: 502 }) }), (error) => error.status === 502 && error.message.includes('HTTP 502') && !error.message.includes('bad gateway'));
 });
 
+test('422 field validation identifies planning fields without exposing rejected input or server text', async (t) => {
+  environment(t);
+  const detail = [{ loc: ['body', 'amount'], type: 'decimal_max_places', msg: 'unsafe synthetic value', input: 'private synthetic input' }, { loc: ['body', 'reference'], type: 'missing', input: { private: 'private synthetic input' } }];
+  await assert.rejects(apiRequest('/plans', { method: 'POST', body: {}, fetcher: async () => Response.json({ detail }, { status: 422 }) }), (error) => {
+    assert.equal(error.status, 422);
+    assert.match(error.message, /Giá trị kế hoạch/);
+    assert.match(error.message, /Vui lòng nhập văn bản/);
+    assert.deepEqual(Object.keys(error.fieldErrors), ['amount', 'reference']);
+    assert.doesNotMatch(error.message, /private|unsafe/);
+    return true;
+  });
+  await assert.rejects(apiRequest('/plans', { fetcher: async () => Response.json({ detail: [{ loc: ['body', 'unknown'], input: 'private synthetic input' }] }, { status: 422 }) }), (error) => error.message.includes('HTTP 422') && !error.message.includes('private'));
+});
+
 test('pre-cancelled requests do not fetch; network failures are localized without session expiry or retries', async (t) => {
   environment(t);
   setSessionToken('synthetic-cancel-token');

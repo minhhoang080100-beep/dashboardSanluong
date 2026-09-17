@@ -1,5 +1,6 @@
 import { validateVoyageList } from './voyage-data.js';
 import { fetchReportResponse } from './report-request.js';
+import { BERTH_RULE_VERSION, isProductionScope, productionScopeLabel } from './production-scope.js';
 
 export const TERMINALS = { all: 'Toàn công ty', cua_lo: 'Xí nghiệp Cửa Lò', ben_thuy: 'Xí nghiệp Bến Thủy' };
 export const TIMEZONE = 'Asia/Ho_Chi_Minh';
@@ -10,7 +11,16 @@ export function todayInVietnam(now = new Date()) {
   return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
-export function presetDates(preset, today = todayInVietnam()) {
+export function presetDates(preset, today = todayInVietnam(), year = Number(today.slice(0, 4))) {
+  if (preset.startsWith('quarter-')) {
+    const quarter = Number(preset.slice(8));
+    const selectedYear = Number(year);
+    if (!Number.isInteger(quarter) || quarter < 1 || quarter > 4 || !Number.isInteger(selectedYear) || selectedYear < 2000 || selectedYear > 2099) return null;
+    const start_date = `${selectedYear}-${String((quarter - 1) * 3 + 1).padStart(2, '0')}-01`;
+    if (start_date > today) return null;
+    const quarterEnd = new Date(Date.UTC(selectedYear, quarter * 3, 0)).toISOString().slice(0, 10);
+    return { start_date, end_date: quarterEnd < today ? quarterEnd : today };
+  }
   if (preset === 'today') return { start_date: today, end_date: today };
   if (preset === 'yesterday') {
     const previous = new Date(`${today}T00:00:00Z`);
@@ -36,7 +46,19 @@ export function validateFilters(filters, today = todayInVietnam()) {
   if (filters.end_date > today) return 'Ngày kết thúc không được lớn hơn ngày hiện tại.';
   if ((Date.parse(filters.end_date) - Date.parse(filters.start_date)) / 86400000 + 1 > 366) return 'Vui lòng chọn khoảng thời gian tối đa 366 ngày.';
   if (!Object.hasOwn(TERMINALS, filters.terminal)) return 'Vui lòng chọn xí nghiệp hợp lệ.';
+  if (!isProductionScope(filters.production_scope)) return 'Vui lòng chọn phạm vi sản lượng hợp lệ.';
   return '';
+}
+
+export function dashboardRequestTimeout(filters) {
+  const dates = [filters?.start_date, filters?.end_date];
+  for (const value of dates) {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)
+      || !Number.isFinite(Date.parse(`${value}T00:00:00Z`))
+      || new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) !== value) return 45000;
+  }
+  const days = (Date.parse(dates[1]) - Date.parse(dates[0])) / 86400000 + 1;
+  return days > 92 && days <= 366 ? 90000 : 45000;
 }
 
 export const isNumber = (value) => typeof value === 'number' && Number.isFinite(value);
@@ -76,7 +98,8 @@ export function validateDashboard(data, filters) {
       if (!row || fields.some((field) => ['name', 'date'].includes(field) ? typeof row[field] !== 'string' : row[field] !== null && !isNumber(row[field]))) fail();
     }
   }
-  for (const key of ['start_date', 'end_date', 'terminal']) if (data.meta.filters?.[key] !== filters[key]) fail();
+  if (!isProductionScope(filters.production_scope) || data.meta.berth_rule_version !== BERTH_RULE_VERSION) fail();
+  for (const key of ['start_date', 'end_date', 'terminal', 'production_scope']) if (data.meta.filters?.[key] !== filters[key]) fail();
   if (!Array.isArray(data.meta.warnings) || data.meta.warnings.some((warning) => typeof warning !== 'string')) fail();
   if (data.meta.sources !== undefined && (!Array.isArray(data.meta.sources) || data.meta.sources.some((source) => !source || typeof source.name !== 'string'))) fail();
   for (const source of data.meta.sources || []) {
@@ -142,9 +165,11 @@ export function dashboardCsv(data) {
   const rows = [
     ['BÁO CÁO SẢN LƯỢNG — CẢNG NGHỆ TĨNH'],
     ['Từ ngày', meta.filters.start_date, 'Đến ngày', meta.filters.end_date, 'Phạm vi', TERMINALS[meta.filters.terminal]],
+    ['Phạm vi sản lượng', productionScopeLabel(meta.filters.production_scope), 'Mã phạm vi', meta.filters.production_scope],
+    ['Quy tắc phân loại chuyến', meta.berth_rule_version, 'Cầu ban đầu quyết định phạm vi của toàn chuyến'],
     ['Tổng hợp lúc (giờ Việt Nam)', formatTimestamp(meta.generated_at)],
     ['Chỉ tiêu', 'Giá trị', 'Đơn vị'],
-    ['Sản lượng qua cảng', overview.total_tonnage, 'Tấn'],
+    ['Sản lượng thông qua', overview.total_tonnage, 'Tấn'],
     ['Container', overview.total_teu, 'TEU'],
     ['Chuyến tàu có phát sinh', overview.vessel_calls, 'Chuyến'],
     ...(meta.metric_coverage?.tonnage ? [['Chất lượng chỉ tiêu tấn', overview.tonnage_status], ['Bản ghi tấn có giá trị', meta.metric_coverage.tonnage.known_rows, 'Bản ghi đủ điều kiện đơn vị tấn', meta.metric_coverage.tonnage.eligible_rows], ['Bản ghi thiếu khối lượng', meta.metric_coverage.tonnage.missing_weight_rows, 'Bản ghi đơn vị khác', meta.metric_coverage.tonnage.excluded_native_rows]] : []),
@@ -163,8 +188,8 @@ export function dashboardCsv(data) {
     ...data.directions.map((row) => [row.name, row.tonnage, directionRatios.available ? Math.round(row.tonnage / overview.total_tonnage * 1000) / 10 : null]),
     [], ['KHÁCH HÀNG DẪN ĐẦU'], ['Tên', 'Xí nghiệp', 'Tấn'],
     ...data.customers.map((row) => [row.name, row.terminal_name, row.volume]),
-    [], ['CHUYẾN TÀU TRONG KỲ'], ['Tàu', 'Mã chuyến', 'Xí nghiệp', 'Ngày làm hàng đầu kỳ', 'Ngày làm hàng cuối kỳ', 'Tấn', 'TEU', 'Số dòng tác nghiệp'],
-    ...data.voyages.map((row) => [row.vessel_name, row.voyage_code || row.voyage_id, row.terminal_name, row.first_operation_date, row.last_operation_date, row.tonnage, row.teu, row.record_count]),
+    [], ['CHUYẾN TÀU TRONG KỲ'], ['Tàu', 'Mã chuyến', 'Xí nghiệp', 'Ngày làm hàng đầu kỳ', 'Ngày làm hàng cuối kỳ', 'Tấn', 'TEU', 'Số dòng tác nghiệp', 'Phạm vi sản lượng', 'ID cầu ban đầu', 'Mã cầu ban đầu', 'Thời điểm cầu ban đầu', 'Trạng thái xác định cầu'],
+    ...data.voyages.map((row) => [row.vessel_name, row.voyage_code || row.voyage_id, row.terminal_name, row.first_operation_date, row.last_operation_date, row.tonnage, row.teu, row.record_count, productionScopeLabel(row.production_scope), row.initial_berth_id, row.initial_berth_code, row.initial_berth_at, row.berth_assignment_status]),
     [], ['NGUỒN DỮ LIỆU'], ['Xí nghiệp', 'Phát sinh mới nhất tại nguồn (giờ Việt Nam)', 'Số bản ghi trong kỳ'],
     ...(meta.sources || []).map((source) => [source.name, formatTimestamp(source.latest_operation_at), source.record_count]),
     ...(data.native_units?.length ? [[], ['SẢN LƯỢNG CHƯA CỘNG VÀO TẤN'], ['Xí nghiệp', 'Mã đơn vị', 'Tên đơn vị', 'Giá trị theo đơn vị nguồn', 'Số bản ghi', 'Số bản ghi có giá trị'], ...data.native_units.map((row) => [row.terminal_name, row.unit_code, row.unit_name, row.value, row.record_count, row.known_value_rows])] : []),

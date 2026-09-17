@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { fetchVoyageDetail, filterVoyages, paginateVoyages, validateVoyageDetail, validateVoyageList, voyageListError } from './voyage-data.js';
+import { fetchVoyageDetail, filterVoyages, paginateVoyages, validateVoyageDetail, validateVoyageList, validateVoyageProgress, voyageListError } from './voyage-data.js';
 
-const filters = { start_date: '2026-09-01', end_date: '2026-09-09', terminal: 'all' };
-const voyage = { terminal_id: 'cua_lo', terminal_name: 'Cửa Lò', voyage_id: '101', vessel_name: 'TÀU CỬA LÒ', voyage_code: 'CL-09', arrival_at: null, departure_at: null, first_operation_date: '2026-09-01', last_operation_date: '2026-09-09', tonnage: 1000.125, teu: 10, record_count: 2, cargo_names: ['Hàng kiểm thử'] };
+const filters = { start_date: '2026-09-01', end_date: '2026-09-09', terminal: 'all', production_scope: 'nghe_tinh' };
+const voyage = { production_scope: 'nghe_tinh', initial_berth_id: 1, initial_berth_code: 'C1', initial_berth_at: '2026-09-01T07:00:00', berth_assignment_status: 'assigned', terminal_id: 'cua_lo', terminal_name: 'Cửa Lò', voyage_id: '101', vessel_name: 'TÀU CỬA LÒ', voyage_code: 'CL-09', arrival_at: null, departure_at: null, first_operation_date: '2026-09-01', last_operation_date: '2026-09-09', tonnage: 1000.125, teu: 10, record_count: 2, cargo_names: ['Hàng kiểm thử'] };
 
 function detail(operationFilter = 'all') {
   const data = {
@@ -13,7 +13,7 @@ function detail(operationFilter = 'all') {
       { id: '1', operation_date: '2026-09-01', shift_id: '1', shift_code: '1', cargo_name: 'Hàng kiểm thử', job_method: 'Tàu - Bãi', direction: 'Hàng dỡ', quantity: null, quantity_unit: null, weight: 1000.125, weight_unit: 'TAN', tonnage: 1000.125, teu: 10 },
       { id: '2', operation_date: '2026-09-01', shift_id: null, shift_code: null, cargo_name: 'Hàng kiểm thử', job_method: 'Tàu - Bãi', direction: 'Hàng dỡ', quantity: 0, quantity_unit: null, weight: null, weight_unit: 'TAN', tonnage: null, teu: 0 },
     ] },
-    meta: { filters: { ...filters, terminal: 'cua_lo', voyage_id: '101', operation_filter: operationFilter }, generated_at: '2026-09-09T00:00:00Z' },
+    meta: { berth_rule_version: 'initial-berth-v1', filters: { ...filters, terminal: 'cua_lo', voyage_id: '101', operation_filter: operationFilter }, generated_at: '2026-09-09T00:00:00Z' },
   };
   if (operationFilter === 'with_values') data.operations.rows = data.operations.rows.slice(0, 1);
   if (operationFilter === 'missing_weight') data.operations.rows = data.operations.rows.slice(1);
@@ -81,7 +81,7 @@ test('detail request carries same reporting period, pagination and abort signal'
   let request;
   const fetcher = async (url, options) => { request = { url, options }; return { ok: true, json: async () => detail() }; };
   await fetchVoyageDetail(voyage, filters, 1, { fetcher, signal: controller.signal, baseUrl: '/api/' });
-  assert.equal(request.url, '/api/voyages/cua_lo/101?start_date=2026-09-01&end_date=2026-09-09&page=1&page_size=25&operation_filter=all');
+  assert.equal(request.url, '/api/voyages/cua_lo/101?start_date=2026-09-01&end_date=2026-09-09&production_scope=nghe_tinh&page=1&page_size=25&operation_filter=all');
   assert.equal(request.options.signal, controller.signal);
 });
 
@@ -214,4 +214,41 @@ test('filtered pagination validates the requested last-page slice', () => {
   data.operations.rows = data.operations.rows.slice(1);
   assert.equal(validateVoyageDetail(data, voyage, filters, 2, 1).operations.rows[0].id, '2');
   assert.throws(() => validateVoyageDetail(data, voyage, filters, 1, 1), /cấu trúc/);
+});
+
+test('detail rejects cross-scope or legacy responses and retains initial berth before the reporting period', () => {
+  const data = detail();
+  data.header.initial_berth_at = '2026-08-20T07:00:00';
+  assert.equal(validateVoyageDetail(data, voyage, filters, 1, 25).header.initial_berth_at, '2026-08-20T07:00:00');
+  for (const mutate of [
+    (value) => { value.meta.filters.production_scope = 'vietsun'; },
+    (value) => { delete value.meta.filters.production_scope; },
+    (value) => { delete value.meta.berth_rule_version; },
+    (value) => { value.header.production_scope = 'unclassified'; },
+    (value) => { value.header.initial_berth_at = {}; },
+  ]) {
+    const invalid = detail(); mutate(invalid);
+    assert.throws(() => validateVoyageDetail(invalid, voyage, filters, 1, 25));
+  }
+});
+
+test('whole-voyage progress validates scope, rule version and voyage before displaying lifetime actuals', () => {
+  const data = { header: { ...voyage }, planning: [], shifts: [], meta: { filters: { production_scope: 'nghe_tinh' }, berth_rule_version: 'initial-berth-v1' } };
+  assert.equal(validateVoyageProgress(data, voyage, 'nghe_tinh'), data);
+  assert.throws(() => validateVoyageProgress(data, voyage, 'vietsun'));
+  for (const invalid of [
+    { ...data, header: { ...voyage, voyage_id: 'other' } },
+    { ...data, header: { ...voyage, production_scope: 'vietsun' } },
+    { ...data, meta: { filters: data.meta.filters } },
+    { ...data, meta: { berth_rule_version: 'initial-berth-v1' } },
+  ]) assert.throws(() => validateVoyageProgress(invalid, voyage, 'nghe_tinh'));
+});
+
+test('unclassified voyages retain explicit missing or ambiguous initial berth evidence', () => {
+  const selected = { ...filters, production_scope: 'unclassified' };
+  for (const status of ['missing', 'ambiguous']) {
+    const row = { ...voyage, production_scope: 'unclassified', initial_berth_id: null, initial_berth_code: null, initial_berth_at: null, berth_assignment_status: status };
+    assert.equal(validateVoyageList([row], 1, selected)[0].initial_berth_id, null);
+    assert.throws(() => validateVoyageList([row], 1, filters));
+  }
 });

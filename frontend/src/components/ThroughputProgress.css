@@ -1,0 +1,46 @@
+.throughput-progress { padding: 24px; }
+.throughput-progress-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.throughput-progress-heading h2 { display: flex; align-items: center; gap: 9px; font-size: 18px; font-weight: 650; }
+.throughput-progress-heading p { margin-top: 5px; font-size: 13px; color: var(--text-muted); }
+.throughput-progress-heading a { text-decoration: none; white-space: nowrap; }
+.throughput-progress-chooser { margin-top: 20px; }
+.throughput-progress-chooser label { display: grid; gap: 6px; font-size: 12px; color: var(--text-muted); }
+.throughput-progress-chooser select { width: 100%; min-width: 0; min-height: 42px; padding: 8px 12px; color: var(--text-main); background: var(--surface-muted); border: 1px solid var(--border-color); border-radius: 7px; }
+.throughput-progress-chooser p { margin-top: 6px; font-size: 12px; color: var(--text-muted); }
+.throughput-progress-period { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--border-soft); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
+.throughput-progress-period > span { color: var(--text-muted); }
+.throughput-progress-period label { display: grid; gap: 5px; color: var(--text-muted); max-width: 100%; }
+.throughput-progress-period select { min-height: 40px; padding: 8px 12px; background: var(--surface-muted); border: 1px solid var(--border-color); border-radius: 7px; color: var(--text-main); max-width: 100%; }
+.throughput-progress-summary { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 24px; margin: 22px 0; }
+.throughput-progress-summary > div { display: grid; gap: 3px; }
+.throughput-progress-percent { font-size: 38px; letter-spacing: -.035em; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.throughput-progress-summary > div > span { display: flex; align-items: center; gap: 4px; color: var(--text-muted); font-size: 12px; }
+.throughput-progress-summary dl { display: flex; flex-wrap: wrap; gap: 20px 40px; margin: 0; }
+.throughput-progress-summary dt { color: var(--text-muted); font-size: 12px; margin-bottom: 6px; }
+.throughput-progress-summary dd { margin: 0; font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.throughput-progress-summary dd span { color: var(--text-muted); font-size: 12px; font-weight: 400; }
+.throughput-progress-bar { display: flex; gap: 4px; height: 14px; }
+.throughput-progress-segment { flex: 1; min-width: 0; background: var(--surface-hover); border-radius: 3px; overflow: hidden; }
+.throughput-progress-segment span { display: block; height: 100%; }
+.throughput-progress-scale { display: flex; justify-content: space-between; color: var(--text-muted); font-size: 11px; margin-top: 7px; }
+.throughput-progress-legend { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 16px; color: var(--text-muted); font-size: 12px; }
+.throughput-progress-legend > span { display: flex; align-items: center; gap: 6px; }
+.throughput-progress-legend i { width: 8px; height: 8px; border-radius: 2px; }
+.throughput-progress-legend .current-band { color: var(--text-main); font-weight: 600; }
+.throughput-progress-empty { color: var(--text-muted); padding: 20px 0 2px; font-size: 13px; }
+.throughput-progress-error { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; color: var(--danger-color); font-size: 13px; }
+.throughput-progress-provisional { color: var(--warning-color); font-size: 12px; margin-top: 14px; }
+.throughput-progress-provenance { display: flex; align-items: baseline; flex-wrap: wrap; gap: 7px 10px; margin-top: 16px; color: var(--text-muted); font-size: 12px; line-height: 1.6; }
+.throughput-progress-provenance > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.throughput-progress-provenance > p { width: 100%; margin: 0; color: var(--warning-color); }
+.throughput-progress-test { flex-shrink: 0; padding: 2px 7px; border: 1px solid var(--border-color); border-radius: 5px; color: var(--warning-color); background: var(--warning-surface); font-weight: 600; }
+@media (max-width: 620px) {
+  .throughput-progress { padding: 18px; }
+  .throughput-progress-heading { flex-wrap: wrap; }
+  .throughput-progress-heading h2 { font-size: 16px; }
+  .throughput-progress-summary { gap: 20px; }
+  .throughput-progress-summary dl { width: 100%; justify-content: space-between; gap: 16px; }
+  .throughput-progress-summary dd { font-size: 17px; }
+  .throughput-progress-percent { font-size: 33px; }
+  .throughput-progress-legend { gap: 8px 14px; }
+}

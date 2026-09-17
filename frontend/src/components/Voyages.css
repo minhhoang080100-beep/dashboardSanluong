@@ -16,7 +16,10 @@
 .voyage-search input::placeholder { color: var(--text-muted); opacity: 1; }
 .voyage-search:focus-within { outline: 2px solid var(--primary-color); outline-offset: 3px; background: var(--surface); }
 .voyage-search input:focus-visible { outline: 0; }
-.voyage-table { min-width: 660px; }
+.voyage-table-scroll { position: relative; }
+.voyage-table { min-width: 760px; }
+.voyage-table thead th:nth-child(4), .voyage-table td:nth-child(4) { text-align: left; }
+.voyage-berth small, .voyage-metadata small { display: block; margin-top: 4px; color: var(--text-muted); font-size: 12px; font-weight: 400; }
 .voyage-table thead th:nth-child(2), .voyage-table thead th:nth-child(3), .voyage-table td:nth-child(2), .voyage-table td:nth-child(3) { text-align: left; }
 .voyage-table td { font-size: 13px; }
 .voyage-table tbody tr:hover { background: var(--surface-muted); }

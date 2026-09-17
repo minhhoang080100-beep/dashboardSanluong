@@ -18,7 +18,7 @@ def install_navigation_fixture(page, role="admin"):
         state["requests"].append(path)
         if path == "/dashboard":
             query = parse_qs(urlparse(route.request.url).query)
-            filters = {key: query[key][0] for key in ("start_date", "end_date", "terminal")}
+            filters = {key: query[key][0] for key in ("start_date", "end_date", "terminal", "production_scope")}
             data = fixture(filters)
             data["meta"]["report_id"] = f"synthetic-navigation-{len(state['reports']) + 1}"
             data["meta"]["source_read_at"] = data["meta"]["generated_at"]

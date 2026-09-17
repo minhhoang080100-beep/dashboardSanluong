@@ -22,7 +22,7 @@ def main():
         path = parsed.path.removeprefix("/api")
         query = {key: values[0] for key, values in parse_qs(parsed.query).items()}
         if path == "/dashboard":
-            state["filters"] = {key: query[key] for key in ("start_date", "end_date", "terminal")}
+            state["filters"] = {key: query[key] for key in ("start_date", "end_date", "terminal", "production_scope")}
             state["reports"].append(query)
             if state["fail"]:
                 route.fulfill(status=503, json={"detail": "Synthetic SQL outage"})
@@ -37,7 +37,9 @@ def main():
             detail["meta"]["report_id"] = query.get("report_id")
             route.fulfill(json=detail)
         elif path.endswith("/progress"):
-            route.fulfill(json={"header": {}, "summary": {}, "planning": [], "daily": [], "shifts": [], "meta": {}})
+            terminal = path.split("/")[2]
+            detail = detail_fixture(state["filters"], terminal, 1, 25)
+            route.fulfill(json={"header": detail["header"], "summary": detail["summary"], "planning": [], "daily": [], "shifts": [], "meta": {"filters": {"production_scope": query["production_scope"]}, "berth_rule_version": "initial-berth-v1"}})
         elif path.endswith("/plan-progress"):
             route.fulfill(json={"eligible": True, "rows": []})
         else:
@@ -114,11 +116,29 @@ def main():
         page.clock.run_for(1000)
         expect(page.locator(".refresh-error")).to_contain_text("Đang giữ số liệu lần đọc trước")
         assert old_values == page.locator(".kpi-value").all_text_contents()
+        assert state["reports"][-1]["refresh"] == "true"
         state["fail"] = False
         page.get_by_role("button", name="Thử cập nhật lại", exact=True).click()
         expect(page.locator(".refresh-error")).to_have_count(0)
         expect(page.locator(".refresh-progress")).to_have_count(0)
+        assert state["reports"][-1]["refresh"] == "true"
         checks.append("failed refresh retains matching snapshot with visible error and recovers manually")
+
+        # The server may finish a slow report after the client has given up.
+        # Retrying an initial error must accept that cached result, not rebuild it.
+        before = len(state["reports"])
+        state["fail"] = True
+        page.get_by_role("button", name="Quý 2", exact=True).click()
+        page.clock.run_for(1000)
+        expect(page.locator(".error-state")).to_contain_text("Chưa tải được báo cáo")
+        expect(page.locator(".kpi-card")).to_have_count(0)
+        assert all("refresh" not in query for query in state["reports"][before:])
+        state["fail"] = False
+        page.get_by_role("button", name="Thử lại", exact=True).click()
+        expect(page.locator(".kpi-card")).to_have_count(3)
+        expect(page.locator(".error-state")).to_have_count(0)
+        assert all("refresh" not in query for query in state["reports"][before:])
+        checks.append("filter changes and initial-error retries omit forced refresh while stale retries request fresh reads")
 
         page.get_by_role("button", name="Tháng này", exact=True).click()
         expect(page.locator(".kpi-card")).to_have_count(3)
@@ -135,6 +155,7 @@ def main():
           HTMLAnchorElement.prototype.click = function () { if (this.download) window.downloadClicks++; return realClick.call(this); };
           window.fetch = (url, options) => {
             if (!String(url).includes('/export.xlsx')) return realFetch(url, options);
+            window.lastDownloadUrl = String(url);
             window.downloadCalls++;
             options.signal.addEventListener('abort', () => { window.downloadAborted = true; });
             return Promise.resolve({ ok: true, status: 200, blob: () => new Promise(() => {}) });
@@ -145,6 +166,7 @@ def main():
         expect(busy).to_be_disabled()
         busy.dispatch_event("click")
         assert page.evaluate("window.downloadCalls") == 1
+        assert page.evaluate("new URL(window.lastDownloadUrl, location.href).searchParams.get('production_scope')") == "nghe_tinh"
         modal.get_by_role("button", name="Đóng chi tiết chuyến tàu", exact=True).click()
         expect(modal).to_have_count(0)
         assert page.evaluate("window.downloadAborted && window.downloadClicks === 0")

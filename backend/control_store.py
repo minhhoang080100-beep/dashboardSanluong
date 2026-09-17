@@ -4,6 +4,7 @@ Passwords use scrypt N=2**15,r=8,p=3 (OWASP's 32 MiB configuration).
 Only SHA-256 digests of independently random bearer tokens are persisted.
 """
 from contextlib import contextmanager
+from calendar import monthrange
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 import hashlib
@@ -20,6 +21,81 @@ from fastapi import HTTPException
 
 TERMINALS = frozenset({"cua_lo", "ben_thuy"})
 ROLES = frozenset({"admin", "manager", "viewer"})
+PRODUCTION_SCOPE_LABELS = {'nghe_tinh': 'Cảng Nghệ Tĩnh', 'vietsun': 'Cầu 5', 'unclassified': 'Chưa xác định cầu'}
+PLAN_PERIOD_TYPES = frozenset({'month', 'quarter', 'year', 'custom', 'voyage'})
+PLAN_PERIOD_FIELDS = ('month', 'quarter', 'year', 'start_date', 'end_date', 'voyage_id')
+
+
+def plan_period(value):
+    """Canonical identity and full target bounds; no source or state access."""
+    kind = value.get('period_type', 'month')
+    accepted = {'month': {'month'}, 'quarter': {'quarter'}, 'year': {'year'},
+                'custom': {'start_date', 'end_date'}, 'voyage': {'voyage_id'}}
+    invalid = lambda: ControlError(422, 'INVALID_PLAN_PERIOD', 'Kỳ kế hoạch không hợp lệ; chỉ điền các trường của loại kỳ đã chọn.')
+    if kind not in accepted or any(value.get(field) is not None for field in set(PLAN_PERIOD_FIELDS) - accepted[kind]):
+        raise invalid()
+    try:
+        if kind == 'voyage':
+            voyage = value.get('voyage_id')
+            if isinstance(voyage, bool) or not isinstance(voyage, int) or not 1 <= voyage <= 2147483647:
+                raise ValueError()
+            return str(voyage), None, None
+        if kind == 'month':
+            key = value.get('month')
+            if not isinstance(key, str) or not re.fullmatch(r'20\d{2}-(0[1-9]|1[0-2])', key):
+                raise ValueError()
+            start = date.fromisoformat(key + '-01')
+            end = start.replace(day=monthrange(start.year, start.month)[1])
+        elif kind == 'quarter':
+            key = value.get('quarter')
+            if not isinstance(key, str) or not re.fullmatch(r'20\d{2}-Q[1-4]', key):
+                raise ValueError()
+            year, quarter = int(key[:4]), int(key[-1])
+            start = date(year, quarter * 3 - 2, 1)
+            end = date(year, quarter * 3, monthrange(year, quarter * 3)[1])
+        elif kind == 'year':
+            year = value.get('year')
+            if isinstance(year, bool) or not isinstance(year, int) or not 2000 <= year <= 2099:
+                raise ValueError()
+            key, start, end = str(year), date(year, 1, 1), date(year, 12, 31)
+        else:
+            first, last = value.get('start_date'), value.get('end_date')
+            # ISO dates only: timestamps and locale-dependent dates are ambiguous.
+            if any(not isinstance(day, (str, date)) or isinstance(day, datetime) for day in (first, last)):
+                raise ValueError()
+            start, end = date.fromisoformat(str(first)), date.fromisoformat(str(last))
+            if not 2000 <= start.year <= end.year <= 2099 or not 0 <= (end - start).days < 366:
+                raise ValueError()
+            key = start.isoformat() + '/' + end.isoformat()
+        return key, start, end
+    except (ValueError, TypeError):
+        raise invalid() from None
+
+
+def saved_plan_period(kind, key):
+    values = {field: None for field in PLAN_PERIOD_FIELDS}
+    if kind == 'custom':
+        values['start_date'], values['end_date'] = key.split('/')
+    elif kind == 'voyage':
+        values['voyage_id'] = int(key)
+    elif kind == 'year':
+        values['year'] = int(key)
+    else:
+        values[kind] = key
+    _, start, end = plan_period({'period_type': kind, **values})
+    return {**values, 'period_key': key, 'period_start': start.isoformat() if start else None,
+            'period_end': end.isoformat() if end else None}
+
+
+def production_scope_context(report):
+    """Describe saved scope without assigning today's rule to historical data."""
+    meta = report.get('meta', {})
+    scope = meta.get('filters', {}).get('production_scope')
+    rule_version = meta.get('berth_rule_version')
+    legacy = not isinstance(scope, str) or scope not in PRODUCTION_SCOPE_LABELS or not isinstance(rule_version, str) or not rule_version.strip()
+    label = 'Phạm vi cũ — chưa lưu quy tắc cầu cập đầu tiên' if legacy else PRODUCTION_SCOPE_LABELS[scope]
+    return {'production_scope': scope, 'production_scope_label': label,
+            'berth_rule_version': rule_version, 'legacy_scope': legacy}
 
 
 class ControlError(HTTPException):
@@ -85,6 +161,32 @@ def plan_progress_rows(plans, actuals):
                 'completion_percent': round(actual / target * 100, 1) if target and complete else None,
                 'status': 'missing_plan' if plan is None else 'incomplete_actual' if not complete else 'zero_target' if target == 0 else 'ready'})
     return result
+
+
+def throughput_progress_item(period, plans, actual, actual_status, target_source, *, complete_target=True):
+    """One period, one target. Partial source values never become confirmed progress."""
+    target = sum((Decimal(row['amount_decimal']) for row in plans), Decimal(0)) if complete_target else None
+    actual_value = Decimal(str(actual)) if actual is not None else None
+    if actual_value is not None and not actual_value.is_finite():
+        actual_value = None
+    status = ('missing_plan' if target is None else 'unavailable' if actual_value is None or actual_status not in {'ready', 'empty', 'partial'}
+              else 'negative_actual' if actual_value < 0 else 'zero_target' if target == 0
+              else 'partial' if actual_status == 'partial' else 'ready')
+    percentage = float(actual_value / target * 100) if status in {'ready', 'partial'} else None
+    band = None if percentage is None else ('red' if percentage < 20 else 'orange' if percentage < 40 else
+           'yellow' if percentage < 60 else 'light_green' if percentage < 80 else 'dark_green')
+    reasons = {'missing_plan': 'Chưa đủ kế hoạch đã duyệt của cả hai cảng cho cùng kỳ.',
+               'unavailable': 'Chưa có sản lượng đủ điều kiện tính tỷ lệ.', 'negative_actual': 'Sản lượng âm cần được đối soát trước khi tính tỷ lệ.',
+               'zero_target': 'Chỉ tiêu bằng 0; không tính tỷ lệ hoàn thành.', 'partial': 'Tạm tính — số liệu chưa đầy đủ.'}
+    return {'key': f"{period['period_type']}:{period['period_key']}", 'period_type': period['period_type'],
+            'period_key': period['period_key'], 'start_date': period['period_start'], 'end_date': period['period_end'],
+            'target': float(target) if target is not None else None, 'actual': float(actual_value) if actual_value is not None else None,
+            'actual_status': actual_status, 'status': status, 'reason': reasons.get(status),
+            'completion_percent': percentage if status == 'ready' else None,
+            'provisional_completion_percent': percentage if status == 'partial' else None,
+            'remaining': float(max(Decimal(0), target - actual_value)) if status == 'ready' else None,
+            'band': band, 'achieved': status == 'ready' and percentage >= 100, 'provisional': status == 'partial',
+            'target_source': target_source, 'plans': plans}
 
 
 def _facts_json(rows):
@@ -202,13 +304,41 @@ class ControlStore:
             db.execute('BEGIN IMMEDIATE')
             existing_columns = {row['name'] for row in db.execute('PRAGMA table_info(plans)')}
             for name, declaration in {'revision': 'INTEGER NOT NULL DEFAULT 1', 'updated_by': 'INTEGER REFERENCES users(id)',
-                                      'updated_at': 'REAL', 'cancelled_by': 'INTEGER REFERENCES users(id)', 'cancelled_at': 'REAL'}.items():
+                                      'updated_at': 'REAL', 'cancelled_by': 'INTEGER REFERENCES users(id)', 'cancelled_at': 'REAL',
+                                      'deleted_by': 'INTEGER REFERENCES users(id)', 'deleted_at': 'REAL'}.items():
                 if name not in existing_columns:
                     db.execute(f'ALTER TABLE plans ADD COLUMN {name} {declaration}')
+            self._plan_deletion_triggers(db)
         try:
             self.path.chmod(0o600)
         except OSError:
             pass  # Windows access is controlled by the containing directory ACL.
+
+    @staticmethod
+    def _plan_deletion_triggers(db):
+        """Permit only a tombstone transition for immutable plan versions.
+
+        Run inside the additive migration transaction. All content columns,
+        including any future additions, stay immutable during soft deletion.
+        """
+        mutable = {'deleted_at', 'deleted_by', 'revision', 'updated_at', 'updated_by'}
+        columns = [row['name'] for row in db.execute('PRAGMA table_info(plans)') if row['name'] not in mutable]
+        unchanged = ' AND '.join('NEW."{0}" IS OLD."{0}"'.format(name.replace('"', '""')) for name in columns)
+        tombstone = f"""OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL
+            AND NEW.deleted_by IS NOT NULL AND NEW.revision=OLD.revision+1
+            AND NEW.updated_by IS NEW.deleted_by AND NEW.updated_at IS NEW.deleted_at
+            AND {unchanged}"""
+        for status in ('approved', 'cancelled'):
+            db.execute(f'DROP TRIGGER IF EXISTS {status}_plans_no_update')
+            db.execute(f"""CREATE TRIGGER {status}_plans_no_update BEFORE UPDATE ON plans
+                WHEN OLD.status='{status}' AND NOT ({tombstone})
+                BEGIN SELECT RAISE(ABORT, 'Approved or cancelled plan content is immutable'); END""")
+        db.execute("""CREATE TRIGGER IF NOT EXISTS deleted_plans_no_update BEFORE UPDATE ON plans
+            WHEN OLD.deleted_at IS NOT NULL
+            BEGIN SELECT RAISE(ABORT, 'Deleted plans are immutable'); END""")
+        db.execute("""CREATE TRIGGER IF NOT EXISTS deleted_plans_no_delete BEFORE DELETE ON plans
+            WHEN OLD.deleted_at IS NOT NULL
+            BEGIN SELECT RAISE(ABORT, 'Deleted plans must retain history'); END""")
 
     @contextmanager
     def _db(self, write=False):
@@ -420,23 +550,26 @@ class ControlStore:
     @staticmethod
     def validate_plan(value):
         value = dict(value)
-        if set(value) - {"terminal", "period_type", "month", "voyage_id", "metric", "amount", "reference", "note"}:
+        if set(value) - {"terminal", "period_type", *PLAN_PERIOD_FIELDS, "metric", "amount", "reference", "note"}:
             raise ControlError(422, "INVALID_PLAN", "Kế hoạch chứa trường không được hỗ trợ.")
         terminal, period_type = value.get("terminal"), value.get("period_type", "month")
-        if terminal not in TERMINALS or period_type not in {"month", "voyage"} or value.get("metric") not in {"tonnage", "teu"}:
+        if terminal not in TERMINALS | {'all'} or period_type not in PLAN_PERIOD_TYPES or value.get("metric") not in {"tonnage", "teu"}:
             raise ControlError(422, "INVALID_PLAN", "Cảng, loại kỳ hoặc chỉ tiêu không hợp lệ.")
-        if period_type == "month":
-            key = value.get("month")
-            if not isinstance(key, str) or not re.fullmatch(r"20\d{2}-(0[1-9]|1[0-2])", key) or value.get("voyage_id") is not None:
-                raise ControlError(422, "INVALID_PLAN_PERIOD", "Kế hoạch tháng cần tháng YYYY-MM, không kèm mã chuyến.")
-        else:
-            voyage = value.get("voyage_id")
-            if isinstance(voyage, bool) or not isinstance(voyage, int) or not 1 <= voyage <= 2147483647 or value.get("month") is not None:
-                raise ControlError(422, "INVALID_PLAN_PERIOD", "Kế hoạch chuyến cần mã chuyến hợp lệ, không kèm tháng.")
-            key = str(voyage)
+        if period_type == 'voyage' and terminal == 'all':
+            raise ControlError(422, 'INVALID_PLAN_PERIOD', 'Kế hoạch chuyến phải thuộc một cảng cụ thể.')
+        key, _, _ = plan_period(value)
         try:
             amount = Decimal(str(value.get("amount")))
-            if not amount.is_finite() or amount < 0 or amount > Decimal("1000000000000") or amount.as_tuple().exponent < -6:
+            if not amount.is_finite() or amount < 0 or amount > Decimal("1000000000000"):
+                raise InvalidOperation()
+            # Decimal precision is about value, not redundant trailing zeroes.
+            # Match Pydantic's six-place contract without rounding user input.
+            sign, digits, exponent = amount.as_tuple()
+            end = len(digits)
+            while end > 1 and digits[end - 1] == 0:
+                end -= 1
+            amount = Decimal((sign, digits[:end], exponent + len(digits) - end)) if amount else Decimal(0)
+            if amount.as_tuple().exponent < -6:
                 raise InvalidOperation()
         except (InvalidOperation, ValueError):
             raise ControlError(422, "INVALID_PLAN_AMOUNT", "Chỉ tiêu phải không âm, tối đa 10¹² và 6 chữ số thập phân.") from None
@@ -444,7 +577,7 @@ class ControlStore:
         if not isinstance(reference, str) or len(reference) > 500 or not isinstance(note, str) or len(note) > 4000:
             raise ControlError(422, "INVALID_PLAN_REFERENCE", "Tham chiếu hoặc ghi chú quá dài.")
         return {"terminal": terminal, "period_type": period_type, "period_key": key, "metric": value["metric"],
-                "amount": str(amount), "reference": reference.strip(), "note": note.strip()}
+                "amount": format(amount, 'f'), "reference": reference.strip(), "note": note.strip()}
 
     def _plan(self, db, row):
         highest = db.execute("SELECT MAX(version) FROM plans WHERE terminal=? AND period_type=? AND period_key=? AND metric=? AND status='approved'",
@@ -454,8 +587,7 @@ class ControlStore:
     @staticmethod
     def _plan_view(row, highest):
         return {"id": row["id"], "terminal": row["terminal"], "period_type": row["period_type"],
-                "month": row["period_key"] if row["period_type"] == "month" else None,
-                "voyage_id": int(row["period_key"]) if row["period_type"] == "voyage" else None,
+                **saved_plan_period(row['period_type'], row['period_key']),
                 "metric": row["metric"], "amount": float(Decimal(row["amount"])), "amount_decimal": row["amount"],
                 "reference": row["reference"], "note": row["note"], "version": row["version"], "status": row["status"],
                 "created_by": row["created_by"], "created_at": _iso(row["created_at"]),
@@ -463,7 +595,9 @@ class ControlStore:
                 "revision": row["revision"], "updated_by": row["updated_by"] or row["created_by"],
                 "updated_at": _iso(row["updated_at"] if row["updated_at"] is not None else row["created_at"]),
                 "cancelled_by": row["cancelled_by"], "cancelled_at": _iso(row["cancelled_at"]) if row["cancelled_at"] is not None else None,
-                "is_current": row["status"] == "approved" and row["version"] == highest}
+                "is_deleted": row["deleted_at"] is not None, "deleted_by": row["deleted_by"],
+                "deleted_at": _iso(row["deleted_at"]) if row["deleted_at"] is not None else None,
+                "is_current": row["deleted_at"] is None and row["status"] == "approved" and row["version"] == highest}
 
     def _plan_event(self, db, actor, row, action, note=""):
         db.execute('INSERT INTO plan_events(plan_id,action,snapshot_json,note,actor_id,created_at) VALUES(?,?,?,?,?,?)',
@@ -486,6 +620,8 @@ class ControlStore:
     def _draft(row, expected_revision=None):
         if row is None:
             raise ControlError(404, 'PLAN_NOT_FOUND', 'Không tìm thấy kế hoạch.')
+        if row['deleted_at'] is not None:
+            raise ControlError(409, 'PLAN_DELETED', 'Kế hoạch đã được xóa. Lịch sử vẫn được lưu để tra cứu.')
         if row['status'] != 'draft':
             raise ControlError(409, 'PLAN_IMMUTABLE', 'Chỉ được sửa, hủy hoặc duyệt bản nháp. Hãy tạo phiên bản mới khi cần điều chỉnh bản đã duyệt.')
         if expected_revision is not None and row['revision'] != expected_revision:
@@ -501,7 +637,7 @@ class ControlStore:
                 require_scope(actor, row['terminal'])
             self._draft(row, expected_revision)
             current = self._plan(db, row)
-            fields = ('terminal', 'period_type', 'month', 'voyage_id', 'metric', 'amount', 'reference', 'note')
+            fields = ('terminal', 'period_type', *PLAN_PERIOD_FIELDS, 'metric', 'amount', 'reference', 'note')
             value = self.validate_plan({**{key: current[key] for key in fields}, 'amount': row['amount'], **changes})
             require_scope(actor, value['terminal'])
             identity = ('terminal', 'period_type', 'period_key', 'metric')
@@ -556,16 +692,46 @@ class ControlStore:
                 result.append(self._plan(db, created))
         return result
 
+    def delete_plan(self, actor, plan_id, revision):
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+            raise ControlError(422, 'INVALID_PLAN_REVISION', 'Cần phiên bản hiện tại của kế hoạch để xóa.')
+        with self._db(write=True) as db:
+            actor = self._actor(db, actor, editor=True)
+            row = db.execute('SELECT * FROM plans WHERE id=?', (plan_id,)).fetchone()
+            if row is None:
+                raise ControlError(404, 'PLAN_NOT_FOUND', 'Không tìm thấy kế hoạch.')
+            require_scope(actor, row['terminal'])
+            if row['revision'] != revision:
+                raise ControlError(409, 'PLAN_CONFLICT', 'Kế hoạch đã thay đổi. Hãy tải lại để kiểm tra trước khi xóa.')
+            if row['deleted_at'] is not None:
+                raise ControlError(409, 'PLAN_DELETED', 'Kế hoạch đã được xóa. Lịch sử vẫn được lưu để tra cứu.')
+            if not db.execute('SELECT 1 FROM plan_events WHERE plan_id=? LIMIT 1', (plan_id,)).fetchone():
+                self._plan_event(db, actor, row, 'legacy_baseline')
+            timestamp = self.clock()
+            changed = db.execute('''UPDATE plans SET deleted_at=?,deleted_by=?,revision=revision+1,
+                updated_at=?,updated_by=? WHERE id=? AND revision=? AND deleted_at IS NULL''',
+                (timestamp, actor['id'], timestamp, actor['id'], plan_id, revision))
+            if changed.rowcount != 1:
+                raise ControlError(409, 'PLAN_CONFLICT', 'Kế hoạch đã thay đổi. Hãy tải lại để kiểm tra trước khi xóa.')
+            deleted = db.execute('SELECT * FROM plans WHERE id=?', (plan_id,)).fetchone()
+            self._plan_event(db, actor, deleted, 'deleted')
+            return self._plan(db, deleted)
+
     def create_plan(self, actor, **value):
         return self.create_plans(actor, [value])[0]
 
-    def list_plans(self, actor, terminal=None, month=None, voyage_id=None, status=None, page=1, page_size=50, *, period_type=None):
+    def list_plans(self, actor, terminal=None, month=None, voyage_id=None, status=None, page=1, page_size=50, *, period_type=None,
+                   quarter=None, year=None, start_date=None, end_date=None, include_deleted=False):
         self._pagination(page, page_size)
+        if not isinstance(include_deleted, bool):
+            raise ControlError(422, 'INVALID_PLAN_FILTER', 'Bộ lọc kế hoạch đã xóa không hợp lệ.')
         with self._db() as db:
             actor = self._actor(db, actor)
             terms, params = self._scope_filter(actor, terminal)
+            if not include_deleted:
+                terms += ' AND deleted_at IS NULL'
             if period_type is not None:
-                if period_type not in {"month", "voyage"}:
+                if period_type not in PLAN_PERIOD_TYPES:
                     raise ControlError(422, "INVALID_PLAN_PERIOD", "Loại kỳ kế hoạch không hợp lệ.")
                 terms += " AND period_type=?"
                 params.append(period_type)
@@ -575,6 +741,15 @@ class ControlStore:
             if voyage_id is not None:
                 terms += " AND period_type='voyage' AND period_key=?"
                 params.append(str(voyage_id))
+            for kind, value in [('quarter', quarter), ('year', year)]:
+                if value is not None:
+                    key, _, _ = plan_period({'period_type': kind, kind: value})
+                    terms += ' AND period_type=? AND period_key=?'
+                    params.extend((kind, key))
+            if start_date is not None or end_date is not None:
+                key, _, _ = plan_period({'period_type': 'custom', 'start_date': start_date, 'end_date': end_date})
+                terms += " AND period_type='custom' AND period_key=?"
+                params.append(key)
             if status is not None:
                 if status not in {"draft", "approved", "cancelled"}:
                     raise ControlError(422, "INVALID_PLAN_STATUS", "Trạng thái kế hoạch không hợp lệ.")
@@ -588,7 +763,7 @@ class ControlStore:
         with self._db() as db:
             actor = self._actor(db, actor)
             terms, params = self._scope_filter(actor, terminal)
-            terms += " AND status='approved'"
+            terms += " AND status='approved' AND selected.deleted_at IS NULL"
             if month is not None:
                 terms += " AND period_type='month' AND period_key=?"
                 params.append(month)
@@ -597,6 +772,7 @@ class ControlStore:
                 params.append(str(voyage_id))
             # Choose the effective revision in one SQLite statement. A later
             # approval must not make previously fetched rows all disappear.
+            # Newer tombstones still supersede older approved versions.
             rows = db.execute(f"""SELECT selected.* FROM plans selected WHERE {terms}
                 AND NOT EXISTS (
                     SELECT 1 FROM plans newer WHERE newer.terminal=selected.terminal
@@ -629,6 +805,71 @@ class ControlStore:
             self._plan_event(db, actor, approved, 'approved')
             return self._plan(db, approved)
 
+    def _throughput_progress(self, db, actor, report):
+        filters = report.get('meta', {}).get('filters', {})
+        terminal, start, end = filters.get('terminal'), filters.get('start_date'), filters.get('end_date')
+        if terminal is not None:
+            require_scope(actor, terminal)
+        scope = production_scope_context(report)
+        eligible = scope['production_scope'] == 'nghe_tinh' and not scope['legacy_scope']
+        result = {'report_id': report.get('meta', {}).get('report_id'), 'production_scope': scope['production_scope'],
+                  'berth_rule_version': scope['berth_rule_version'], 'period': dict(filters), 'eligible': eligible,
+                  'reason': None, 'items': [], 'available_periods': []}
+        if not eligible:
+            result['reason'] = 'Chỉ đối chiếu kế hoạch Cảng Nghệ Tĩnh với dữ liệu đã phân loại theo quy tắc cầu cập đầu tiên.'
+            return result
+        terms, params = self._scope_filter(actor, terminal)
+        rows = db.execute(f"""SELECT selected.* FROM plans selected WHERE {terms}
+            AND metric='tonnage' AND period_type<>'voyage' AND status='approved'
+            AND NOT EXISTS (SELECT 1 FROM plans newer WHERE newer.terminal=selected.terminal
+                AND newer.period_type=selected.period_type AND newer.period_key=selected.period_key
+                AND newer.metric=selected.metric AND newer.status='approved' AND newer.version>selected.version)
+            ORDER BY period_type,period_key,terminal""", params).fetchall()
+        groups = {}
+        for row in rows:
+            plan = self._plan_view(row, row['version'])
+            groups.setdefault((plan['period_type'], plan['period_key']), {})[plan['terminal']] = plan
+        overview = report['overview']
+        for _, by_terminal in sorted(groups.items()):
+            if terminal != 'all':
+                if by_terminal[terminal]['is_deleted']:
+                    continue
+                plans, source, complete = [by_terminal[terminal]], 'terminal', True
+            elif 'all' in by_terminal:
+                # Removing the company target must not silently substitute
+                # terminal targets. A newer company approval can replace it.
+                if by_terminal['all']['is_deleted']:
+                    continue
+                plans, source, complete = [by_terminal['all']], 'company', True
+            else:
+                by_terminal = {key: value for key, value in by_terminal.items() if not value['is_deleted']}
+                if not by_terminal:
+                    continue
+                plans, source = [by_terminal[t] for t in sorted(TERMINALS) if t in by_terminal], 'terminals'
+                complete = set(by_terminal) == TERMINALS
+            period = plans[0]
+            target = sum((Decimal(row['amount_decimal']) for row in plans), Decimal(0)) if complete else None
+            # Navigation metadata only. Never attach this report's actuals to
+            # a target with a different start or an already-ended target period.
+            result['available_periods'].append({
+                'key': f"{period['period_type']}:{period['period_key']}", 'period_type': period['period_type'],
+                'terminal': terminal,
+                'period_key': period['period_key'], 'start_date': period['period_start'], 'end_date': period['period_end'],
+                'target': float(target) if target is not None else None, 'target_source': source, 'plans': plans,
+                'status': 'ready' if complete else 'missing_plan',
+                'reason': None if complete else 'Chưa đủ kế hoạch đã duyệt của cả hai cảng cho cùng kỳ.'})
+            if period['period_start'] == start and end <= period['period_end']:
+                result['items'].append(throughput_progress_item(period, plans, overview.get('total_tonnage'),
+                                      overview.get('tonnage_status', 'unavailable'), source, complete_target=complete))
+        if not result['items']:
+            result['reason'] = 'Chưa có kế hoạch tấn thông qua đã duyệt bắt đầu đúng ngày đầu kỳ và bao phủ kỳ báo cáo.'
+        return result
+
+    def throughput_progress(self, actor, report):
+        with self._db() as db:
+            actor = self._actor(db, actor)
+            return self._throughput_progress(db, actor, report)
+
     @staticmethod
     def _pagination(page, page_size):
         if isinstance(page, bool) or isinstance(page_size, bool) or not isinstance(page, int) or not isinstance(page_size, int) or page < 1 or not 1 <= page_size <= 100:
@@ -648,8 +889,9 @@ class ControlStore:
         return f"terminal IN ({','.join('?' for _ in allowed)})", allowed
 
     @staticmethod
-    def _closed_header(row):
-        return {key: row[key] for key in ("id", "terminal", "start_date", "end_date", "version", "title", "note", "digest", "source_digest", "source_fact_count", "created_by")} | {"created_at": _iso(row["created_at"])}
+    def _closed_header(row, report=None):
+        return {key: row[key] for key in ("id", "terminal", "start_date", "end_date", "version", "title", "note", "digest", "source_digest", "source_fact_count", "created_by")} | {
+            "created_at": _iso(row["created_at"]), **production_scope_context(report if report is not None else json.loads(row['report_json']))}
 
     def close_report(self, actor, terminal, start_date, end_date, report, source_facts, title="", note="", *, planning_actuals=None):
         require_scope(actor, terminal)
@@ -682,6 +924,7 @@ class ControlStore:
                     for source in terminals:
                         rows = db.execute("""SELECT selected.* FROM plans selected
                             WHERE terminal=? AND period_type='month' AND period_key=? AND status='approved'
+                            AND selected.deleted_at IS NULL
                             AND NOT EXISTS (SELECT 1 FROM plans newer WHERE newer.terminal=selected.terminal
                                 AND newer.period_type=selected.period_type AND newer.period_key=selected.period_key
                                 AND newer.metric=selected.metric AND newer.status='approved' AND newer.version>selected.version)
@@ -691,7 +934,10 @@ class ControlStore:
                             'reason': None if eligible else 'Kỳ chốt không bắt đầu từ đầu tháng hoặc trải qua nhiều tháng; không đối chiếu kế hoạch tháng.',
                             'period': {'terminal': terminal, 'start_date': start.isoformat(), 'end_date': end.isoformat(), 'month': month},
                             'plans': approved, 'rows': plan_progress_rows(approved, planning_actuals) if eligible else []}
-                report_json = _json({**report, 'planning': planning})
+                # The approved period targets share the closure transaction;
+                # a concurrent approval cannot change the captured versions.
+                throughput = {**self._throughput_progress(db, actor, report), 'captured': True, 'captured_at': _iso(self.clock())}
+                report_json = _json({**report, 'planning': planning, 'throughput_progress': throughput})
                 if len(report_json.encode('utf-8')) + len(facts_json.encode('utf-8')) > 64 * 1024 * 1024:
                     raise ControlError(413, 'REPORT_TOO_LARGE', 'Báo cáo vượt giới hạn lưu trữ; hãy thu hẹp kỳ.')
             version = db.execute("SELECT COALESCE(MAX(version),0)+1 FROM closed_reports WHERE terminal=? AND start_date=? AND end_date=?", (terminal, start.isoformat(), end.isoformat())).fetchone()[0]
@@ -718,7 +964,7 @@ class ControlStore:
             report = json.loads(row['report_json'])
             planning = report.get('planning') or {'captured': False, 'eligible': False, 'rows': [], 'plans': [],
                 'reason': 'Bản chốt này chưa lưu kế hoạch tại thời điểm chốt. Không sử dụng kế hoạch hiện tại để thay thế.'}
-            return {**self._closed_header(row), "report": report, "source_facts": json.loads(row["source_facts_json"]), 'planning': planning}
+            return {**self._closed_header(row, report), "report": report, "source_facts": json.loads(row["source_facts_json"]), 'planning': planning}
 
     def compare_closed_report(self, actor, report_id, current_report, current_source_facts):
         old = self.get_closed_report(actor, report_id)

@@ -1,5 +1,5 @@
 """Authenticated reporting, plan comparisons, imports and immutable closures."""
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
@@ -9,19 +9,20 @@ from starlette.concurrency import run_in_threadpool
 
 if __package__:
     from .control_api import get_repository, get_store, require_user, validate_plan_voyages
-    from .control_store import ControlStore, plan_progress_rows, require_admin, require_editor, require_scope
+    from .control_store import ControlStore, plan_progress_rows, production_scope_context, require_admin, require_editor, require_scope
     from .reporting import reporting_service
     from .repository import TERMINALS, date_range
     from .workbook_io import MAX_UPLOAD_BYTES, parse_plan_workbook, plan_template, report_workbook
 else:
     from control_api import get_repository, get_store, require_user, validate_plan_voyages
-    from control_store import ControlStore, plan_progress_rows, require_admin, require_editor, require_scope
+    from control_store import ControlStore, plan_progress_rows, production_scope_context, require_admin, require_editor, require_scope
     from reporting import reporting_service
     from repository import TERMINALS, date_range
     from workbook_io import MAX_UPLOAD_BYTES, parse_plan_workbook, plan_template, report_workbook
 
 router = APIRouter(prefix='/api')
 Terminal = Literal['all', 'cua_lo', 'ben_thuy']
+ProductionScope = Literal['nghe_tinh', 'vietsun', 'unclassified']
 XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 
 
@@ -36,13 +37,14 @@ def report_scope(service, user, report_id):
 
 
 def selection(day: date | None = None, terminal: Terminal | None = None,
+              production_scope: ProductionScope | None = None,
               cargo: str | None = Query(default=None, max_length=250),
               customer_id: str | None = Query(default=None, max_length=128),
               customer_terminal: Literal['cua_lo', 'ben_thuy'] | None = None,
               voyage_id: str | None = Query(default=None, max_length=128),
               issue: Literal['all', 'missing_weight', 'unknown_unit', 'negative'] = 'all',
               operation_filter: Literal['all', 'with_values', 'missing_weight'] = 'all'):
-    return dict(day=day, terminal=terminal, cargo=cargo, customer_id=customer_id,
+    return dict(day=day, terminal=terminal, production_scope=production_scope, cargo=cargo, customer_id=customer_id,
                 customer_terminal=customer_terminal, voyage_id=voyage_id, issue=issue,
                 operation_filter=operation_filter)
 
@@ -70,7 +72,8 @@ def workbook_response(content, filename):
 
 
 @router.get('/reports/{report_id}/export.xlsx')
-def export_report(report_id: str, chosen: dict = Depends(selection), user: dict = Depends(require_user), service=Depends(get_reporting)):
+def export_report(report_id: str, chosen: dict = Depends(selection), user: dict = Depends(require_user),
+                  service=Depends(get_reporting), store: ControlStore = Depends(get_store)):
     report_scope(service, user, report_id)
     for terminal in [chosen.get('terminal'), chosen.get('customer_terminal')]:
         if terminal is not None:
@@ -79,6 +82,9 @@ def export_report(report_id: str, chosen: dict = Depends(selection), user: dict 
         exported = service.export_drilldown(report_id, **chosen)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
+    if (chosen['issue'] == 'all' and chosen['operation_filter'] == 'all'
+            and not any(chosen.get(field) is not None for field in ['day', 'cargo', 'customer_id', 'customer_terminal', 'voyage_id'])):
+        exported['report']['throughput_progress'] = store.throughput_progress(user, exported['report'])
     return workbook_response(report_workbook(exported['report'], exported['operations'], shifts=exported['shifts']), 'chi-tiet-san-luong.xlsx')
 
 
@@ -107,15 +113,35 @@ async def preview_import(file: UploadFile = File(...), user: dict = Depends(requ
         await file.close()
 
 
+def planning_scope(report):
+    context = production_scope_context(report)
+    eligible = context['production_scope'] == 'nghe_tinh' and not context['legacy_scope']
+    reason = None if eligible else (
+        'Bản dữ liệu chưa lưu quy tắc cầu cập đầu tiên; tải lại báo cáo để đối chiếu kế hoạch.' if context['legacy_scope'] else
+        'Kế hoạch hiện tại áp dụng cho Cảng Nghệ Tĩnh; chưa có kế hoạch riêng cho phạm vi ' + context['production_scope_label'] + '.')
+    return {**context, 'eligible': eligible, 'reason': reason}
+
+
+@router.get('/reports/{report_id}/throughput-progress')
+def throughput_progress(report_id: str, user: dict = Depends(require_user),
+                        service=Depends(get_reporting), store: ControlStore = Depends(get_store)):
+    # Read actuals from the selected immutable snapshot, with no new TOS query.
+    report = report_scope(service, user, report_id)
+    return store.throughput_progress(user, report)
+
+
 @router.get('/reports/{report_id}/plan-progress')
 def monthly_progress(report_id: str, user: dict = Depends(require_user), service=Depends(get_reporting), store: ControlStore = Depends(get_store)):
     report = report_scope(service, user, report_id)
     filters = report['meta']['filters']
     start, end = date.fromisoformat(filters['start_date']), date.fromisoformat(filters['end_date'])
     month = start.strftime('%Y-%m')
-    eligible = start.day == 1 and start.strftime('%Y-%m') == end.strftime('%Y-%m')
-    response = {'eligible': eligible, 'reason': None if eligible else 'Chọn từ đầu tháng đến ngày cần xem để đối chiếu kế hoạch tháng.',
-                'period': {**filters, 'month': month}, 'rows': []}
+    scope = planning_scope(report)
+    period_eligible = start.day == 1 and start.strftime('%Y-%m') == end.strftime('%Y-%m')
+    eligible = scope['eligible'] and period_eligible
+    response = {'eligible': eligible, 'reason': scope['reason'] if not scope['eligible'] else None if period_eligible else 'Chọn từ đầu tháng đến ngày cần xem để đối chiếu kế hoạch tháng.',
+                'period': {**filters, 'month': month}, 'rows': [], 'production_scope': scope['production_scope'],
+                'scope_label': scope['production_scope_label'], 'berth_rule_version': scope['berth_rule_version']}
     if not eligible:
         return response
     terminals = list(TERMINALS) if filters['terminal'] == 'all' else [filters['terminal']]
@@ -130,14 +156,17 @@ def monthly_progress(report_id: str, user: dict = Depends(require_user), service
 
 @router.get('/voyages/{terminal}/{voyage_id}/progress')
 def voyage_progress(terminal: Literal['cua_lo', 'ben_thuy'], voyage_id: int,
+                    production_scope: ProductionScope = 'nghe_tinh',
                     user: dict = Depends(require_user), service=Depends(get_reporting), store: ControlStore = Depends(get_store)):
     require_scope(user, terminal)
     try:
-        progress = service.get_voyage_progress(terminal, voyage_id)
+        progress = service.get_voyage_progress(terminal, voyage_id, production_scope=production_scope)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
-    plans = store.effective_plans(user, terminal, voyage_id=voyage_id)
-    return {**progress, 'planning': plan_progress_rows(plans, {terminal: progress['summary']}),
+    scope = planning_scope(progress)
+    plans = store.effective_plans(user, terminal, voyage_id=voyage_id) if scope['eligible'] else []
+    return {**progress, 'planning': plan_progress_rows(plans, {terminal: progress['summary']}) if scope['eligible'] else [],
+            'planning_eligible': scope['eligible'], 'planning_reason': scope['reason'], 'planning_scope_label': scope['production_scope_label'],
             'productivity': None, 'estimated_completion': None,
             'timing_status': 'Chưa có giờ làm hàng và thời gian dừng được xác nhận.'}
 
@@ -161,6 +190,15 @@ def close_report(body: CloseBody, user: dict = Depends(require_user), service=De
     snapshot = service.export_snapshot(body.report_id)
     filters = report['meta']['filters']
     start, end = date.fromisoformat(filters['start_date']), date.fromisoformat(filters['end_date'])
+    scope = planning_scope(snapshot['report'])
+    if not scope['eligible']:
+        frozen = {**snapshot['report'], 'planning': {
+            'captured': True, 'captured_at': datetime.now(timezone.utc).isoformat(), 'eligible': False,
+            'reason': scope['reason'], 'period': {**filters, 'month': start.strftime('%Y-%m')},
+            'production_scope': scope['production_scope'], 'scope_label': scope['production_scope_label'],
+            'berth_rule_version': scope['berth_rule_version'], 'rows': [], 'plans': []}}
+        return store.close_report(user, filters['terminal'], filters['start_date'], filters['end_date'],
+                                  frozen, snapshot['operations'], body.title, body.note)
     actuals = {}
     if start.day == 1 and start.strftime('%Y-%m') == end.strftime('%Y-%m'):
         terminals = list(TERMINALS) if filters['terminal'] == 'all' else [filters['terminal']]
@@ -195,6 +233,11 @@ def compare_closed(closed_id: int, body: CompareBody, user: dict = Depends(requi
     filters = report['meta']['filters']
     if any(str(filters.get(key)) != str(closed[key]) for key in ['terminal', 'start_date', 'end_date']):
         raise HTTPException(422, 'Chọn đúng kỳ và xí nghiệp của báo cáo đã chốt để so sánh.')
+    current_scope = production_scope_context(report)
+    if closed['legacy_scope'] or current_scope['legacy_scope'] or any(
+            closed[key] != current_scope[key] for key in ['production_scope', 'berth_rule_version']):
+        raise HTTPException(422, detail={'code': 'REPORT_SCOPE_MISMATCH',
+            'message': 'Chỉ so sánh báo cáo cùng phạm vi sản lượng và quy tắc cầu cập đầu tiên. Bản chốt cũ chưa lưu phạm vi vẫn có thể xem và xuất Excel.'})
     current = service.export_snapshot(body.report_id)
     return store.compare_closed_report(user, closed_id, current['report'], current['operations'])
 

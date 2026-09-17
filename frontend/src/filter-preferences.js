@@ -7,7 +7,7 @@ export function allowedTerminals(user) {
 
 export function restoreFilters(user) {
   const scopes = allowedTerminals(user);
-  const defaults = { ...presetDates('month'), terminal: scopes[0] || 'cua_lo' };
+  const defaults = { ...presetDates('month'), terminal: scopes[0] || 'cua_lo', production_scope: 'nghe_tinh' };
   try {
     const saved = JSON.parse(localStorage.getItem(`port-report-filters-${user.id}`));
     return saved && scopes.includes(saved.terminal) && !validateFilters(saved) ? saved : defaults;

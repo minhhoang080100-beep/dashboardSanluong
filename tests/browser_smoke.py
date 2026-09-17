@@ -51,6 +51,12 @@ def fixture(filters, empty=False, native=False, missing=False):
                          "known_weight_count": 1, "container_row_count": 0,
                          "teu": 0, "record_count": 1, "latest_operation_at": start,
                          "missing_weight_count": 0, "missing_quantity_count": 0, "negative_value_count": 0})
+    for row in rows:
+        scope = filters["production_scope"]
+        row.update(production_scope=scope, initial_berth_id=None if scope == "unclassified" else 13 if scope == "vietsun" else 1,
+                   initial_berth_code=None if scope == "unclassified" else "C5" if scope == "vietsun" else "C1",
+                   initial_berth_at=None if scope == "unclassified" else f"{start.isoformat()}T07:00:00",
+                   berth_assignment_status="missing" if scope == "unclassified" else "assigned")
     repository = DashboardRepository()
     repository._execute_query = lambda *args, **kwargs: rows
     response = repository.get_dashboard(**filters)
@@ -70,7 +76,7 @@ def main():
 
     def respond(route):
         query = parse_qs(urlparse(route.request.url).query)
-        filters = {key: query[key][0] for key in ("start_date", "end_date", "terminal")}
+        filters = {key: query[key][0] for key in ("start_date", "end_date", "terminal", "production_scope")}
         requests.append(filters)
         if state["delay_terminal"] == filters["terminal"]:
             held.append((route, filters))

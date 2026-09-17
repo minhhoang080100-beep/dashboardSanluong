@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     DB_DRIVER: str = "ODBC Driver 17 for SQL Server"
     DB_CONNECT_TIMEOUT_SECONDS: int = Field(default=5, ge=1, le=60)
     DB_QUERY_TIMEOUT_SECONDS: int = Field(default=20, ge=1, le=120)
+    REPORT_CACHE_TTL_SECONDS: int = Field(default=120, ge=1, le=300)
     DB_ENCRYPT: bool = True
     DB_TRUST_SERVER_CERTIFICATE: bool = False
 
