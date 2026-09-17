@@ -128,7 +128,9 @@ function DataQuality({ meta }) {
 
 function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
   const isReportView = activeView === 'reports';
-  const [reportRequested, setReportRequested] = useState(activeView !== 'admin');
+  const [managementTab, setManagementTab] = useState('plans');
+  const usesReportContext = isReportView || (activeView === 'management' && managementTab !== 'plans');
+  const [reportRequested, setReportRequested] = useState(isReportView);
   const [filters, setFilters] = useState(() => restoreFilters(user));
   const [draft, setDraft] = useState(filters);
   const [quarterYear, setQuarterYear] = useState(() => Math.max(2000, Number(filters.start_date.slice(0, 4))));
@@ -183,9 +185,12 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
 
   useEffect(() => { rememberFilters(user, filters); setInspection(null); }, [user, filters]);
   useEffect(() => {
-    if (activeView !== 'admin') setReportRequested(true);
+    if (activeView !== 'management') setManagementTab('plans');
     setInspection(null);
   }, [activeView]);
+  useEffect(() => {
+    if (usesReportContext) setReportRequested(true);
+  }, [usesReportContext]);
   useEffect(() => {
     if (!isReportView || !['#production', '#voyages', '#customers', '#data-quality'].includes(anchor)) {
       lastScrolledAnchor.current = '';
@@ -317,16 +322,16 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
 
   return <div className="dashboard">
     <section className="dashboard-intro" id={isReportView ? 'overview' : undefined} aria-labelledby="dashboard-title">
-      <div className="dashboard-title-group"><h1 id="dashboard-title">{isReportView ? 'Báo cáo sản lượng' : activeView === 'admin' ? 'Quản trị' : 'Kế hoạch & đối soát'}</h1>
+      <div className="dashboard-title-group"><h1 id="dashboard-title">{isReportView ? 'Báo cáo sản lượng' : activeView === 'admin' ? 'Quản trị' : 'Kế hoạch'}</h1>
       {isReportView && <nav className="report-shortcuts" aria-label="Tra cứu báo cáo"><a href="#production"><BarChart3 size={14} aria-hidden="true" />Phân tích sản lượng</a><a href="#voyages"><Ship size={14} aria-hidden="true" />Chuyến tàu</a><a href="#customers"><Users size={14} aria-hidden="true" />Khách hàng</a></nav>}</div>
       {isReportView && <button className="button secondary export-button" type="button" aria-label="Xuất báo cáo CSV" title="Xuất báo cáo CSV" onClick={exportCsv} disabled={!data || hasDraft}><Download size={16} aria-hidden="true" /><span>Xuất báo cáo CSV</span></button>}
     </section>
-    {activeView !== 'admin' && <div className="production-scope-selector">
+    {usesReportContext && <div className="production-scope-selector">
       <div className="production-scope-tabs" role="tablist" aria-label="Phạm vi sản lượng">{Object.entries(PRODUCTION_SCOPES).map(([scope, label], index) => <button key={scope} ref={(element) => { scopeButtons.current[index] = element; }} id={`production-scope-${scope}`} type="button" role="tab" aria-selected={filters.production_scope === scope} aria-controls="production-scope-report" tabIndex={filters.production_scope === scope ? 0 : -1} onClick={() => selectScope(scope)} onKeyDown={(event) => navigateScopes(event, index)}>{label}</button>)}</div>
       <p>{filters.production_scope === 'unclassified' ? productionScopeDescription(filters.production_scope) : 'Theo cầu ban đầu của toàn chuyến; chuyển cầu không đổi phạm vi.'}</p>
     </div>}
-    <div id="production-scope-report" role={activeView !== 'admin' ? 'tabpanel' : undefined} aria-labelledby={activeView !== 'admin' ? `production-scope-${filters.production_scope}` : undefined}>
-    {activeView !== 'admin' && <>
+    <div id="production-scope-report" role={usesReportContext ? 'tabpanel' : undefined} aria-labelledby={usesReportContext ? `production-scope-${filters.production_scope}` : undefined}>
+    {usesReportContext && <>
     <section className="filter-panel" aria-label="Bộ lọc báo cáo">
       <div className="filter-top"><span><SlidersHorizontal size={16} aria-hidden="true" />Kỳ báo cáo</span><div className="preset-buttons" role="group" aria-label="Chọn nhanh kỳ báo cáo">
         {[['today', 'Hôm nay'], ['yesterday', 'Hôm qua'], ['month', 'Tháng này'], ['previous', 'Tháng trước'], ['year', 'Từ đầu năm']].map(([key, label]) => {
@@ -382,7 +387,7 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
       <NativeUnits rows={data.native_units} />
       <Customers rows={data.customers} total={data.overview.total_tonnage} hasSignedInput={hasSignedInput} onInspect={data.meta.report_id ? (row, event) => inspect({ customer_id: row.drilldown_customer_id || row.customer_id || 'unassigned', customer_terminal: row.terminal_id }, row.name, event) : null} />
     </>}
-    {!isReportView && <Management key={activeView} mode={activeView} user={user} filters={filters} report={view.status === 'stale' || loading ? null : data} apiBase={API_BASE} preferredPeriodType={preferredPeriodType} preferredPeriodKey={preferredPeriodKey} onSelectPlan={selectPlan} onSelectPeriod={selectPlan} onReportChange={() => requestReport(true)} />}
+    {!isReportView && <Management key={activeView} mode={activeView} activeTab={managementTab} onTabChange={setManagementTab} user={user} filters={filters} report={view.status === 'stale' || loading ? null : data} apiBase={API_BASE} preferredPeriodType={preferredPeriodType} onSelectPlan={selectPlan} onReportChange={() => requestReport(true)} />}
     {isReportView && data && <><DataQuality meta={data.meta} /><footer className="dashboard-footer"><span>CẢNG NGHỆ TĨNH <span aria-hidden="true">/</span> Báo cáo sản lượng</span><span>{TERMINALS[filters.terminal]} · {formatDate(filters.end_date)}</span></footer></>}
     {isReportView && data && inspection && <OperationsExplorer key={data.meta.report_id} report={data} {...inspection} apiBase={API_BASE} onClose={() => setInspection(null)} onReloadReport={() => { setInspection(null); requestReport(true); }} />}
     </div>

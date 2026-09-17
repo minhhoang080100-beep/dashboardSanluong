@@ -7,7 +7,7 @@ import './App.css';
 
 const sections = [
   { href: '#overview', view: 'reports', label: 'Báo cáo sản lượng', icon: BarChart3 },
-  { href: '#management', view: 'management', label: 'Kế hoạch & đối soát', icon: ClipboardList },
+  { href: '#management', view: 'management', label: 'Kế hoạch', icon: ClipboardList },
   { href: '#admin', view: 'admin', label: 'Quản trị', icon: Settings },
 ];
 

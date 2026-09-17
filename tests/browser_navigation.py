@@ -10,7 +10,7 @@ from playwright.sync_api import expect, sync_playwright
 
 
 def install_navigation_fixture(page, role="admin"):
-    state = {"requests": [], "reports": []}
+    state = {"requests": [], "reports": [], "plan_queries": []}
     auth = install_auth_fixture(page, role=role)
 
     def respond(route):
@@ -33,6 +33,12 @@ def install_navigation_fixture(page, role="admin"):
                                 "reason": "Chưa có kế hoạch được duyệt khớp kỳ và phạm vi báo cáo."})
         elif path.endswith("/plan-progress"):
             route.fulfill(json={"eligible": True, "reason": None, "rows": []})
+        elif path.endswith("/operations"):
+            route.fulfill(json={"report_id": path.split("/")[2], "operations": {
+                "rows": [], "total": 0, "total_all": 0, "page": 1, "page_size": 25, "total_pages": 0}})
+        elif path == "/plans" and route.request.method == "GET":
+            state["plan_queries"].append(parse_qs(urlparse(route.request.url).query))
+            route.fulfill(json={"items": [], "total": 0, "page": 1, "page_size": 25})
         elif path == "/admin/metrics":
             route.fulfill(json={"operations": {}, "cache": {}})
         else:
@@ -87,6 +93,7 @@ def main():
         page.get_by_label("Phạm vi xí nghiệp").select_option("ben_thuy")
         page.get_by_role("button", name="Áp dụng", exact=True).click()
         expect(page.locator(".kpi-value").first).to_contain_text("2.000")
+        expect(page.locator(".throughput-progress")).to_contain_text("Chưa có kế hoạch được duyệt")
         selected = dict(state["reports"][-1])
         report_count = len(state["reports"])
         progress_path = f"/reports/{selected['report_id']}/throughput-progress"
@@ -96,13 +103,21 @@ def main():
         expect(page.locator("#management-content")).to_be_visible()
         expect(page.locator("#management-content").get_by_role("tab")).to_have_count(3)
         expect(page.locator(".kpi-card").first).to_be_hidden()
+        expect(page.get_by_role("heading", name="Kế hoạch", level=1, exact=True)).to_be_visible()
+        expect(page.locator("#management-content")).to_have_attribute("aria-label", "Kế hoạch")
+        expect(page.locator(".filter-panel, .report-toolbar, .production-scope-selector")).to_have_count(0)
+        expect(page.locator(".throughput-progress, .management-secondary-progress")).to_have_count(0)
+        expect(page.get_by_text("Chưa có kế hoạch trong kỳ và phạm vi đã chọn.", exact=True)).to_be_visible()
+        assert state["requests"].count(progress_path) == progress_reads
+        monthly_path = f"/reports/{selected['report_id']}/plan-progress"
+        assert monthly_path not in state["requests"]
+
+        page.locator("#management-content").get_by_role("tab", name="Đối soát", exact=True).click()
+        expect(page.locator(".filter-panel")).to_be_visible()
+        expect(page.locator(".production-scope-selector")).to_be_visible()
         expect(page.get_by_label("Từ ngày", exact=True)).to_have_value("2026-08-01")
         expect(page.get_by_label("Đến ngày", exact=True)).to_have_value("2026-08-31")
         expect(page.get_by_label("Phạm vi xí nghiệp")).to_have_value("ben_thuy")
-        expect(page.get_by_text("Chưa có kế hoạch trong kỳ và phạm vi đã chọn.", exact=True)).to_be_visible()
-        expect(page.locator("#management-content .throughput-progress")).to_contain_text("Chưa có kế hoạch được duyệt")
-        assert state["requests"].count(progress_path) > progress_reads
-        monthly_path = f"/reports/{selected['report_id']}/plan-progress"
         assert monthly_path not in state["requests"], "secondary monthly comparison should load only when opened"
         monthly = page.locator("#management-content .management-secondary-progress")
         with page.expect_response(lambda response: urlparse(response.url).path.removeprefix("/api") == monthly_path):
@@ -111,6 +126,9 @@ def main():
         assert monthly_path in state["requests"]
         monthly.locator("summary").click()
         assert len(state["reports"]) == report_count
+        page.locator("#management-content").get_by_role("tab", name="Kế hoạch", exact=True).click()
+        expect(page.locator(".filter-panel, .report-toolbar, .production-scope-selector")).to_have_count(0)
+        expect(page.locator(".throughput-progress, .management-secondary-progress")).to_have_count(0)
         page.screenshot(path=str(output / "browser-navigation-management.png"), full_page=True)
         go_view(page, "admin")
         expect(page.locator("#admin-content").get_by_role("tab")).to_have_count(2)
@@ -151,6 +169,54 @@ def main():
         checks.append("top navigation and all views fit 1440, 1024, 850, 390 and 320px without horizontal page overflow")
         assert auth["unexpected"] == [], auth["unexpected"]
         page.close()
+
+        # Starting in Plans must not need any source report. Its own list
+        # filters still work before the first report-backed tab is opened.
+        direct = browser.new_page(viewport={"width": 1440, "height": 1050})
+        direct.set_default_timeout(10000)
+        direct_state, direct_auth = install_navigation_fixture(direct)
+        direct.on("pageerror", lambda error: errors.append(str(error)))
+        direct.goto(f"{args.url.rstrip('/')}#management")
+        active_view(direct, "management")
+        workspace = direct.get_by_role("region", name="Kế hoạch", exact=True)
+        expect(workspace.get_by_role("tab", name="Kế hoạch", exact=True)).to_have_attribute("aria-selected", "true")
+        expect(workspace.get_by_text("Chưa có kế hoạch trong kỳ và phạm vi đã chọn.", exact=True)).to_be_visible()
+        expect(direct.locator(".filter-panel, .report-toolbar, .production-scope-selector")).to_have_count(0)
+        expect(direct.locator(".throughput-progress, .management-secondary-progress")).to_have_count(0)
+        workspace.get_by_role("combobox", name="Danh sách kế hoạch", exact=True).select_option("year")
+        with direct.expect_response(lambda response: urlparse(response.url).path.removeprefix("/api") == "/plans"
+                                    and parse_qs(urlparse(response.url).query).get("year") == ["2025"]):
+            workspace.get_by_label("Năm kế hoạch", exact=True).fill("2025")
+        with direct.expect_response(lambda response: urlparse(response.url).path.removeprefix("/api") == "/plans"
+                                    and parse_qs(urlparse(response.url).query).get("terminal") == ["ben_thuy"]):
+            workspace.get_by_role("combobox", name="Xí nghiệp", exact=True).select_option("ben_thuy")
+        assert direct_state["plan_queries"][-1]["period_type"] == ["year"]
+        assert direct_state["plan_queries"][-1]["year"] == ["2025"]
+        assert direct_state["reports"] == []
+        assert not any(path.startswith("/reports/") for path in direct_state["requests"])
+        checks.append("direct #management loads only plan data; its year and terminal filters work without any report")
+
+        with direct.expect_response(lambda response: urlparse(response.url).path.removeprefix("/api") == "/dashboard"):
+            workspace.get_by_role("tab", name="Báo cáo đã chốt", exact=True).click()
+        expect(direct.locator(".filter-panel")).to_be_visible()
+        expect(direct.locator(".production-scope-selector")).to_be_visible()
+        expect(workspace.get_by_text("Chưa có báo cáo đã chốt trong phạm vi được cấp.", exact=True)).to_be_visible()
+        assert len(direct_state["reports"]) == 1
+        # The independent plan-list selection must not replace report filters.
+        assert direct_state["reports"][0]["filters"]["terminal"] == "all"
+        first_report = direct_state["reports"][0]["report_id"]
+        with direct.expect_response(lambda response: urlparse(response.url).path.removeprefix("/api") == f"/reports/{first_report}/operations"):
+            workspace.get_by_role("tab", name="Đối soát", exact=True).click()
+        expect(workspace.locator(".management-secondary-progress")).to_be_visible()
+        assert len(direct_state["reports"]) == 1
+        assert not any(path.endswith("/plan-progress") for path in direct_state["requests"])
+        workspace.get_by_role("tab", name="Kế hoạch", exact=True).click()
+        expect(direct.locator(".filter-panel, .report-toolbar, .production-scope-selector")).to_have_count(0)
+        expect(direct.locator(".throughput-progress, .management-secondary-progress")).to_have_count(0)
+        assert len(direct_state["reports"]) == 1
+        assert direct_auth["unexpected"] == [], direct_auth["unexpected"]
+        direct.close()
+        checks.append("opening closed reports starts one lazy report read; reconciliation reuses that snapshot and plans hides report controls")
 
         for role in ("viewer", "manager"):
             scoped_page = browser.new_page(viewport={"width": 1280, "height": 900})

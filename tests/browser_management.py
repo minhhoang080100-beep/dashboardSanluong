@@ -15,7 +15,7 @@ from playwright.sync_api import expect, sync_playwright
 
 
 def open_workspace(page, mode):
-    labels = {"management": "Kế hoạch & đối soát", "admin": "Quản trị"}
+    labels = {"management": "Kế hoạch", "admin": "Quản trị"}
     page.get_by_role("navigation", name="Điều hướng chính", exact=True).get_by_role("link", name=labels[mode], exact=True).click()
     workspace = page.locator(f"#{mode}-content")
     expect(workspace).to_be_visible()
@@ -149,7 +149,7 @@ def main():
                 history.append({"id": 2, "action": "deleted", "actor_id": 9001, "created_at": plan["deleted_at"], "snapshot": plan, "note": ""})
             route.fulfill(json={**plan, "created_by": 9001, "created_at": "2026-09-13T07:00:00Z", "history": history})
         elif path == "/plans/import/preview":
-            row = {"terminal": "cua_lo", "period_type": "month", "month": state["filters"]["start_date"][:7],
+            row = {"terminal": "cua_lo", "period_type": "month", "month": state["plans"][0]["month"],
                    "metric": "teu", "amount": 30, "reference": "KIỂM THỬ EXCEL", "note": ""}
             route.fulfill(json={"valid": True, "errors": [], "rows": [row]})
         elif path == "/plans/import":
@@ -219,7 +219,7 @@ def main():
         auth = install_auth_fixture(page, signed_in=False)
         page.on("pageerror", lambda error: errors.append(str(error)))
         page.route("**/api/**", respond)
-        page.goto(args.url)
+        page.goto(f"{args.url.rstrip('/')}#management")
         expect(page.get_by_role("heading", name="Đăng nhập", exact=True)).to_be_visible()
         page.get_by_label("Tài khoản", exact=True).fill("invalid_test")
         page.get_by_label("Mật khẩu", exact=True).fill("synthetic-password")
@@ -233,10 +233,15 @@ def main():
         page.get_by_label("Mật khẩu mới", exact=True).fill("synthetic-new-password")
         page.get_by_label("Nhập lại mật khẩu mới", exact=True).fill("synthetic-new-password")
         page.get_by_role("button", name="Lưu mật khẩu", exact=True).click()
-        expect(page.locator(".kpi-card")).to_have_count(3)
         management = open_workspace(page, "management")
         expect(management.get_by_role("tab")).to_have_count(3)
-        checks.append("login rejects invalid credentials; first login requires password change before reports")
+        expect(page.get_by_role("heading", name="Kế hoạch", level=1, exact=True)).to_be_visible()
+        expect(management).to_have_attribute("aria-label", "Kế hoạch")
+        expect(management.get_by_role("heading", name="Kế hoạch và phiên bản", exact=True)).to_be_visible()
+        expect(page.locator(".filter-panel, .report-toolbar, .production-scope-selector")).to_have_count(0)
+        expect(page.locator(".kpi-card, .throughput-progress, .management-secondary-progress")).to_have_count(0)
+        assert not any(call["path"] == "/dashboard" or call["path"].startswith("/reports/") for call in state["calls"])
+        checks.append("direct plans entry authenticates and changes the initial password without requesting production reports")
 
         management.get_by_role("button", name="Tạo kế hoạch", exact=True).click()
         management.get_by_label("Giá trị kế hoạch", exact=True).fill("100")
@@ -365,8 +370,8 @@ def main():
         expect(history).to_have_count(0)
         expect(management.get_by_role("heading", name="Kế hoạch và phiên bản", exact=True)).to_be_focused()
         assert len([call for call in state["calls"] if call["path"] == "/dashboard"]) == before_reports
-        expect(management.locator(".throughput-progress-empty").filter(has_text="Đang đọc kế hoạch")).to_have_count(0)
-        assert len([call for call in state["calls"] if call["path"].endswith("/throughput-progress")]) > before_progress
+        expect(management.locator(".throughput-progress, .management-secondary-progress")).to_have_count(0)
+        assert len([call for call in state["calls"] if call["path"].endswith("/throughput-progress")]) == before_progress
         management.get_by_role("checkbox", name="Hiện kế hoạch đã xóa", exact=True).check()
         expect(deletion_row).to_contain_text("Đã xóa")
         expect(deletion_row.get_by_role("button")).to_have_count(1)
@@ -374,10 +379,23 @@ def main():
         expect(history).to_contain_text("Xóa kế hoạch")
         history.get_by_role("button", name="Đóng lịch sử", exact=True).click()
         management.get_by_role("checkbox", name="Hiện kế hoạch đã xóa", exact=True).uncheck()
+        assert not any(call["path"] == "/dashboard" or call["path"].startswith("/reports/") for call in state["calls"]), "plan CRUD, import, history and deletion must not read production reports"
         checks.append("plans use one responsive table/card tree at 390/700/1024/1366; deletion confirms, handles conflicts, prevents doubles and preserves readable history")
+        checks.append("plan CRUD, Excel preview/import, history and deletion work independently of dashboard or report APIs")
 
-        management.get_by_role("tab", name="Đối soát", exact=True).click()
+        with page.expect_response(lambda response: urlparse(response.url).path.removeprefix("/api") == "/dashboard"):
+            management.get_by_role("tab", name="Đối soát", exact=True).click()
+        expect(page.locator(".filter-panel")).to_be_visible()
+        expect(page.locator(".production-scope-selector")).to_be_visible()
         expect(management.locator(".management-operations")).to_contain_text("KIỂM THỬ-001")
+        monthly = management.locator(".management-secondary-progress")
+        assert not any(call["path"].endswith("/plan-progress") for call in state["calls"])
+        with page.expect_response(lambda response: urlparse(response.url).path.endswith("/plan-progress")):
+            monthly.locator("summary").click()
+        expect(monthly.get_by_role("heading", name="Thực hiện so với kế hoạch tháng", exact=True)).to_be_visible()
+        monthly.locator("summary").click()
+        assert len([call for call in state["calls"] if call["path"] == "/dashboard"]) == 1
+        checks.append("reconciliation starts the first report read; its monthly comparison loads only when expanded")
         management.get_by_role("button", name="Ghi nhận", exact=True).click()
         management.locator(".management-issue-editor").get_by_role("textbox", name="Nội dung đối soát", exact=True).fill("Đã kiểm tra chứng từ nguồn")
         management.locator(".management-issue-editor").get_by_role("combobox").select_option("resolved")

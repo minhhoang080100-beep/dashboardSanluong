@@ -2,7 +2,6 @@ import { Fragment, useEffect, useId, useRef, useState } from 'react';
 import { Check, Download, Eye, EyeOff, KeyRound, Plus, RefreshCw, Trash2, Upload } from 'lucide-react';
 import { apiRequest, downloadFile } from '../api-client.js';
 import { productionScopeLabel } from '../production-scope.js';
-import ThroughputProgress from './ThroughputProgress';
 import { reportSelectionForPlan } from '../throughput-progress.js';
 import { formatDate, formatNumber, formatTimestamp, todayInVietnam } from '../dashboard-data.js';
 import { buildPlanUpdatePayload, buildUserPayload, canManage, sameClosedReportScope, ISSUE_LABELS, ISSUE_STATUS_LABELS, MANAGEMENT_ROLES, MANAGEMENT_TERMINALS, METRIC_LABELS, PLAN_PERIOD_LABELS, PLAN_STATUS_LABELS, PLAN_TERMINALS, planAmountInput, planDateDefaults, planDeletePayload, planEntryPeriod, planPeriodEligibility, planPeriodFields, planPeriodLabel, planTerminals, parseVietnamesePlanAmount, queryPath, userTerminals, validatedItems, validatePlanEntry, validatedPlanPreview } from '../management-data.js';
@@ -259,7 +258,7 @@ function PlanDeleteDialog({ plan, trigger, fallbackFocus, apiBase, onDeleted, on
   </dialog>;
 }
 
-function PlansPanel({ user, filters, report, apiBase, onSelectPlan, onSelectPeriod, preferredPeriodType, preferredPeriodKey }) {
+function PlansPanel({ user, filters, apiBase, onSelectPlan, preferredPeriodType }) {
   const terminals = userTerminals(user);
   const [listPeriod, setListPeriod] = useState(() => planDateDefaults(filters.start_date, filters.end_date));
   const [terminal, setTerminal] = useState(filters.terminal);
@@ -278,7 +277,6 @@ function PlansPanel({ user, filters, report, apiBase, onSelectPlan, onSelectPeri
   const [cancelling, setCancelling] = useState(null);
   const [historyId, setHistoryId] = useState(null);
   const [lastApproved, setLastApproved] = useState(null);
-  const [monthlyOpen, setMonthlyOpen] = useState(false);
   const [deleting, setDeleting] = useState(null);
   const [deletedMessage, setDeletedMessage] = useState('');
   const [includeDeleted, setIncludeDeleted] = useState(false);
@@ -297,7 +295,8 @@ function PlansPanel({ user, filters, report, apiBase, onSelectPlan, onSelectPeri
       setForm({ ...planDateDefaults(plan.period_start || filters.start_date, plan.period_end || filters.end_date), ...Object.fromEntries(Object.entries(plan).filter(([, value]) => value != null)), voyage_id: String(plan.voyage_id || ''), amount: planAmountInput(plan.amount_decimal ?? plan.amount) });
       setCopiedPlan(plan); setLastCreated(null);
     } else if (!form.amount && !form.reference && !form.note) {
-      setForm((value) => ({ ...value, ...planDateDefaults(filters.start_date, filters.end_date), period_type: planEntryPeriod(filters, preferredPeriodType) }));
+      const scopes = planTerminals(terminals, periodType);
+      setForm((value) => ({ ...value, ...listPeriod, period_type: periodType, terminal: scopes.includes(terminal) ? terminal : scopes[0] || '', voyage_id: '' }));
       setCopiedPlan(null);
     }
     requestAnimationFrame(() => { createEditor.current?.scrollIntoView({ block: 'nearest' }); createEditor.current?.querySelector('input[inputmode="decimal"]')?.focus(); });
@@ -325,8 +324,7 @@ function PlansPanel({ user, filters, report, apiBase, onSelectPlan, onSelectPeri
     if (!includeDeleted && page > 1 && result.items.length === 1) setPage((value) => value - 1);
     refresh();
   }
-  return <div className="management-stack">{filters.production_scope !== 'nghe_tinh' && <p className="management-caption">Kế hoạch nội bộ bên dưới thuộc phạm vi Cảng Nghệ Tĩnh. Chưa áp dụng cho Cầu 5 hoặc chuyến chưa xác định cầu.</p>}<ThroughputProgress report={report} user={user} apiBase={apiBase} revision={revision} preferredPeriodType={preferredPeriodType} preferredPeriodKey={preferredPeriodKey} onSelectPeriod={onSelectPeriod} />
-    <details className="management-secondary-progress" onToggle={(event) => setMonthlyOpen(event.currentTarget.open)}><summary>Kế hoạch tháng theo từng xí nghiệp (tấn, TEU)</summary>{monthlyOpen && <><p className="management-caption">Bảng này đối chiếu kế hoạch riêng của từng xí nghiệp, không sử dụng chỉ tiêu toàn công ty.</p><PlanProgress report={report} filters={filters} apiBase={apiBase} revision={revision} /></>}</details>
+  return <div className="management-stack"><p className="management-caption plan-scope-caption">Kế hoạch áp dụng cho Cảng Nghệ Tĩnh.</p>
     <section className="management-card plans-section"><div className="management-heading"><h3 ref={listHeading} tabIndex={-1}>Kế hoạch và phiên bản</h3><div className="management-actions">{canManage(user) && <button className="button primary" type="button" disabled={task.busy || !terminals.length} onClick={() => openCreate()}><Plus size={15} />Tạo kế hoạch</button>}<button className="button" type="button" onClick={refresh} disabled={result.resource.loading}><RefreshCw size={15} />Tải lại</button></div></div>
       <div className="management-filters"><label>Danh sách kế hoạch<select value={periodType} onChange={(event) => { setPeriodType(event.target.value); setPage(1); }}>{Object.entries(PLAN_PERIOD_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         {periodType === 'month' && <label>Tháng kế hoạch<input type="month" min="2000-01" max="2099-12" value={listPeriod.month} onChange={(event) => changePeriod('month', event.target.value)} /></label>}
@@ -399,11 +397,12 @@ function IssueEditor({ row, issue, user, apiBase, onSaved }) {
   </div>;
 }
 
-function ReconciliationPanel({ user, report, apiBase, onReportChange }) {
+function ReconciliationPanel({ user, filters, report, apiBase, onReportChange }) {
   const [issue, setIssue] = useState('missing_weight');
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState(null);
   const [revision, setRevision] = useState(0);
+  const [monthlyOpen, setMonthlyOpen] = useState(false);
   const reportId = report?.meta?.report_id;
   const resource = useResource(reportId ? queryPath(`/reports/${encodeURIComponent(reportId)}/operations`, { issue, page, page_size: 25 }) : null, apiBase, revision);
   const operations = resource.data?.operations;
@@ -411,7 +410,7 @@ function ReconciliationPanel({ user, report, apiBase, onReportChange }) {
   const malformed = resource.data && (!operations || !Array.isArray(operations.rows) || !Number.isInteger(operations.total));
   const displayedResource = malformed ? { ...resource, data: null, error: 'Dữ liệu đối soát chưa đúng cấu trúc. Vui lòng tải lại.' } : resource;
   const requestIdentity = `${reportId}/${issue}/${page}`;
-  return <section className="management-card"><div className="management-heading"><h3>Đối soát dữ liệu nguồn</h3>{onReportChange && <button className="button" type="button" onClick={onReportChange}><RefreshCw size={15} />Tải báo cáo mới</button>}</div>
+  return <div className="management-stack"><section className="management-card"><div className="management-heading"><h3>Đối soát dữ liệu nguồn</h3>{onReportChange && <button className="button" type="button" onClick={onReportChange}><RefreshCw size={15} />Tải báo cáo mới</button>}</div>
     {!reportId ? <p className="management-empty">Tải báo cáo sản lượng để xem các dòng cần đối soát.</p> : <>
       <div className="management-filters"><label>Nội dung đối soát<select value={issue} onChange={(event) => { setIssue(event.target.value); setPage(1); setExpanded(null); }}>{Object.entries(ISSUE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>{operations && !resource.loading && <span>{formatNumber(operations.total, 0)} dòng trong kỳ báo cáo</span>}</div>
       <ResourceState resource={displayedResource} onRetry={() => setRevision((number) => number + 1)} />
@@ -422,7 +421,9 @@ function ReconciliationPanel({ user, report, apiBase, onReportChange }) {
         return <Fragment key={rowKey}><tr><th scope="row">{row.operation_code || row.id}<small>{formatDate(row.operation_date)}</small>{row.shift_code && <small>Ca {row.shift_code}</small>}</th><td>{row.terminal_name || MANAGEMENT_TERMINALS[row.terminal_id]}<small>{row.vessel_name || '—'}</small></td><td>{row.cargo_name || '—'}</td><td>{formatNumber(row.quantity)}<small>{row.quantity_unit_name || row.quantity_unit || '—'}</small></td><td>{formatNumber(row.weight)}<small>{row.weight_unit_name || row.weight_unit || '—'}</small></td><td>{formatNumber(row.tonnage)}</td><td><button className="button" type="button" aria-expanded={open} aria-controls={`issue-${rowKey}`} onClick={() => setExpanded(open ? null : key)}>{canManage(user) ? 'Ghi nhận' : 'Xem ghi chú'}</button></td></tr>{open && <tr><td colSpan={7} id={`issue-${rowKey}`}><IssueEditor row={row} issue={issue} user={user} apiBase={apiBase} /></td></tr>}</Fragment>;
       })}</tbody></table></div><Pager page={page} total={operations.total} onChange={(value) => { setPage(value); setExpanded(null); }} /></> : <p className="management-empty">Không có dòng dữ liệu thuộc nội dung đối soát đã chọn.</p>)}
     </>}
-  </section>;
+  </section>
+    <details className="management-secondary-progress" onToggle={(event) => setMonthlyOpen(event.currentTarget.open)}><summary>Kế hoạch tháng theo từng xí nghiệp (tấn, TEU)</summary>{monthlyOpen && <><p className="management-caption">Bảng này đối chiếu kế hoạch riêng của từng xí nghiệp, không sử dụng chỉ tiêu toàn công ty.</p><PlanProgress report={report} filters={filters} apiBase={apiBase} revision={revision} /></>}</details>
+  </div>;
 }
 
 function TemporaryPassword({ result, onDismiss }) {
@@ -558,26 +559,31 @@ function OperationsPanel({ apiBase }) {
   </section>;
 }
 
-export default function Management({ mode = 'management', user, filters, report, apiBase, onReportChange, onSelectPlan, onSelectPeriod, preferredPeriodType, preferredPeriodKey }) {
+export default function Management({ mode = 'management', activeTab, onTabChange, user, filters, report, apiBase, onReportChange, onSelectPlan, preferredPeriodType }) {
   const area = mode === 'admin' ? 'admin' : 'management';
-  const title = area === 'admin' ? 'Quản trị' : 'Kế hoạch & đối soát';
+  const title = area === 'admin' ? 'Quản trị' : 'Kế hoạch';
   const tabs = area === 'admin'
     ? [['users', 'Tài khoản'], ['operations', 'Vận hành']]
     : [['plans', 'Kế hoạch'], ['reconciliation', 'Đối soát'], ['closed', 'Báo cáo đã chốt']];
   const [selectedTab, setSelectedTab] = useState(tabs[0][0]);
-  const tab = tabs.some(([id]) => id === selectedTab) ? selectedTab : tabs[0][0];
+  const requestedTab = area === 'management' && activeTab !== undefined ? activeTab : selectedTab;
+  const tab = tabs.some(([id]) => id === requestedTab) ? requestedTab : tabs[0][0];
   const buttons = useRef([]);
+  function selectTab(id) {
+    if (area === 'management' && onTabChange) onTabChange(id);
+    else setSelectedTab(id);
+  }
   function navigateTabs(event, index) {
     const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : null;
     if (next === null) return;
     event.preventDefault();
-    setSelectedTab(tabs[next][0]);
+    selectTab(tabs[next][0]);
     buttons.current[next]?.focus();
   }
-  const props = { user, filters, report, apiBase, onReportChange, onSelectPlan, onSelectPeriod, preferredPeriodType, preferredPeriodKey };
+  const props = { user, filters, report, apiBase, onReportChange, onSelectPlan, preferredPeriodType };
   if (area === 'admin' && user?.role !== 'admin') return null;
   return <section className="management" id={`${area}-content`} aria-label={title}>
-    <div className="management-tabs" role="tablist" aria-label={title}>{tabs.map(([id, label], index) => <button key={id} ref={(element) => { buttons.current[index] = element; }} id={`${area}-tab-${id}`} type="button" role="tab" aria-selected={tab === id} aria-controls={`${area}-panel-${id}`} tabIndex={tab === id ? 0 : -1} onClick={() => setSelectedTab(id)} onKeyDown={(event) => navigateTabs(event, index)}>{label}</button>)}</div>
+    <div className="management-tabs" role="tablist" aria-label={title}>{tabs.map(([id, label], index) => <button key={id} ref={(element) => { buttons.current[index] = element; }} id={`${area}-tab-${id}`} type="button" role="tab" aria-selected={tab === id} aria-controls={`${area}-panel-${id}`} tabIndex={tab === id ? 0 : -1} onClick={() => selectTab(id)} onKeyDown={(event) => navigateTabs(event, index)}>{label}</button>)}</div>
     <div role="tabpanel" id={`${area}-panel-${tab}`} aria-labelledby={`${area}-tab-${tab}`} tabIndex={0}>
       {tab === 'plans' && <PlansPanel {...props} />}{tab === 'reconciliation' && <ReconciliationPanel {...props} />}{tab === 'closed' && <ClosedReportsPanel {...props} />}{tab === 'users' && user?.role === 'admin' && <UsersPanel {...props} />}{tab === 'operations' && user?.role === 'admin' && <OperationsPanel {...props} />}
     </div>

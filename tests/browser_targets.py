@@ -158,10 +158,26 @@ def main():
         wait_filters("2026-09-01", "2026-09-17")
         checks.append("Q1/Q2 exact dates; current Q3 stops today; future Q4 disabled; historical Q4 selectable")
 
-        page.get_by_role("navigation", name="Điều hướng chính", exact=True).get_by_role("link", name="Kế hoạch & đối soát", exact=True).click()
+        report_reads = len(state["requests"])
+        page.get_by_role("navigation", name="Điều hướng chính", exact=True).get_by_role("link", name="Kế hoạch", exact=True).click()
         management = page.locator("#management-content")
+        expect(page.get_by_role("heading", name="Kế hoạch", level=1, exact=True)).to_be_visible()
+        expect(management).to_have_attribute("aria-label", "Kế hoạch")
+        expect(page.locator(".filter-panel, .report-toolbar, .production-scope-selector")).to_have_count(0)
+        expect(page.locator(".throughput-progress, .management-secondary-progress")).to_have_count(0)
         create = management.locator("details.management-editor").first
+        management.get_by_role('combobox', name='Danh sách kế hoạch', exact=True).select_option('year')
+        management.get_by_label('Năm kế hoạch', exact=True).fill('2025')
         management.get_by_role('button', name='Tạo kế hoạch', exact=True).click()
+        expect(create.get_by_role('combobox', name='Loại kế hoạch', exact=True)).to_have_value('year')
+        expect(create.get_by_label('Năm áp dụng', exact=True)).to_have_value('2025')
+        assert state['payloads'] == [], 'opening a blank form from list filters must not save a plan'
+        create.locator('summary').click()
+        management.get_by_role('combobox', name='Danh sách kế hoạch', exact=True).select_option('month')
+        management.get_by_role('button', name='Tạo kế hoạch', exact=True).click()
+        expect(create.get_by_role('combobox', name='Loại kế hoạch', exact=True)).to_have_value('month')
+        expect(create.get_by_label('Tháng áp dụng', exact=True)).to_have_value('2026-09')
+        checks.append('blank plan form follows its own list period instead of the hidden report period')
         create.get_by_role('button', name='Lưu bản nháp', exact=True).click()
         expect(create.get_by_role('alert')).to_contain_text('Chưa lưu')
         expect(create.get_by_label('Giá trị kế hoạch', exact=True)).to_have_attribute('aria-invalid', 'true')
@@ -195,7 +211,8 @@ def main():
         assert state["payloads"][3]["start_date"] == "2026-09-05"
         assert all(row['amount'] == '4000' for row in state['payloads'])
         assert sum(row['path'] == '/dashboard' for row in state['requests']) == dashboard_reads, 'approval must not reread production SQL'
-        checks.append("month/quarter/year/custom company targets create drafts and approve through the real form")
+        assert not any(row['path'] == '/dashboard' or row['path'].startswith('/reports/') for row in state['requests'][report_reads:]), 'plan entry and approval must not request report progress'
+        checks.append("month/quarter/year/custom company targets create and approve using only planning APIs, with no report controls or progress panel")
 
         management.get_by_role('combobox', name='Danh sách kế hoạch', exact=True).select_option('year')
         annual_row = management.get_by_role('row').filter(has_text='SYNTHETIC-YEAR')
@@ -203,6 +220,7 @@ def main():
         expect(create.get_by_label('Giá trị kế hoạch', exact=True)).to_have_value('4.000')
         assert len(state['plans']) == 4 and all(plan['status'] == 'approved' for plan in state['plans'])
         annual_row.get_by_role('button', name='Xem tiến độ', exact=True).click()
+        expect(page.locator('.top-nav a[href="#overview"]')).to_have_attribute('aria-current', 'page')
         wait_filters('2026-01-01', '2026-09-17')
         expect(panel).to_contain_text('Năm 2026')
         panel.get_by_role('combobox', name='Kế hoạch đối chiếu', exact=True).select_option('month:2026-09')

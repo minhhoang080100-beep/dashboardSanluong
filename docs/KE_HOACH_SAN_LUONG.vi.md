@@ -2,11 +2,15 @@
 
 Trong **Báo cáo sản lượng**, chọn **Năm xem quý**, sau đó bấm **Quý 1**, **Quý 2**, **Quý 3** hoặc **Quý 4**. Quý đã kết thúc lấy đủ ba tháng; quý đang diễn ra lấy từ đầu quý đến hôm nay. Quý chưa bắt đầu chưa có số liệu thực tế để xem. Muốn xem quý của năm trước, đổi năm trước khi chọn quý.
 
+Trang **Kế hoạch** dùng để nhập, duyệt và tra cứu các phiên bản; không cần tải số liệu sản lượng trước. Dùng bộ lọc **Danh sách kế hoạch**, kỳ và **Xí nghiệp** ngay trong danh sách. Khi mở biểu mẫu tạo mới còn trống, kỳ và xí nghiệp lấy theo bộ lọc này; nội dung đang nhập được giữ nguyên khi mở lại biểu mẫu. Thanh tiến độ và bộ lọc kỳ báo cáo nằm tại **Báo cáo sản lượng**.
+
+Hai tab **Đối soát** và **Báo cáo đã chốt** vẫn dùng bộ lọc kỳ báo cáo và phạm vi sản lượng để kiểm tra hoặc chốt đúng dữ liệu. Bảng **Kế hoạch tháng theo từng xí nghiệp (tấn, TEU)** nằm trong tab **Đối soát**; bấm mở khi cần xem.
+
 ## Nhập chỉ tiêu
 
 Tài khoản có quyền **Quản lý** hoặc **Quản trị** thực hiện:
 
-1. Mở **Kế hoạch & đối soát → Kế hoạch**, bấm **Tạo kế hoạch**; hoặc bấm **Nhập kế hoạch** trên thanh tiến độ.
+1. Mở **Kế hoạch**, bấm **Tạo kế hoạch**; hoặc bấm **Nhập kế hoạch** trên thanh tiến độ của báo cáo.
 2. Chọn kỳ **tháng / quý / năm / tùy chọn**; nhập kỳ tương ứng. Khoảng ngày tùy chọn tối đa 366 ngày. Có thể lập kế hoạch cho kỳ tương lai.
 3. Chọn **Toàn công ty** hoặc xí nghiệp. Chọn **Sản lượng thông qua (tấn)**, nhập chỉ tiêu và văn bản hoặc nguồn giao kế hoạch. Nhập số theo cách viết Việt Nam: `150.000` là 150 nghìn tấn; `150.000,5` là 150 nghìn phẩy 5 tấn. Cũng có thể nhập `150000`. Kiểm tra giá trị diễn giải ngay dưới ô nhập; tối đa 6 chữ số thập phân.
 4. Lưu bản nháp, kiểm tra lại và bấm **Duyệt**. Bản nháp chưa dùng để tính tiến độ.
