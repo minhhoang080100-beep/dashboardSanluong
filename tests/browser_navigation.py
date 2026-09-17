@@ -8,6 +8,8 @@ from browser_auth_support import install_auth_fixture
 from browser_smoke import fixture
 from playwright.sync_api import expect, sync_playwright
 
+PLAN_PERIOD_QUERY_KEYS = {"period_type", "month", "quarter", "year", "start_date", "end_date", "voyage_id"}
+
 
 def install_navigation_fixture(page, role="admin"):
     state = {"requests": [], "reports": [], "plan_queries": []}
@@ -181,6 +183,11 @@ def main():
         workspace = direct.get_by_role("region", name="Kế hoạch", exact=True)
         expect(workspace.get_by_role("tab", name="Kế hoạch", exact=True)).to_have_attribute("aria-selected", "true")
         expect(workspace.get_by_text("Chưa có kế hoạch trong kỳ và phạm vi đã chọn.", exact=True)).to_be_visible()
+        expect(workspace.get_by_role("combobox", name="Danh sách kế hoạch", exact=True)).to_have_value("all")
+        expect(workspace.get_by_role("combobox", name="Xí nghiệp", exact=True)).to_have_value("all")
+        initial_plan_query = direct_state["plan_queries"][-1]
+        assert PLAN_PERIOD_QUERY_KEYS.isdisjoint(initial_plan_query)
+        assert initial_plan_query["terminal"] == ["all"] and initial_plan_query["page_size"] == ["25"]
         expect(direct.locator(".filter-panel, .report-toolbar, .production-scope-selector")).to_have_count(0)
         expect(direct.locator(".throughput-progress, .management-secondary-progress")).to_have_count(0)
         workspace.get_by_role("combobox", name="Danh sách kế hoạch", exact=True).select_option("year")
@@ -192,9 +199,15 @@ def main():
             workspace.get_by_role("combobox", name="Xí nghiệp", exact=True).select_option("ben_thuy")
         assert direct_state["plan_queries"][-1]["period_type"] == ["year"]
         assert direct_state["plan_queries"][-1]["year"] == ["2025"]
+        with direct.expect_response(lambda response: urlparse(response.url).path.removeprefix("/api") == "/plans"
+                                    and PLAN_PERIOD_QUERY_KEYS.isdisjoint(parse_qs(urlparse(response.url).query))):
+            workspace.get_by_role("combobox", name="Danh sách kế hoạch", exact=True).select_option("all")
+        assert PLAN_PERIOD_QUERY_KEYS.isdisjoint(direct_state["plan_queries"][-1])
+        assert direct_state["plan_queries"][-1]["terminal"] == ["ben_thuy"]
+        expect(workspace.get_by_label("Năm kế hoạch", exact=True)).to_have_count(0)
         assert direct_state["reports"] == []
         assert not any(path.startswith("/reports/") for path in direct_state["requests"])
-        checks.append("direct #management loads only plan data; its year and terminal filters work without any report")
+        checks.append("direct plans defaults to all periods and permitted terminals; filtered year selection and returning to all clear date parameters without reading a report")
 
         with direct.expect_response(lambda response: urlparse(response.url).path.removeprefix("/api") == "/dashboard"):
             workspace.get_by_role("tab", name="Báo cáo đã chốt", exact=True).click()

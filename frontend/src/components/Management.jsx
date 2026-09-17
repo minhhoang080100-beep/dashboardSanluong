@@ -261,8 +261,8 @@ function PlanDeleteDialog({ plan, trigger, fallbackFocus, apiBase, onDeleted, on
 function PlansPanel({ user, filters, apiBase, onSelectPlan, preferredPeriodType }) {
   const terminals = userTerminals(user);
   const [listPeriod, setListPeriod] = useState(() => planDateDefaults(filters.start_date, filters.end_date));
-  const [terminal, setTerminal] = useState(filters.terminal);
-  const [periodType, setPeriodType] = useState(() => planEntryPeriod(filters, preferredPeriodType));
+  const [terminal, setTerminal] = useState('all');
+  const [periodType, setPeriodType] = useState('all');
   const [page, setPage] = useState(1);
   const [revision, setRevision] = useState(0);
   const [form, setForm] = useState({ terminal: planTerminals(terminals).includes(filters.terminal) ? filters.terminal : terminals[0] || '', period_type: planEntryPeriod(filters, preferredPeriodType), ...planDateDefaults(filters.start_date, filters.end_date), metric: 'tonnage', amount: '', reference: '', note: '', voyage_id: '' });
@@ -284,9 +284,9 @@ function PlansPanel({ user, filters, apiBase, onSelectPlan, preferredPeriodType 
   const entry = validatePlanEntry(form, terminals);
   let periodQuery = {};
   let periodError = '';
-  try { if (periodType !== 'voyage') periodQuery = planPeriodFields({ ...listPeriod, period_type: periodType }); }
+  try { if (!['all', 'voyage'].includes(periodType)) periodQuery = planPeriodFields({ ...listPeriod, period_type: periodType }); }
   catch (error) { periodError = error.message; }
-  const result = itemsOrError(useResource(periodError ? null : queryPath('/plans', { ...periodQuery, period_type: periodType, terminal, page, page_size: 25, include_deleted: includeDeleted || undefined }), apiBase, revision));
+  const result = itemsOrError(useResource(periodError ? null : queryPath('/plans', { ...periodQuery, period_type: periodType === 'all' ? undefined : periodType, terminal, page, page_size: 25, include_deleted: includeDeleted || undefined }), apiBase, revision));
   const refresh = () => setRevision((value) => value + 1);
   const changePeriod = (key, value) => { setListPeriod((current) => ({ ...current, [key]: value })); setPage(1); };
   function openCreate(plan = null) {
@@ -295,8 +295,10 @@ function PlansPanel({ user, filters, apiBase, onSelectPlan, preferredPeriodType 
       setForm({ ...planDateDefaults(plan.period_start || filters.start_date, plan.period_end || filters.end_date), ...Object.fromEntries(Object.entries(plan).filter(([, value]) => value != null)), voyage_id: String(plan.voyage_id || ''), amount: planAmountInput(plan.amount_decimal ?? plan.amount) });
       setCopiedPlan(plan); setLastCreated(null);
     } else if (!form.amount && !form.reference && !form.note) {
-      const scopes = planTerminals(terminals, periodType);
-      setForm((value) => ({ ...value, ...listPeriod, period_type: periodType, terminal: scopes.includes(terminal) ? terminal : scopes[0] || '', voyage_id: '' }));
+      const entryPeriod = periodType === 'all' ? planEntryPeriod(filters, preferredPeriodType) : periodType;
+      const entryDates = periodType === 'all' ? planDateDefaults(filters.start_date, filters.end_date) : listPeriod;
+      const scopes = planTerminals(terminals, entryPeriod);
+      setForm((value) => ({ ...value, ...entryDates, period_type: entryPeriod, terminal: scopes.includes(terminal) ? terminal : scopes[0] || '', voyage_id: '' }));
       setCopiedPlan(null);
     }
     requestAnimationFrame(() => { createEditor.current?.scrollIntoView({ block: 'nearest' }); createEditor.current?.querySelector('input[inputmode="decimal"]')?.focus(); });
@@ -306,7 +308,15 @@ function PlansPanel({ user, filters, apiBase, onSelectPlan, preferredPeriodType 
     setAttempted(true); setTaskTarget('create');
     if (!entry.payload) { focusPlanError(event.currentTarget); return; }
     const outcome = await task.run((signal) => apiRequest('/plans', { method: 'POST', body: entry.payload, signal, baseUrl: apiBase }));
-    if (outcome.ok) { setLastCreated(outcome.result); setCopiedPlan(null); setAttempted(false); setForm((value) => ({ ...value, amount: '', note: '' })); setPeriodType(form.period_type); setListPeriod({ month: form.month, quarter: form.quarter, year: form.year, start_date: form.start_date, end_date: form.end_date }); setTerminal(form.terminal); setPage(1); refresh(); }
+    if (outcome.ok) {
+      setLastCreated(outcome.result); setCopiedPlan(null); setAttempted(false); setForm((value) => ({ ...value, amount: '', note: '' }));
+      if (periodType !== 'all') {
+        setPeriodType(form.period_type);
+        setListPeriod({ month: form.month, quarter: form.quarter, year: form.year, start_date: form.start_date, end_date: form.end_date });
+        setTerminal(form.terminal);
+      } else setTerminal((current) => current === 'all' ? current : form.terminal);
+      setPage(1); refresh();
+    }
   }
   async function approve(plan) {
     setTaskTarget('approve');
@@ -326,7 +336,7 @@ function PlansPanel({ user, filters, apiBase, onSelectPlan, preferredPeriodType 
   }
   return <div className="management-stack"><p className="management-caption plan-scope-caption">Kế hoạch áp dụng cho Cảng Nghệ Tĩnh.</p>
     <section className="management-card plans-section"><div className="management-heading"><h3 ref={listHeading} tabIndex={-1}>Kế hoạch và phiên bản</h3><div className="management-actions">{canManage(user) && <button className="button primary" type="button" disabled={task.busy || !terminals.length} onClick={() => openCreate()}><Plus size={15} />Tạo kế hoạch</button>}<button className="button" type="button" onClick={refresh} disabled={result.resource.loading}><RefreshCw size={15} />Tải lại</button></div></div>
-      <div className="management-filters"><label>Danh sách kế hoạch<select value={periodType} onChange={(event) => { setPeriodType(event.target.value); setPage(1); }}>{Object.entries(PLAN_PERIOD_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+      <div className="management-filters"><label>Danh sách kế hoạch<select value={periodType} onChange={(event) => { setPeriodType(event.target.value); setPage(1); }}><option value="all">Tất cả kế hoạch</option>{Object.entries(PLAN_PERIOD_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         {periodType === 'month' && <label>Tháng kế hoạch<input type="month" min="2000-01" max="2099-12" value={listPeriod.month} onChange={(event) => changePeriod('month', event.target.value)} /></label>}
         {periodType === 'quarter' && <QuarterFields value={listPeriod.quarter} onChange={(quarter) => changePeriod('quarter', quarter)} yearLabel="Năm kế hoạch" quarterLabel="Quý kế hoạch" />}
         {periodType === 'year' && <label>Năm kế hoạch<input type="number" min="2000" max="2099" step="1" value={listPeriod.year} onChange={(event) => changePeriod('year', event.target.value)} /></label>}
@@ -348,7 +358,7 @@ function PlansPanel({ user, filters, apiBase, onSelectPlan, preferredPeriodType 
       {deletedMessage && <p className="management-success" role="status">{deletedMessage}</p>}
       {lastApproved?.status === 'approved' && lastApproved.metric === 'tonnage' && lastApproved.period_type !== 'voyage' && onSelectPlan && <div className="management-success plan-approved-notice" role="status"><span>Đã duyệt {planPeriodLabel(lastApproved)} · {lastApproved.reference}. Xem tiến độ theo đúng kỳ kế hoạch.</span><PlanProgressButton plan={lastApproved} onSelectPlan={onSelectPlan} label="Xem tiến độ kế hoạch vừa duyệt" /></div>}
       {result.resource.data && (result.items.length ? <><div className="table-scroll plans-table-scroll"><table className="plans-table" role="table">
-        <caption className="sr-only">Kế hoạch và phiên bản trong kỳ, xí nghiệp đang chọn</caption>
+        <caption className="sr-only">{periodType === 'all' ? 'Kế hoạch và phiên bản của tất cả các kỳ trong phạm vi xí nghiệp đang chọn' : 'Kế hoạch và phiên bản trong kỳ, xí nghiệp đang chọn'}</caption>
         <colgroup><col className="plan-period-column" /><col className="plan-metric-column" /><col className="plan-amount-column" /><col className="plan-version-column" /><col className="plan-status-column" /><col className="plan-reference-column" /><col className="plan-actions-column" /></colgroup>
         <thead role="rowgroup"><tr role="row">{['Kỳ / xí nghiệp', 'Chỉ tiêu', 'Kế hoạch', 'Phiên bản', 'Trạng thái', 'Văn bản', 'Thao tác'].map((label) => <th key={label} scope="col" role="columnheader">{label}</th>)}</tr></thead>
         <tbody role="rowgroup">{result.items.map((plan) => <tr role="row" key={plan.id} id={`saved-plan-${plan.id}`} tabIndex={-1} className={[lastCreated?.id === plan.id && 'plan-saved-row', plan.is_deleted && 'plan-deleted-row'].filter(Boolean).join(' ') || undefined}>

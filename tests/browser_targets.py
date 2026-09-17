@@ -19,6 +19,7 @@ from playwright.sync_api import Error, expect, sync_playwright
 
 TODAY = date(2026, 9, 17)
 FILTER_KEYS = ("start_date", "end_date", "terminal", "production_scope")
+PLAN_PERIOD_QUERY_KEYS = {"period_type", "month", "quarter", "year", "start_date", "end_date", "voyage_id"}
 
 
 def main():
@@ -94,8 +95,14 @@ def main():
         elif path.endswith("/plan-progress"):
             route.fulfill(json={"eligible": False, "reason": "Synthetic monthly table is outside this check.", "rows": []})
         elif path == "/plans" and request.method == "GET":
-            items = [plan for plan in state["plans"] if plan["period_type"] == query.get("period_type", plan["period_type"])]
-            route.fulfill(json={"items": items, "total": len(items), "page": 1, "page_size": 25})
+            assert query.get("period_type") != "all", "all plans must omit period parameters"
+            items = [plan for plan in state["plans"]
+                     if all(str(plan.get(key)) == query[key] for key in PLAN_PERIOD_QUERY_KEYS if key in query)
+                     and (query.get("terminal", "all") == "all" or plan["terminal"] == query["terminal"])
+                     and (query.get("include_deleted") == "true" or not plan.get("is_deleted"))]
+            page_number = int(query.get("page", 1))
+            route.fulfill(json={"items": items[(page_number - 1) * 25:page_number * 25],
+                                "total": len(items), "page": page_number, "page_size": 25})
         elif path == "/plans" and request.method == "POST":
             body = request.post_data_json
             state["payloads"].append(deepcopy(body))
@@ -158,6 +165,14 @@ def main():
         wait_filters("2026-09-01", "2026-09-17")
         checks.append("Q1/Q2 exact dates; current Q3 stops today; future Q4 disabled; historical Q4 selectable")
 
+        # An older approved target exists only in this intercepted fixture. It
+        # must remain visible in All even while the report shows this month.
+        prior_key, _, _ = plan_period({"period_type": "year", "year": 2025})
+        state["plans"].append({**saved_plan_period("year", prior_key), "id": 1001,
+            "period_type": "year", "terminal": "all", "metric": "tonnage",
+            "amount": 1000, "amount_decimal": "1000", "reference": "SYNTHETIC-PRIOR-YEAR",
+            "version": 1, "revision": 2, "status": "approved", "is_current": True,
+            "created_at": "2025-01-01T05:00:00Z", "approved_at": "2025-01-01T05:00:00Z"})
         report_reads = len(state["requests"])
         page.get_by_role("navigation", name="Điều hướng chính", exact=True).get_by_role("link", name="Kế hoạch", exact=True).click()
         management = page.locator("#management-content")
@@ -165,12 +180,20 @@ def main():
         expect(management).to_have_attribute("aria-label", "Kế hoạch")
         expect(page.locator(".filter-panel, .report-toolbar, .production-scope-selector")).to_have_count(0)
         expect(page.locator(".throughput-progress, .management-secondary-progress")).to_have_count(0)
+        listing = management.get_by_role('combobox', name='Danh sách kế hoạch', exact=True)
+        expect(listing).to_have_value('all')
+        expect(management.get_by_role('combobox', name='Xí nghiệp', exact=True)).to_have_value('all')
+        expect(management.locator('.plans-table tbody tr').filter(has_text='SYNTHETIC-PRIOR-YEAR')).to_be_visible()
+        initial_plan_query = next(row['query'] for row in state['requests'][report_reads:] if row['path'] == '/plans')
+        assert PLAN_PERIOD_QUERY_KEYS.isdisjoint(initial_plan_query)
+        assert initial_plan_query['terminal'] == 'all' and initial_plan_query['page_size'] == '25'
         create = management.locator("details.management-editor").first
         management.get_by_role('combobox', name='Danh sách kế hoạch', exact=True).select_option('year')
         management.get_by_label('Năm kế hoạch', exact=True).fill('2025')
         management.get_by_role('button', name='Tạo kế hoạch', exact=True).click()
         expect(create.get_by_role('combobox', name='Loại kế hoạch', exact=True)).to_have_value('year')
         expect(create.get_by_label('Năm áp dụng', exact=True)).to_have_value('2025')
+        expect(create.get_by_role('combobox', name='Loại kế hoạch', exact=True).locator('option[value="all"]')).to_have_count(0)
         assert state['payloads'] == [], 'opening a blank form from list filters must not save a plan'
         create.locator('summary').click()
         management.get_by_role('combobox', name='Danh sách kế hoạch', exact=True).select_option('month')
@@ -178,6 +201,11 @@ def main():
         expect(create.get_by_role('combobox', name='Loại kế hoạch', exact=True)).to_have_value('month')
         expect(create.get_by_label('Tháng áp dụng', exact=True)).to_have_value('2026-09')
         checks.append('blank plan form follows its own list period instead of the hidden report period')
+        create.locator('summary').click()
+        listing.select_option('all')
+        management.get_by_role('button', name='Tạo kế hoạch', exact=True).click()
+        expect(create.get_by_role('combobox', name='Loại kế hoạch', exact=True)).to_have_value('month')
+        expect(create.get_by_role('combobox', name='Loại kế hoạch', exact=True).locator('option[value="all"]')).to_have_count(0)
         create.get_by_role('button', name='Lưu bản nháp', exact=True).click()
         expect(create.get_by_role('alert')).to_contain_text('Chưa lưu')
         expect(create.get_by_label('Giá trị kế hoạch', exact=True)).to_have_attribute('aria-invalid', 'true')
@@ -205,6 +233,11 @@ def main():
             expect(plan_row).to_contain_text("Bản nháp")
             plan_row.get_by_role("button", name="Duyệt", exact=True).click()
             expect(plan_row).to_contain_text("Đã duyệt")
+            expect(listing).to_have_value('all')
+            expect(management.get_by_role('combobox', name='Xí nghiệp', exact=True)).to_have_value('all')
+            latest_list = next(row['query'] for row in reversed(state['requests']) if row['path'] == '/plans' and row['method'] == 'GET')
+            assert PLAN_PERIOD_QUERY_KEYS.isdisjoint(latest_list)
+            assert latest_list['page'] == '1'
         assert [row["period_type"] for row in state["payloads"]] == ["month", "quarter", "year", "custom"]
         assert state["payloads"][1]["quarter"] == "2026-Q3"
         assert state["payloads"][2]["year"] == 2026
@@ -214,11 +247,25 @@ def main():
         assert not any(row['path'] == '/dashboard' or row['path'].startswith('/reports/') for row in state['requests'][report_reads:]), 'plan entry and approval must not request report progress'
         checks.append("month/quarter/year/custom company targets create and approve using only planning APIs, with no report controls or progress panel")
 
+        expect(management.locator('.plans-table tbody tr')).to_have_count(5)
+        for reference in ('SYNTHETIC-MONTH', 'SYNTHETIC-QUARTER', 'SYNTHETIC-YEAR', 'SYNTHETIC-CUSTOM', 'SYNTHETIC-PRIOR-YEAR'):
+            expect(management.locator('.plans-table tbody tr').filter(has_text=reference)).to_be_visible()
+        listing.select_option('year')
+        management.get_by_label('Năm kế hoạch', exact=True).fill('2025')
+        expect(management.locator('.plans-table tbody tr')).to_have_count(1)
+        expect(management.locator('.plans-table tbody tr')).to_contain_text('SYNTHETIC-PRIOR-YEAR')
+        listing.select_option('all')
+        expect(management.locator('.plans-table tbody tr')).to_have_count(5)
+        returned_query = next(row['query'] for row in reversed(state['requests']) if row['path'] == '/plans' and row['method'] == 'GET')
+        assert PLAN_PERIOD_QUERY_KEYS.isdisjoint(returned_query)
+        checks.append('all plans shows four period types across different years; year filtering narrows rows and returning to all clears every period parameter')
+
         management.get_by_role('combobox', name='Danh sách kế hoạch', exact=True).select_option('year')
+        management.get_by_label('Năm kế hoạch', exact=True).fill('2026')
         annual_row = management.get_by_role('row').filter(has_text='SYNTHETIC-YEAR')
         annual_row.get_by_role('button', name='Tạo phiên bản mới', exact=True).click()
         expect(create.get_by_label('Giá trị kế hoạch', exact=True)).to_have_value('4.000')
-        assert len(state['plans']) == 4 and all(plan['status'] == 'approved' for plan in state['plans'])
+        assert len(state['plans']) == 5 and all(plan['status'] == 'approved' for plan in state['plans'])
         annual_row.get_by_role('button', name='Xem tiến độ', exact=True).click()
         expect(page.locator('.top-nav a[href="#overview"]')).to_have_attribute('aria-current', 'page')
         wait_filters('2026-01-01', '2026-09-17')

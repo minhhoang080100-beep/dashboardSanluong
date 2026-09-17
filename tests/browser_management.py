@@ -13,6 +13,8 @@ from browser_voyages import report_fixture
 from backend.control_store import plan_period, saved_plan_period, throughput_progress_item
 from playwright.sync_api import expect, sync_playwright
 
+PLAN_PERIOD_QUERY_KEYS = {"period_type", "month", "quarter", "year", "start_date", "end_date", "voyage_id"}
+
 
 def open_workspace(page, mode):
     labels = {"management": "Kế hoạch", "admin": "Quản trị"}
@@ -49,7 +51,7 @@ def main():
         query = {key: values[0] for key, values in parse_qs(urlparse(request.url).query).items()}
         method = request.method
         body = request.post_data_json if "application/json" in request.headers.get("content-type", "") else None
-        state["calls"].append({"path": path, "method": method})
+        state["calls"].append({"path": path, "method": method, "query": query})
         if path == "/auth/login":
             if body["username"] not in ("test_admin", "test_viewer"):
                 route.fulfill(status=401, json={"detail": {"message": "Thông tin đăng nhập không đúng."}})
@@ -103,7 +105,10 @@ def main():
             if state["expire_plans"]:
                 route.fulfill(status=401, json={"detail": {"message": "Phiên đăng nhập đã hết hạn."}})
                 return
-            items = [plan for plan in state["plans"] if plan["period_type"] == query.get("period_type", plan["period_type"])
+            assert query.get("period_type") != "all", "all plans must omit period parameters"
+            items = [plan for plan in state["plans"]
+                     if all(str(plan.get(key)) == query[key] for key in PLAN_PERIOD_QUERY_KEYS if key in query)
+                     and (query.get("terminal", "all") == "all" or plan["terminal"] == query["terminal"])
                      and (query.get("include_deleted") == "true" or not plan.get("is_deleted"))]
             page_number = int(query.get("page", 1))
             route.fulfill(json={"items": items[(page_number - 1) * 25:page_number * 25], "total": len(items), "page": page_number, "page_size": 25})
@@ -238,16 +243,25 @@ def main():
         expect(page.get_by_role("heading", name="Kế hoạch", level=1, exact=True)).to_be_visible()
         expect(management).to_have_attribute("aria-label", "Kế hoạch")
         expect(management.get_by_role("heading", name="Kế hoạch và phiên bản", exact=True)).to_be_visible()
+        expect(management.get_by_text("Chưa có kế hoạch trong kỳ và phạm vi đã chọn.", exact=True)).to_be_visible()
+        expect(management.get_by_role("combobox", name="Danh sách kế hoạch", exact=True)).to_have_value("all")
+        expect(management.get_by_role("combobox", name="Xí nghiệp", exact=True)).to_have_value("all")
+        initial_plan_query = next(call["query"] for call in state["calls"] if call["path"] == "/plans")
+        assert PLAN_PERIOD_QUERY_KEYS.isdisjoint(initial_plan_query)
+        assert initial_plan_query["terminal"] == "all" and initial_plan_query["page_size"] == "25"
         expect(page.locator(".filter-panel, .report-toolbar, .production-scope-selector")).to_have_count(0)
         expect(page.locator(".kpi-card, .throughput-progress, .management-secondary-progress")).to_have_count(0)
         assert not any(call["path"] == "/dashboard" or call["path"].startswith("/reports/") for call in state["calls"])
         checks.append("direct plans entry authenticates and changes the initial password without requesting production reports")
 
         management.get_by_role("button", name="Tạo kế hoạch", exact=True).click()
+        expect(management.get_by_role("combobox", name="Loại kế hoạch", exact=True).locator('option[value="all"]')).to_have_count(0)
         management.get_by_label("Giá trị kế hoạch", exact=True).fill("100")
         management.get_by_label("Số văn bản / nguồn phê duyệt", exact=True).fill("KIỂM THỬ KH-01")
         management.get_by_role("button", name="Lưu bản nháp", exact=True).click()
         expect(management.locator(".plans-table").get_by_role("cell", name="KIỂM THỬ KH-01", exact=True)).to_be_visible()
+        expect(management.get_by_role("combobox", name="Danh sách kế hoạch", exact=True)).to_have_value("all")
+        assert PLAN_PERIOD_QUERY_KEYS.isdisjoint(next(call["query"] for call in reversed(state["calls"]) if call["path"] == "/plans" and call["method"] == "GET"))
         draft_row = management.get_by_role("row").filter(has_text="KIỂM THỬ KH-01")
         draft_row.get_by_role("button", name="Sửa nháp", exact=True).click()
         editor = management.get_by_role("region", name="Sửa bản nháp kế hoạch", exact=True)

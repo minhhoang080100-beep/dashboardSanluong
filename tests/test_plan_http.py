@@ -5,7 +5,7 @@ import pytest
 from backend.control_api import get_repository, get_store
 from backend.control_store import ControlError, ControlStore
 from backend.main import app
-from test_control_store import state
+from test_control_store import state, account
 
 
 @pytest.fixture
@@ -108,3 +108,66 @@ def test_approved_annual_target_is_discoverable_from_month_report_over_http(plan
     assert len(available)==1 and available[0]['key']=='year:2026'
     assert available[0]['start_date']=='2026-01-01' and available[0]['end_date']=='2026-12-31'
     assert available[0]['plans'][0]['id']==created['id'] and 'actual' not in available[0]
+
+
+def test_unfiltered_http_listing_spans_all_periods_years_versions_and_authorized_scopes(plan_api):
+    client, store, actor, headers = plan_api
+    active = []
+    # Seed only the temporary control store; voyage listing must not consult TOS.
+    old_month = payload(period_type='month', month='2025-12')
+    for status in ['approved', 'approved', 'draft']:
+        item = store.create_plan(actor, **old_month)
+        if status == 'approved':
+            item = store.approve_plan(actor, item['id'], item['revision'])
+        active.append(item)
+    mixed = [
+        ('cua_lo', {'period_type':'quarter', 'quarter':'2026-Q3'}, 'cancelled'),
+        ('ben_thuy', {'period_type':'year', 'year':2027}, 'draft'),
+        ('all', {'period_type':'custom', 'start_date':'2026-09-01', 'end_date':'2026-09-17'}, 'approved'),
+        ('cua_lo', {'period_type':'voyage', 'voyage_id':101}, 'draft'),
+    ]
+    for terminal, period, status in mixed:
+        item = store.create_plan(actor, **{**payload(**period), 'terminal':terminal})
+        if status == 'approved':
+            item = store.approve_plan(actor, item['id'], item['revision'])
+        if status == 'cancelled':
+            item = store.cancel_plan(actor, item['id'], item['revision'], 'Synthetic cancelled version')
+        active.append(item)
+    removed = store.create_plan(actor, **payload(period_type='year', year=2024))
+    store.delete_plan(actor, removed['id'], removed['revision'])
+
+    response = client.get('/api/plans?terminal=all', headers=headers)
+    assert response.status_code == 200, response.text
+    listed = response.json()
+    expected_ids = sorted((item['id'] for item in active), reverse=True)
+    assert listed['total'] == 7 and listed['page'] == 1 and listed['page_size'] == 50
+    assert [item['id'] for item in listed['items']] == expected_ids
+    assert {item['period_type'] for item in listed['items']} == {'month', 'quarter', 'year', 'custom', 'voyage'}
+    assert {item['status'] for item in listed['items']} == {'draft', 'approved', 'cancelled'}
+    assert {item['terminal'] for item in listed['items']} == {'all', 'cua_lo', 'ben_thuy'}
+    assert any(item['year'] == 2027 for item in listed['items'])
+    month_versions = sorted((item for item in listed['items'] if item['period_type'] == 'month'), key=lambda item:item['version'])
+    assert [item['version'] for item in month_versions] == [1, 2, 3]
+    assert [item['is_current'] for item in month_versions] == [False, True, False]
+    assert all(item['month'] == '2025-12' for item in month_versions)
+    assert client.get('/api/plans', headers=headers).json() == listed
+
+    pages = [client.get(f'/api/plans?terminal=all&page_size=3&page={page}', headers=headers).json()
+             for page in [1, 2, 3]]
+    assert all(page['total'] == 7 and page['page_size'] == 3 for page in pages)
+    assert [item['id'] for page in pages for item in page['items']] == expected_ids
+    assert client.get('/api/plans?terminal=all&page=99', headers=headers).json()['items'] == []
+    assert client.get('/api/plans?page_size=101', headers=headers).status_code == 422
+    included = client.get('/api/plans?terminal=all&include_deleted=true', headers=headers).json()
+    assert included['total'] == 8 and included['items'][0]['id'] == removed['id']
+    assert included['items'][0]['is_deleted'] is True
+
+    reader = account(store, actor, terminals=['cua_lo'], username='mixed-plan-reader')
+    reader_headers = {'Authorization':'Bearer '+reader['token']}
+    scoped = client.get('/api/plans?terminal=all&include_deleted=true', headers=reader_headers)
+    assert scoped.status_code == 200
+    expected_scoped = [item['id'] for item in reversed(active) if item['terminal'] == 'cua_lo']
+    assert scoped.json()['total'] == 2
+    assert [item['id'] for item in scoped.json()['items']] == expected_scoped
+    assert client.get('/api/plans?terminal=ben_thuy', headers=reader_headers).status_code == 403
+    assert client.get('/api/plans?terminal=all').status_code == 401
