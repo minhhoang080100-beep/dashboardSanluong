@@ -4,6 +4,8 @@ Trong **Báo cáo sản lượng**, chọn **Năm xem quý**, sau đó bấm **Q
 
 Trang **Kế hoạch** dùng để nhập, duyệt và tra cứu các phiên bản; không cần tải số liệu sản lượng trước. Dùng bộ lọc **Danh sách kế hoạch**, kỳ và **Xí nghiệp** ngay trong danh sách. Khi mở biểu mẫu tạo mới còn trống, kỳ và xí nghiệp lấy theo bộ lọc này; nội dung đang nhập được giữ nguyên khi mở lại biểu mẫu. Thanh tiến độ và bộ lọc kỳ báo cáo nằm tại **Báo cáo sản lượng**.
 
+Các nút **Tạo kế hoạch**, **Nhập Excel** và **Tải lại** nằm ở đầu danh sách. Biểu mẫu chỉ hiện khi mở bằng nút tương ứng; bấm tiêu đề biểu mẫu để thu gọn. Với Excel, bấm **Nhập Excel**, tải mẫu, chọn tệp rồi **Xem trước**; chỉ nhập dữ liệu sau khi kiểm tra và bấm nút xác nhận nhập. Số lượng kết quả tính theo phiên bản kế hoạch. Nếu đang lọc mà không có kết quả, dùng **Bỏ bộ lọc** để quay về tất cả kế hoạch trong phạm vi được cấp.
+
 Mặc định danh sách chọn **Tất cả kế hoạch** và **Trong phạm vi được cấp**: hiển thị kế hoạch của mọi loại kỳ, mọi năm và các phiên bản được phép xem. Danh sách chia trang 25 dòng; dùng **Trước / Sau** khi có nhiều kết quả. Có thể lọc theo tuần, tháng, quý, năm, khoảng ngày hoặc chuyến tàu rồi chọn lại **Tất cả kế hoạch** để bỏ giới hạn kỳ. Kế hoạch đã xóa chỉ hiện khi bật **Hiện kế hoạch đã xóa**. Khi đang xem tất cả, biểu mẫu tạo mới vẫn yêu cầu một loại kỳ cụ thể; không có loại kế hoạch “tất cả”.
 
 Hai tab **Đối soát** và **Báo cáo đã chốt** vẫn dùng bộ lọc kỳ báo cáo và phạm vi sản lượng để kiểm tra hoặc chốt đúng dữ liệu. Bảng **Kế hoạch tháng theo từng xí nghiệp (tấn, TEU)** nằm trong tab **Đối soát**; bấm mở khi cần xem.

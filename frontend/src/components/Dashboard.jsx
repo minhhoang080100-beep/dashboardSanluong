@@ -42,7 +42,7 @@ function NativeUnits({ rows }) {
   if (!rows?.length) return null;
   return <section className="panel native-units-panel" aria-labelledby="native-units-title">
     <div className="panel-heading"><div><h2 id="native-units-title">Sản lượng chưa cộng vào tấn</h2><p>Các đơn vị dưới đây được trình bày riêng, không cộng với nhau hoặc với chỉ tiêu tấn.</p></div><Package size={22} className="heading-icon" aria-hidden="true" /></div>
-    <div className="table-scroll"><table className="native-units-table"><caption className="sr-only">Số liệu ngoài chỉ tiêu tấn theo xí nghiệp và đơn vị gốc</caption><thead><tr><th scope="col">Xí nghiệp</th><th scope="col">Đơn vị nguồn</th><th scope="col">Sản lượng ghi nhận</th><th scope="col">Số bản ghi</th></tr></thead><tbody>{rows.map((row, index) => <tr key={`${row.terminal_id}-${row.unit_code}-${index}`}><th scope="row">{row.terminal_name}</th><td>{row.unit_name || 'Chưa xác định'}{row.unit_code && <small className="native-unit-code">{row.unit_code}</small>}</td><td>{formatNumber(row.value)}</td><td>{formatNumber(row.record_count, 0)}</td></tr>)}</tbody></table></div>
+    <div className="table-scroll" role="region" aria-label="Bảng đơn vị nguồn khác, có thể cuộn ngang" tabIndex={0}><table className="native-units-table"><caption className="sr-only">Số liệu ngoài chỉ tiêu tấn theo xí nghiệp và đơn vị gốc</caption><thead><tr><th scope="col">Xí nghiệp</th><th scope="col">Đơn vị nguồn</th><th scope="col">Sản lượng ghi nhận</th><th scope="col">Số bản ghi</th></tr></thead><tbody>{rows.map((row, index) => <tr key={`${row.terminal_id}-${row.unit_code}-${index}`}><th scope="row">{row.terminal_name}</th><td>{row.unit_name || 'Chưa xác định'}{row.unit_code && <small className="native-unit-code">{row.unit_code}</small>}</td><td>{formatNumber(row.value)}</td><td>{formatNumber(row.record_count, 0)}</td></tr>)}</tbody></table></div>
   </section>;
 }
 
@@ -84,7 +84,7 @@ function Customers({ rows, total, hasSignedInput, onInspect }) {
   const ratios = ratioAvailability(rows.map((row) => row.volume), total, hasSignedInput);
   return <section className="panel customer-panel" id="customers" aria-labelledby="customers-title">
     <div className="panel-heading"><div><h2 id="customers-title">Sản lượng theo khách hàng</h2><p>Xếp hạng theo tấn trong kỳ báo cáo</p></div><Users size={22} className="heading-icon" aria-hidden="true" /></div>
-    {!rows.length ? <EmptyPanel /> : <div className="table-scroll"><table className="customer-table">
+    {!rows.length ? <EmptyPanel /> : <div className="table-scroll" role="region" aria-label="Bảng khách hàng, có thể cuộn ngang" tabIndex={0}><table className="customer-table">
       <caption className="sr-only">Khách hàng có sản lượng qua cảng lớn nhất trong phạm vi đã chọn</caption>
       <thead><tr><th scope="col">Hạng</th><th scope="col">Khách hàng</th><th scope="col">Sản lượng <span>(tấn)</span></th><th scope="col">Tỷ trọng toàn kỳ</th></tr></thead>
       <tbody>{rows.map((row, index) => {
@@ -361,6 +361,7 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
           return <button type="button" key={key} disabled={!dates} aria-pressed={Boolean(dates && filters.start_date === dates.start_date && filters.end_date === dates.end_date)} onClick={() => applyPreset(key)}>{label}</button>;
         })}
       </div></div>
+      <div className="calendar-filters">
       <form className="week-filter" onSubmit={applyWeek}>
         <label htmlFor="report-week">Chọn tuần<input id="report-week" type="week" min="1900-W01" max={isoWeekValue(reportToday)} pattern="[0-9]{4}-W[0-9]{2}" placeholder="2026-W38" required value={selectedWeek} aria-describedby="week-help" aria-invalid={Boolean(selectedWeek && !selectedWeekDates)} onChange={(event) => setSelectedWeek(event.target.value)} /></label>
         <button type="submit" className="button" disabled={!selectedWeekDates}>Xem tuần</button>
@@ -374,12 +375,14 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
         })}</div>
         <span>Quý hiện tại tính đến hôm nay.</span>
       </div>
+      </div>
       <form className="filter-form" onSubmit={applyFilters}>
         <label htmlFor="start-date">Từ ngày<input id="start-date" type="date" required max={todayInVietnam()} value={draft.start_date} onChange={(event) => { setDraft({ ...draft, start_date: event.target.value }); setFormError(''); }} /></label>
         <label htmlFor="end-date">Đến ngày<input id="end-date" type="date" required max={todayInVietnam()} value={draft.end_date} onChange={(event) => { setDraft({ ...draft, end_date: event.target.value }); setFormError(''); }} /></label>
         <label htmlFor="terminal">Phạm vi xí nghiệp<select id="terminal" value={draft.terminal} onChange={(event) => setDraft({ ...draft, terminal: event.target.value })}>{allowedTerminals(user).map((key) => <option key={key} value={key}>{TERMINALS[key]}</option>)}</select></label>
-        <button className="button primary" type="submit"><Check size={16} aria-hidden="true" />Áp dụng</button>
+        <div className="filter-actions"><button className="button primary" type="submit"><Check size={16} aria-hidden="true" />Áp dụng</button>
         <button className="button icon-button" type="button" aria-label="Tải lại báo cáo đang chọn" title="Tải lại báo cáo đang chọn" disabled={loading} onClick={() => { requestReport(true); setExportMessage(''); }}><RefreshCw size={17} aria-hidden="true" /></button>
+        </div>
       </form>
       {formError && <p className="form-error" role="alert">{formError}</p>}
       {hasDraft && !formError && <p className="draft-note">Bộ lọc đã thay đổi. Chọn “Áp dụng” để cập nhật báo cáo.</p>}

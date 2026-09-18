@@ -182,6 +182,8 @@ def main():
         active_view(direct, "management")
         workspace = direct.get_by_role("region", name="Kế hoạch", exact=True)
         expect(workspace.get_by_role("tab", name="Kế hoạch", exact=True)).to_have_attribute("aria-selected", "true")
+        expect(workspace.get_by_role("heading", name="Danh sách kế hoạch", exact=True)).to_be_visible()
+        expect(workspace.locator("details.management-editor").first).to_be_hidden()
         expect(workspace.get_by_text("Chưa có kế hoạch trong kỳ và phạm vi đã chọn.", exact=True)).to_be_visible()
         expect(workspace.get_by_role("combobox", name="Danh sách kế hoạch", exact=True)).to_have_value("all")
         expect(workspace.get_by_role("combobox", name="Xí nghiệp", exact=True)).to_have_value("all")

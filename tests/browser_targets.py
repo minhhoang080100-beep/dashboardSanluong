@@ -199,6 +199,7 @@ def main():
         assert PLAN_PERIOD_QUERY_KEYS.isdisjoint(initial_plan_query)
         assert initial_plan_query['terminal'] == 'all' and initial_plan_query['page_size'] == '25'
         create = management.locator("details.management-editor").first
+        expect(create).to_be_hidden()
         management.get_by_role('combobox', name='Danh sách kế hoạch', exact=True).select_option('year')
         management.get_by_label('Năm kế hoạch', exact=True).fill('2025')
         management.get_by_role('button', name='Tạo kế hoạch', exact=True).click()
@@ -207,6 +208,8 @@ def main():
         expect(create.get_by_role('combobox', name='Loại kế hoạch', exact=True).locator('option[value="all"]')).to_have_count(0)
         assert state['payloads'] == [], 'opening a blank form from list filters must not save a plan'
         create.locator('summary').click()
+        expect(create).to_be_hidden()
+        expect(management.get_by_role('button', name='Tạo kế hoạch', exact=True)).to_have_attribute('aria-expanded', 'false')
         management.get_by_role('combobox', name='Danh sách kế hoạch', exact=True).select_option('month')
         management.get_by_role('button', name='Tạo kế hoạch', exact=True).click()
         expect(create.get_by_role('combobox', name='Loại kế hoạch', exact=True)).to_have_value('month')
@@ -268,6 +271,18 @@ def main():
             expect(management.locator('.plans-table tbody tr').filter(has_text=reference)).to_be_visible()
         listing.select_option('week')
         management.get_by_label('Tuần kế hoạch', exact=True).fill('2026-W38')
+        week_filter = management.get_by_label('Tuần kế hoạch', exact=True)
+        terminal_filter = management.get_by_role('combobox', name='Xí nghiệp', exact=True)
+        for width in (390, 700, 1440):
+            page.set_viewport_size({'width': width, 'height': 1050})
+            expect(week_filter).to_be_visible()
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
+            for control in (listing, week_filter, terminal_filter):
+                assert control.evaluate('element => { const box = element.getBoundingClientRect(); return box.left >= 0 && box.right <= innerWidth; }'), width
+            if width == 1440:
+                tops = [control.bounding_box()['y'] for control in (listing, week_filter, terminal_filter)]
+                assert max(tops) - min(tops) <= 2, tops
+        checks.append('weekly list filters fit mobile and tablet widths and align inputs on desktop despite the week date helper')
         expect(management.locator('.plans-table tbody tr')).to_have_count(1)
         expect(management.locator('.plans-table tbody tr')).to_contain_text('SYNTHETIC-WEEK')
         listing.select_option('year')

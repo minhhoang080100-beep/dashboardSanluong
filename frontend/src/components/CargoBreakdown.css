@@ -1,5 +1,6 @@
 .cargo-panel { align-self: start; }
-.cargo-heading { align-items: center; gap: 12px; margin-bottom: 20px; }
+.cargo-heading { align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
+.cargo-heading > div { min-width: 0; flex: 1 1 190px; }
 .cargo-heading h3 { font-size: 15px; }
 .cargo-heading h3 svg { color: var(--primary-color); }
 .cargo-heading p { margin-top: 6px; font-size: 12px; }
@@ -14,7 +15,7 @@
 .cargo-row-content { flex: 1; min-width: 0; }
 .cargo-row-label { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; font-size: 13px; line-height: 1.5; }
 .cargo-name { overflow-wrap: anywhere; min-width: 0; }
-.cargo-value { flex-shrink: 0; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+.cargo-value { flex: 0 1 auto; min-width: 0; max-width: 55%; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; overflow-wrap: anywhere; }
 .cargo-row-leading .cargo-name, .cargo-row-leading .cargo-value { color: var(--text-main); font-weight: 650; }
 .cargo-bar { height: 4px; margin-top: 7px; overflow: hidden; background: #e5ebe6; border-radius: 2px; }
 .cargo-bar > span { display: block; height: 100%; background: #a0b5ab; border-radius: inherit; }
@@ -33,7 +34,8 @@
 .cargo-other-list { list-style: none; padding: 0 12px; margin: 0; background: var(--surface-muted); border-radius: 6px; }
 .cargo-other-list li { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; padding: 11px 0; font-size: 12px; overflow-wrap: anywhere; }
 .cargo-other-list li + li { border-top: 1px solid var(--border-color); }
-.cargo-other-value { flex-shrink: 0; color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.cargo-other-list li > span:first-child { min-width: 0; }
+.cargo-other-value { flex: 0 0 auto; max-width: 48%; text-align: right; color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 @media (max-width: 1000px) and (min-width: 601px) {
   .cargo-heading { align-items: flex-start; flex-wrap: wrap; gap: 8px; }
 }

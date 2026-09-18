@@ -1,5 +1,6 @@
 .management { min-width: 0; color: var(--text-main); }
-.management-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.management-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px 16px; margin-bottom: 20px; }
+.management-heading > :is(h2, h3, h4) { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
 .management-heading h2 { font-size: 21px; font-weight: 650; }
 .management-heading h3 { font-size: 18px; font-weight: 600; line-height: 1.4; }
 .management-heading > span { color: var(--text-muted); font-size: 13px; }
@@ -14,7 +15,7 @@
 .management-empty .button { margin-top: 12px; }
 .management-error { padding: 13px 16px; border: 1px solid #e7d8d1; border-radius: 10px; background: #f6eeeb; color: #995c51; font-size: 13px; line-height: 1.6; margin: 14px 0; overflow-wrap: anywhere; }
 .management-error .button { margin-top: 10px; }
-.management-success { padding: 12px 16px; border: 1px solid var(--border-color); background: #eef3ee; color: var(--primary-color); border-radius: 10px; font-size: 13px; line-height: 1.6; margin: 14px 0; }
+.management-success { padding: 12px 16px; border: 1px solid var(--border-color); background: #eef3ee; color: var(--primary-color); border-radius: 10px; font-size: 13px; line-height: 1.6; margin: 14px 0; overflow-wrap: anywhere; }
 .management-filters, .management-upload { display: flex; flex-wrap: wrap; align-items: end; gap: 16px; margin: 18px 0 24px; }
 .management-filters > span { font-size: 13px; color: var(--text-muted); padding-bottom: 10px; }
 .management label { display: flex; flex-direction: column; gap: 8px; color: var(--text-muted); font-size: 13px; font-weight: 500; line-height: 1.5; min-width: 0; }
@@ -40,7 +41,7 @@
 .plan-approved-notice { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
 .management-secondary-progress > summary { color: var(--text-muted); font-size: 13px; cursor: pointer; }
 .management-secondary-progress > .management-caption { margin: 12px 0; }
-.management-actions, .management-row-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
+.management-actions, .management-row-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; min-width: 0; }
 .management-actions > span { color: var(--text-muted); font-size: 12px; }
 .management-editor { margin: 18px 0; border: 1px solid var(--border-color); border-radius: 11px; padding: 16px 18px; background: var(--surface-muted); }
 .management-editor > summary { color: var(--text-main); cursor: pointer; font-size: 14px; font-weight: 600; line-height: 1.6; }
@@ -63,7 +64,7 @@
 .management-issue-editor { padding: 4px 8px 12px; }
 .management-issue-editor .management-form { margin-top: 8px; }
 .management-note { padding: 8px 0; font-size: 13px; }
-.management-note p { white-space: pre-wrap; margin: 7px 0; }
+.management-note p { white-space: pre-wrap; margin: 7px 0; overflow-wrap: anywhere; }
 .management-password { padding: 20px; border: 1px solid var(--border-color); border-radius: 11px; background: var(--surface-muted); display: grid; gap: 16px; margin-bottom: 22px; }
 .management-password p { margin-top: 5px; font-size: 13px; color: var(--text-muted); }
 .management-password input { font-family: monospace; }
@@ -79,10 +80,10 @@
 .management-metrics span { display: block; color: var(--text-muted); font-size: 12px; }
 .management-metrics strong { display: block; margin-top: 12px; font-size: 26px; font-weight: 600; line-height: 1.2; font-variant-numeric: tabular-nums; }
 .management-config { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 24px; margin: 24px 0 0; }
-.management-config > div { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border-color); }
+.management-config > div { display: flex; justify-content: space-between; align-items: flex-start; min-width: 0; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border-color); }
 .management-config dt, .management-config dd { font-size: 13px; line-height: 1.5; }
 .management-config dt { color: var(--text-muted); }
-.management-config dd { margin: 0; white-space: nowrap; }
+.management-config dd { min-width: 0; margin: 0; text-align: right; overflow-wrap: anywhere; }
 @media (max-width: 750px) {
   .management-card { padding: 18px; }
   .management-heading { align-items: flex-start; }
@@ -105,17 +106,17 @@
 .management h4 { font-size: 15px; font-weight: 600; line-height: 1.5; margin-bottom: 14px; }
 .management-heading h4 { margin-bottom: 0; }
 .management-tabs button:hover:not([aria-selected="true"]) { background: var(--surface-hover); color: var(--text-main); }
-.management .button { min-height: 42px; border-radius: 10px; font-size: 13px; padding: 10px 14px; }
+.management .button { min-height: 42px; max-width: 100%; border-radius: 10px; font-size: 13px; line-height: 1.5; padding: 10px 14px; white-space: normal; }
 .management-row-actions .button { font-size: 12px; padding: 8px 11px; min-height: 36px; border-radius: 9px; }
 .management :is(input, select, textarea, button, summary):focus-visible { outline: 2px solid var(--primary-color); outline-offset: 3px; }
 .management input:disabled, .management select:disabled, .management textarea:disabled { background: var(--surface-muted); color: var(--text-muted); cursor: not-allowed; }
 .management input::placeholder, .management textarea::placeholder { color: var(--text-muted); opacity: .9; }
 .management input[type="file"]::file-selector-button { margin-right: 12px; padding: 7px 10px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--surface-muted); color: var(--text-main); font: inherit; cursor: pointer; }
 .management-editor > summary::marker { color: var(--primary-color); }
-.management-editor > h4 { margin: 0 0 10px; }
+.management-editor > h4 { margin: 0 0 10px; overflow-wrap: anywhere; }
 .management table thead th { font-size: 12px; color: var(--text-muted); background: var(--surface-muted); }
 .management table tbody tr:hover { background: var(--surface-hover); }
-.management .table-scroll { border: 1px solid var(--border-color); border-radius: 10px; scrollbar-width: thin; }
+.management .table-scroll { max-width: 100%; border: 1px solid var(--border-color); border-radius: 10px; scrollbar-width: thin; overscroll-behavior-x: contain; }
 .management-preview thead th { position: sticky; top: 0; z-index: 1; }
 .management-import-errors li + li { margin-top: 6px; }
 .management-note, .management-password p, .management-comparison p, .management-comparison > small { line-height: 1.65; }
@@ -127,6 +128,37 @@
 .plans-section { container: plans / inline-size; }
 .plans-section > .management-heading { flex-wrap: wrap; }
 .plans-section > .management-heading > h3 { min-width: 0; }
+.plans-section .plan-list-heading { align-items: flex-start; gap: 18px 24px; margin-bottom: 22px; }
+.plans-section .plan-list-title { flex: 1 1 260px; min-width: 0; }
+.plans-section .plan-list-title h3 { margin: 0; font-size: 20px; line-height: 1.4; }
+.plans-section .plan-list-subtitle { margin: 6px 0 0; color: var(--text-muted); font-size: 13px; line-height: 1.6; }
+.plans-section .plan-header-actions { gap: 8px; }
+.plans-section .plan-header-actions .button { min-height: 44px; justify-content: center; white-space: nowrap; }
+.plans-section .plan-filter-panel { padding: 18px 20px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--surface-muted); }
+.plans-section .plan-list-filters { display: grid; grid-template-columns: minmax(180px, 220px) minmax(260px, 1fr) minmax(230px, 300px); grid-template-areas: "kind period terminal"; align-items: start; gap: 18px; margin: 0; }
+.plans-section .plan-list-filters:is([data-period="all"], [data-period="voyage"]) { grid-template-columns: minmax(180px, 220px) minmax(230px, 300px); grid-template-areas: "kind terminal"; }
+.plans-section .plan-kind-filter { grid-area: kind; }
+.plans-section .plan-period-filter { grid-area: period; display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 14px; min-width: 0; }
+.plans-section .plan-period-filter[data-paired="true"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.plans-section .plan-terminal-filter { grid-area: terminal; }
+.plans-section .plan-list-filters :is(input, select) { width: 100%; }
+.plans-section .plan-list-filters .plan-field-help { margin-top: 7px; font-weight: 400; }
+.plans-section .plan-filter-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 20px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border-color); }
+.plans-section .plan-list-count { margin: 0; color: var(--text-muted); font-size: 12px; font-weight: 500; line-height: 1.6; }
+.plans-section .plan-filter-footer .plan-deleted-toggle { margin: 0; min-height: 28px; font-size: 12px; font-weight: 400; }
+.plans-section .plan-results { margin-top: 20px; min-width: 0; }
+.plans-section .plan-list-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; min-height: 210px; padding: 28px 20px; text-align: center; }
+.plans-section .plan-empty-icon { display: grid; place-items: center; width: 44px; height: 44px; margin-bottom: 3px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--surface-muted); color: var(--primary-color); }
+.plans-section .plan-list-empty h4 { margin: 0; font-size: 15px; line-height: 1.5; font-weight: 600; }
+.plans-section .plan-list-empty p { max-width: 460px; margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.65; }
+.plans-section .plan-list-empty .button { margin-top: 5px; min-height: 44px; }
+.plans-section .plan-entry-editor { margin: 20px 0 0; padding: 18px 20px; background: var(--surface-muted); }
+.plans-section .plan-entry-editor[hidden] { display: none; }
+.plans-section .plan-entry-editor > summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; min-height: 30px; list-style: none; }
+.plans-section .plan-entry-editor > summary::-webkit-details-marker { display: none; }
+.plans-section .plan-entry-editor > summary::before { content: ""; width: 6px; height: 6px; border-right: 2px solid var(--primary-color); border-bottom: 2px solid var(--primary-color); transform: rotate(45deg); flex: 0 0 auto; margin: 0 2px 4px 0; }
+.plans-section .plan-entry-editor > summary > span { flex: 1 1 auto; }
+.plans-section .plan-entry-editor > summary > small { color: var(--text-muted); font-size: 12px; line-height: 1.5; font-weight: 400; }
 .management .plan-deleted-toggle { display: inline-flex; flex-direction: row; align-items: center; gap: 9px; margin: 0 0 18px; cursor: pointer; }
 .management .plans-table-scroll { position: relative; }
 .management .plans-table { min-width: 1000px; table-layout: fixed; width: 100%; }
@@ -182,6 +214,28 @@
   .management .plans-table .plan-actions-cell { grid-column: auto; }
   .plans-table .management-row-actions .button { flex: 1 1 auto; justify-content: center; }
 }
+@container plans (max-width: 900px) {
+  .plans-section .plan-list-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-areas: "kind terminal" "period period"; gap: 16px; }
+  .plans-section .plan-list-filters:is([data-period="all"], [data-period="voyage"]) { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-areas: "kind terminal"; }
+}
+@container plans (max-width: 600px) {
+  .plans-section .plan-list-heading { gap: 16px; margin-bottom: 18px; }
+  .plans-section .plan-list-title { flex-basis: 100%; }
+  .plans-section .plan-header-actions { width: 100%; }
+  .plans-section .plan-header-actions .button { flex: 1 1 auto; }
+  .plans-section .plan-header-actions .primary { flex-basis: 100%; }
+  .plans-section .plan-filter-panel { padding: 16px; }
+  .plans-section .plan-list-filters,
+  .plans-section .plan-list-filters:is([data-period="all"], [data-period="voyage"]) { grid-template-columns: minmax(0, 1fr); grid-template-areas: "kind" "period" "terminal"; }
+  .plans-section .plan-list-filters:is([data-period="all"], [data-period="voyage"]) { grid-template-areas: "kind" "terminal"; }
+  .plans-section .plan-period-filter[data-paired="true"] { grid-template-columns: minmax(0, 1fr); }
+  .plans-section .plan-filter-footer { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .plans-section .plan-filter-footer .plan-deleted-toggle { min-height: 44px; }
+  .plans-section .plan-entry-editor { padding: 14px 16px; }
+  .plans-section .plan-entry-editor > summary { min-height: 44px; }
+  .plans-section .plan-entry-editor > summary > small { flex-basis: 100%; padding-left: 22px; }
+  .plans-section .plan-list-empty { min-height: 200px; padding: 24px 10px; }
+}
 @media (max-width: 1000px) {
   .management-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -200,5 +254,6 @@
   .plan-delete-actions .button { flex: 1 1 auto; justify-content: center; }
 }
 @media (pointer: coarse) {
-  .management-row-actions .button { min-height: 42px; }
+  .management .button, .management-tabs button, .management-row-actions .button { min-height: 44px; }
+  .management-scope label { min-height: 44px; }
 }

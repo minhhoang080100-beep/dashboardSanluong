@@ -40,7 +40,7 @@ export default function History({ monthlyRows, dailyRows, hasRecords, onInspect 
             </BarChart>
           </ResponsiveContainer>
         </div>}
-        <details className="chart-data"><summary>Xem bảng số liệu theo {timeLabel}</summary><div className="table-scroll"><table><caption className="sr-only">Sản lượng theo {timeLabel} trong kỳ báo cáo</caption><thead><tr><th scope="col">{byDay ? 'Ngày' : 'Tháng'}</th><th scope="col">Tấn</th><th scope="col">TEU</th></tr></thead><tbody>{rows.map((row) => <tr key={row.date}><th scope="row">{byDay && onInspect ? <button className="inspect-label" type="button" onClick={(event) => onInspect(row.date, event)}>{dateLabel(row.date)}</button> : dateLabel(row.date)}</th><td>{formatNumber(row.tonnage)}</td><td>{formatNumber(row.teu)}</td></tr>)}</tbody></table></div></details>
+        <details className="chart-data"><summary>Xem bảng số liệu theo {timeLabel}</summary><div className="table-scroll" role="region" aria-label={`Bảng số liệu theo ${timeLabel}, có thể cuộn ngang`} tabIndex={0}><table><caption className="sr-only">Sản lượng theo {timeLabel} trong kỳ báo cáo</caption><thead><tr><th scope="col">{byDay ? 'Ngày' : 'Tháng'}</th><th scope="col">Tấn</th><th scope="col">TEU</th></tr></thead><tbody>{rows.map((row) => <tr key={row.date}><th scope="row">{byDay && onInspect ? <button className="inspect-label" type="button" onClick={(event) => onInspect(row.date, event)}>{dateLabel(row.date)}</button> : dateLabel(row.date)}</th><td>{formatNumber(row.tonnage)}</td><td>{formatNumber(row.teu)}</td></tr>)}</tbody></table></div></details>
       </>}
     </article>
   );

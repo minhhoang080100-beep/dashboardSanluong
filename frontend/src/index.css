@@ -27,6 +27,7 @@
   color-scheme: light;
 }
 * { box-sizing: border-box; }
+@media (min-width: 600px) { html { scrollbar-gutter: stable; } }
 body { margin: 0; min-width: 320px; }
 button, input, select, textarea { font: inherit; }
 button, a, input, select, textarea, summary { -webkit-tap-highlight-color: transparent; }
@@ -35,6 +36,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 a { color: var(--primary-color); }
 button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid var(--focus-color); outline-offset: 3px; }
 ::selection { color: var(--text-main); background: #d7e3da; }
+[role="region"][tabindex="0"]:focus-visible { outline: 2px solid var(--focus-color); outline-offset: 3px; }
 h1, h2, h3, p { margin: 0; }
 svg { flex-shrink: 0; }
 section[id], article[id] { scroll-margin-top: 20px; }

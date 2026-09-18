@@ -242,7 +242,11 @@ def main():
         expect(management.get_by_role("tab")).to_have_count(3)
         expect(page.get_by_role("heading", name="Kế hoạch", level=1, exact=True)).to_be_visible()
         expect(management).to_have_attribute("aria-label", "Kế hoạch")
-        expect(management.get_by_role("heading", name="Kế hoạch và phiên bản", exact=True)).to_be_visible()
+        expect(management.get_by_role("heading", name="Danh sách kế hoạch", exact=True)).to_be_visible()
+        expect(management.locator("details.management-editor").first).to_be_hidden()
+        expect(management.get_by_role("button", name="Tạo kế hoạch", exact=True)).to_have_attribute("aria-expanded", "false")
+        expect(management.get_by_role("button", name="Nhập Excel", exact=True)).to_have_attribute("aria-expanded", "false")
+        expect(management.get_by_label("Tệp kế hoạch (.xlsx)", exact=True)).to_be_hidden()
         expect(management.get_by_text("Chưa có kế hoạch trong kỳ và phạm vi đã chọn.", exact=True)).to_be_visible()
         expect(management.get_by_role("combobox", name="Danh sách kế hoạch", exact=True)).to_have_value("all")
         expect(management.get_by_role("combobox", name="Xí nghiệp", exact=True)).to_have_value("all")
@@ -255,6 +259,7 @@ def main():
         checks.append("direct plans entry authenticates and changes the initial password without requesting production reports")
 
         management.get_by_role("button", name="Tạo kế hoạch", exact=True).click()
+        expect(management.get_by_role("button", name="Tạo kế hoạch", exact=True)).to_have_attribute("aria-expanded", "true")
         expect(management.get_by_role("combobox", name="Loại kế hoạch", exact=True).locator('option[value="all"]')).to_have_count(0)
         management.get_by_label("Giá trị kế hoạch", exact=True).fill("100")
         management.get_by_label("Số văn bản / nguồn phê duyệt", exact=True).fill("KIỂM THỬ KH-01")
@@ -287,7 +292,8 @@ def main():
         draft_row.get_by_role("button", name="Lịch sử", exact=True).click()
         expect(management.get_by_role("region", name="Lịch sử kế hoạch", exact=True)).to_contain_text("KIỂM THỬ LỊCH SỬ")
         management.get_by_role("button", name="Đóng lịch sử", exact=True).click()
-        management.get_by_text("Nhập kế hoạch từ Excel", exact=True).click()
+        management.get_by_role("button", name="Nhập Excel", exact=True).click()
+        expect(management.get_by_role("button", name="Nhập Excel", exact=True)).to_have_attribute("aria-expanded", "true")
         management.get_by_label("Tệp kế hoạch (.xlsx)", exact=True).set_input_files({"name": "synthetic-plan.xlsx", "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "buffer": b"intercepted fixture only"})
         management.get_by_role("button", name="Xem trước", exact=True).click()
         expect(management.get_by_text("KIỂM THỬ EXCEL", exact=True)).to_be_visible()
@@ -304,7 +310,7 @@ def main():
         expect(imported_row).to_contain_text("Đã hủy")
         create = management.locator("details.management-editor").first
         if not create.evaluate("element => element.open"):
-            create.locator("summary").click()
+            management.get_by_role("button", name="Tạo kế hoạch", exact=True).click()
         create.get_by_role("combobox", name="Loại kế hoạch", exact=True).select_option("voyage")
         create.get_by_label("Tìm tàu hoặc mã chuyến", exact=True).fill("OUTSIDE")
         create.get_by_role("button", name="Tìm chuyến", exact=True).click()
@@ -382,7 +388,7 @@ def main():
         expect(confirmation).to_have_count(0)
         expect(deletion_row).to_have_count(0)
         expect(history).to_have_count(0)
-        expect(management.get_by_role("heading", name="Kế hoạch và phiên bản", exact=True)).to_be_focused()
+        expect(management.get_by_role("heading", name="Danh sách kế hoạch", exact=True)).to_be_focused()
         assert len([call for call in state["calls"] if call["path"] == "/dashboard"]) == before_reports
         expect(management.locator(".throughput-progress, .management-secondary-progress")).to_have_count(0)
         assert len([call for call in state["calls"] if call["path"].endswith("/throughput-progress")]) == before_progress

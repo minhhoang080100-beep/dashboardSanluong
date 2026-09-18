@@ -57,10 +57,10 @@ export default function Auth({ children }) {
     <img src={portLogo} alt="Cảng Nghệ Tĩnh" width="918" height="577" />
     <h1>{user ? 'Đổi mật khẩu' : 'Đăng nhập'}</h1>
     <p>{user ? 'Đặt mật khẩu riêng để sử dụng tài khoản.' : 'Báo cáo sản lượng'}</p>
-    <form onSubmit={user ? changePassword : login}>
-      {!user ? <><label>Tài khoản<input name="username" autoComplete="username" required maxLength={80} autoFocus /></label><label>Mật khẩu<input name="password" type="password" autoComplete="current-password" required maxLength={256} /></label></> : <>
+    <form onSubmit={user ? changePassword : login} aria-busy={busy}>
+      {!user ? <><label>Tài khoản<input name="username" autoComplete="username" autoCapitalize="none" autoCorrect="off" spellCheck={false} required maxLength={80} autoFocus /></label><label>Mật khẩu<input name="password" type="password" autoComplete="current-password" required maxLength={256} /></label></> : <>
         <label>Mật khẩu hiện tại<input name="current_password" type="password" autoComplete="current-password" required maxLength={256} autoFocus /></label>
-        <label>Mật khẩu mới<input name="new_password" type="password" autoComplete="new-password" required minLength={12} maxLength={128} /></label>
+        <div className="auth-field"><label>Mật khẩu mới<input name="new_password" type="password" autoComplete="new-password" aria-describedby="password-requirements" required minLength={12} maxLength={128} /></label><p id="password-requirements" className="auth-field-help">Tối thiểu 12 ký tự.</p></div>
         <label>Nhập lại mật khẩu mới<input name="confirm_password" type="password" autoComplete="new-password" required minLength={12} maxLength={128} /></label>
       </>}
       {error && <p role="alert" className="auth-error">{error}</p>}

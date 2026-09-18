@@ -17,9 +17,21 @@ function permittedHash(hash, user) {
 }
 
 function AppShell({ user, logout, changePassword }) {
+  const shell = useRef(null);
+  const header = useRef(null);
   const main = useRef(null);
   const [hash, setHash] = useState(() => permittedHash(window.location.hash, user));
   const activeView = hash === '#management' ? 'management' : hash === '#admin' ? 'admin' : 'reports';
+  useEffect(() => {
+    const element = header.current;
+    if (!element) return;
+    const measure = () => shell.current?.style.setProperty('--header-height', `${element.getBoundingClientRect().height}px`);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   useEffect(() => {
     const handleHash = () => {
       const next = permittedHash(window.location.hash, user);
@@ -37,9 +49,9 @@ function AppShell({ user, logout, changePassword }) {
   }, [hash]);
 
   return (
-    <div className="app-shell">
+    <div ref={shell} className="app-shell">
       <a className="skip-link" href="#main-content" onClick={(event) => { event.preventDefault(); main.current?.focus(); }}>Đến nội dung chính</a>
-      <header className="top-header">
+      <header ref={header} className="top-header">
         <div className="header-content">
           <a className="brand" href="#overview" aria-label="Cảng Nghệ Tĩnh — Báo cáo sản lượng">
             <img className="brand-logo" src={portLogo} width="918" height="577" alt="NgheTinhPort – Cảng Nghệ Tĩnh" />
@@ -49,7 +61,7 @@ function AppShell({ user, logout, changePassword }) {
               <a className="nav-item" href={href} key={href} aria-current={activeView === view ? 'page' : undefined} onClick={() => { if (window.location.hash === href) window.scrollTo({ top: 0, behavior: 'instant' }); }}><Icon size={17} aria-hidden="true" /><span>{label}</span></a>
             ))}
           </nav>
-          <div className="user-tools"><span>{user.display_name}</span><button className="button" type="button" onClick={changePassword}>Đổi mật khẩu</button><button className="button" type="button" onClick={logout}>Đăng xuất</button></div>
+          <div className="user-tools"><span title={user.display_name}>{user.display_name}</span><button className="button" type="button" onClick={changePassword}>Đổi mật khẩu</button><button className="button" type="button" onClick={logout}>Đăng xuất</button></div>
         </div>
       </header>
       <main ref={main} className="main-content" id="main-content" tabIndex={-1}>
