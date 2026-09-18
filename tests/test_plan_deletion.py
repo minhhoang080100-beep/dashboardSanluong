@@ -114,20 +114,22 @@ def test_deleted_draft_does_not_disable_approved_plan_and_cannot_be_changed(stat
 
 
 @pytest.mark.parametrize('kind,period', [('month', {'month':'2026-01'}),
+    ('week', {'week':'2026-W03'}),
     ('quarter', {'quarter':'2026-Q1'}), ('year', {'year':2026}),
     ('custom', {'start_date':'2026-01-01', 'end_date':'2026-01-31'})])
 def test_every_period_progress_and_navigation_excludes_deleted_current_without_old_fallback(state, kind, period):
     store, actor, _, _ = state
     old = target(store, actor, period_type=kind, **period)
     current = target(store, actor, period_type=kind, amount=200, **period)
-    assert store.throughput_progress(actor, report())['items'][0]['target'] == 200
+    snapshot = report(start='2026-01-12', end='2026-01-13') if kind == 'week' else report()
+    assert store.throughput_progress(actor, snapshot)['items'][0]['target'] == 200
     store.delete_plan(actor, current['id'], current['revision'])
-    progress = store.throughput_progress(actor, report())
+    progress = store.throughput_progress(actor, snapshot)
     assert progress['items'] == progress['available_periods'] == []
     assert not store.get_plan(actor, old['id'])['is_current']
     replacement = target(store, actor, period_type=kind, amount=300, **period)
     assert replacement['version'] == 3
-    assert store.throughput_progress(actor, report())['items'][0]['plans'][0]['id'] == replacement['id']
+    assert store.throughput_progress(actor, snapshot)['items'][0]['plans'][0]['id'] == replacement['id']
 
 
 def test_deleted_company_target_does_not_fall_back_to_terminal_sum(state):

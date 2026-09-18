@@ -10,6 +10,12 @@ import pytest
 from backend import workbook_io
 
 
+LEGACY_PLAN_COLUMNS_8 = ['Xí nghiệp', 'Loại kế hoạch', 'Tháng', 'ID chuyến', 'Chỉ tiêu', 'Sản lượng', 'Số văn bản', 'Ghi chú']
+LEGACY_PLAN_KEYS_8 = ['terminal', 'period_type', 'month', 'voyage_id', 'metric', 'amount', 'reference', 'note']
+LEGACY_PLAN_COLUMNS_12 = [*LEGACY_PLAN_COLUMNS_8, 'Quý', 'Năm', 'Từ ngày', 'Đến ngày']
+LEGACY_PLAN_KEYS_12 = [*LEGACY_PLAN_KEYS_8, 'quarter', 'year', 'start_date', 'end_date']
+
+
 def make_plan(rows=None, headers=None):
     book = Workbook()
     sheet = book.active
@@ -43,8 +49,13 @@ def test_template_roundtrips_headers_validation_and_empty_state(tmp_path):
     book = load_workbook(target)
     assert book.sheetnames == ["Kế hoạch", "Hướng dẫn"]
     assert [cell.value for cell in book["Kế hoạch"][1]] == workbook_io.PLAN_COLUMNS
+    assert workbook_io.PLAN_COLUMNS == [*LEGACY_PLAN_COLUMNS_12, 'Tuần']
+    assert workbook_io.PLAN_KEYS == [*LEGACY_PLAN_KEYS_12, 'week']
     assert len(book["Kế hoạch"].data_validations.dataValidation) == 3
     assert book["Kế hoạch"]["D2"].number_format == "@"
+    assert book["Kế hoạch"]["M2"].number_format == "@"
+    period_validation = next(item for item in book['Kế hoạch'].data_validations.dataValidation if 'B2' in item)
+    assert period_validation.formula1 == '"week,month,quarter,year,custom,voyage"'
     book.close()
     preview = workbook_io.parse_plan_workbook(target.read_bytes())
     assert preview["valid"] is False and preview["rows"] == []
@@ -78,10 +89,69 @@ def test_import_requires_bounded_nonnegative_native_number_cells(value):
     assert preview["errors"][0]["row"] == 2
 
 
-@pytest.mark.parametrize("headers", [list(reversed(workbook_io.PLAN_COLUMNS)), ["Wrong", *workbook_io.PLAN_COLUMNS[1:]], workbook_io.PLAN_COLUMNS[:-1]])
+@pytest.mark.parametrize("headers", [list(reversed(workbook_io.PLAN_COLUMNS)), ["Wrong", *workbook_io.PLAN_COLUMNS[1:]],
+                                     LEGACY_PLAN_COLUMNS_12[:-1], [*workbook_io.PLAN_COLUMNS, 'Extra'],
+                                     [*LEGACY_PLAN_COLUMNS_12, 'Week'], [*LEGACY_PLAN_COLUMNS_12, 'week']])
 def test_wrong_headers_are_rejected(headers):
     with pytest.raises(ValueError, match="cột"):
         workbook_io.parse_plan_workbook(make_plan([month_row()], headers))
+
+
+@pytest.mark.parametrize('headers', [LEGACY_PLAN_COLUMNS_8, LEGACY_PLAN_KEYS_8, LEGACY_PLAN_COLUMNS_12, LEGACY_PLAN_KEYS_12])
+def test_legacy_templates_still_import_without_moving_existing_columns(headers):
+    rows = [month_row()[:len(headers)], month_row(period_type='voyage', month=None, voyage_id='00101')[:len(headers)]]
+    if len(headers) == 12:
+        rows.append(month_row(period_type='quarter', month=None, quarter='2026-Q3')[:12])
+    preview = workbook_io.parse_plan_workbook(make_plan(rows, headers))
+    assert preview['valid'] and not preview['errors']
+    assert preview['rows'][0]['month'] == '2026-09'
+    assert preview['rows'][1]['voyage_id'] == 101
+    assert all(row['week'] is None for row in preview['rows'])
+    if len(headers) == 12:
+        assert preview['rows'][2]['quarter'] == '2026-Q3'
+
+
+@pytest.mark.parametrize('headers', [LEGACY_PLAN_COLUMNS_8, LEGACY_PLAN_COLUMNS_12])
+def test_legacy_headers_cannot_hide_unlabelled_week_values(headers):
+    preview = workbook_io.parse_plan_workbook(make_plan([month_row(period_type='week', month=None, week='2026-W38')], headers))
+    assert not preview['valid'] and not preview['rows']
+    assert preview['errors'][0]['row'] == 2
+    assert 'ngoài các cột' in preview['errors'][0]['message']
+
+
+@pytest.mark.parametrize('headers', [workbook_io.PLAN_COLUMNS, workbook_io.PLAN_KEYS])
+def test_weekly_import_normalizes_iso_week_and_allows_future_and_year_crossing_targets(headers):
+    weeks = [' 2026-W38 ', '2020-W53', '2099-W01']
+    rows = [month_row(period_type='week', month=None, week=week) for week in weeks]
+    preview = workbook_io.parse_plan_workbook(make_plan(rows, headers))
+    assert preview['valid'] and not preview['errors']
+    assert [row['week'] for row in preview['rows']] == ['2026-W38', '2020-W53', '2099-W01']
+    assert all(row['period_type'] == 'week' and row['month'] is None for row in preview['rows'])
+
+
+@pytest.mark.parametrize('changes', [
+    {'week': None}, {'week': ''}, {'week': '2025-W53'}, {'week': '2026-W00'},
+    {'week': '2026-W54'}, {'week': '2026-w38'}, {'week': '2026-W8'},
+    {'week': '1999-W52'}, {'week': '2100-W01'}, {'week': 202638},
+    {'week': '2026-W38', 'month': '2026-09'}, {'week': '2026-W38', 'start_date': '2026-09-14'},
+])
+def test_weekly_import_reports_invalid_or_conflicting_period_fields(changes):
+    row = month_row(**{'period_type': 'week', 'month': None, **changes})
+    preview = workbook_io.parse_plan_workbook(make_plan([row]))
+    assert not preview['valid'] and not preview['rows']
+    assert preview['errors'][0]['row'] == 2
+    assert 'Kỳ kế hoạch' in preview['errors'][0]['message']
+
+
+def test_weekly_import_detects_duplicate_after_normalizing_week_text():
+    row = {'period_type': 'week', 'month': None, 'week': '2026-W38'}
+    preview = workbook_io.parse_plan_workbook(make_plan([month_row(**row), month_row(**{**row, 'week': ' 2026-W38 '})]))
+    assert not preview['valid'] and len(preview['rows']) == 1
+    assert preview['errors'][0]['row'] == 3 and 'Trùng' in preview['errors'][0]['message']
+    distinct = workbook_io.parse_plan_workbook(make_plan([
+        month_row(**row), month_row(**row, terminal='ben_thuy'), month_row(**row, metric='teu'),
+    ]))
+    assert distinct['valid'] and len(distinct['rows']) == 3
 
 
 def test_duplicate_plan_key_is_reported_without_silently_summing_or_replacing():
@@ -120,11 +190,15 @@ def test_zip_limits_and_active_content_rejected_before_xml_loader(monkeypatch, c
         workbook_io.parse_plan_workbook(buffer.getvalue())
 
 
-def test_row_count_and_forged_dimensions_are_bounded():
+@pytest.mark.parametrize('headers,last_column', [(LEGACY_PLAN_COLUMNS_12, 'L'), (workbook_io.PLAN_COLUMNS, 'M')])
+def test_row_count_and_forged_dimensions_are_bounded(headers, last_column):
     with pytest.raises(ValueError, match="500"):
         workbook_io.parse_plan_workbook(make_plan([month_row()] * 501))
-    original = make_plan([month_row()])
-    forged = replace_zip_member(original, "xl/worksheets/sheet1.xml", lambda xml: xml.replace(b'A1:L2', b'A1:L1048576'))
+    original = make_plan([month_row()[:len(headers)]], headers)
+    expected = f'A1:{last_column}2'.encode()
+    with zipfile.ZipFile(BytesIO(original)) as archive:
+        assert expected in archive.read('xl/worksheets/sheet1.xml')
+    forged = replace_zip_member(original, "xl/worksheets/sheet1.xml", lambda xml: xml.replace(expected, f'A1:{last_column}1048576'.encode()))
     with pytest.raises(ValueError, match="500"):
         workbook_io.parse_plan_workbook(forged)
 
@@ -254,4 +328,22 @@ def test_legacy_export_is_labelled_without_reclassifying_or_mutating_saved_repor
     assert summary['Phiên bản quy tắc cầu cập đầu tiên'] == 'Chưa được lưu trong bản dữ liệu này'
     assert book['Tác nghiệp']['R2'].value == 'Chưa lưu bằng chứng phân loại'
     assert snapshot == unchanged
+    book.close()
+
+
+def test_weekly_progress_export_preserves_full_target_week_and_partial_actual():
+    snapshot = report([])
+    snapshot['meta']['filters'].update(start_date='2026-09-14', end_date='2026-09-18')
+    snapshot['throughput_progress'] = {'items': [{
+        'period_type': 'week', 'period_key': '2026-W38', 'start_date': '2026-09-14', 'end_date': '2026-09-20',
+        'target': 1000, 'actual': 600, 'completion_percent': 60, 'provisional_completion_percent': None,
+        'achieved': False, 'provisional': False, 'status': 'ready', 'target_source': 'company',
+        'plans': [{'id': 17, 'version': 2, 'reference': 'KH-TUAN-38'}],
+    }]}
+    book = load_workbook(BytesIO(workbook_io.report_workbook(snapshot, [])))
+    sheet = book['Mục tiêu thông qua']
+    assert [sheet.cell(2, col).value for col in range(1, 8)] == [
+        'Tuần', '2026-W38', '2026-09-14', '2026-09-20', 1000, 600, 60,
+    ]
+    assert sheet['L2'].value == '17 / v2' and sheet['M2'].value == 'KH-TUAN-38'
     book.close()

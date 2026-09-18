@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildPlanPayload, buildPlanUpdatePayload, buildUserPayload, canManage, parseVietnamesePlanAmount, planAmountInput, planDateDefaults, planDeletePayload, planEntryPeriod, planPeriodEligibility, planPeriodFields, planPeriodLabel, planTerminals, queryPath, userTerminals, validatedItems, validatePlanEntry, validatedPlanPreview } from './management-data.js';
+import { buildPlanPayload, buildPlanUpdatePayload, buildUserPayload, canManage, parseVietnamesePlanAmount, planAmountInput, planDateDefaults, planDeletePayload, planEntryPeriod, planPeriodEligibility, planPeriodFields, planPeriodLabel, planTerminals, planWeekDates, queryPath, userTerminals, validatedItems, validatePlanEntry, validatedPlanPreview } from './management-data.js';
 
 test('deleting a plan requires its actual revision and never guesses a missing version', () => {
   for (const status of ['draft', 'approved', 'cancelled']) {
@@ -75,6 +75,7 @@ test('planning entry follows the selected quarter or year without treating a cus
   assert.equal(planEntryPeriod({ start_date: '2026-09-05', end_date: '2026-09-17' }), 'custom');
   assert.equal(planEntryPeriod({ start_date: '2026-01-01', end_date: '2026-01-17' }, 'year'), 'year');
   assert.equal(planEntryPeriod({ start_date: '2026-01-01', end_date: '2026-03-31' }, 'custom'), 'custom');
+  assert.equal(planEntryPeriod({ start_date: '2026-06-01', end_date: '2026-06-07' }, 'week'), 'week');
 });
 
 test('time-based targets support company scope only with both terminal grants and never for a voyage', () => {
@@ -89,9 +90,41 @@ test('time-based targets support company scope only with both terminal grants an
   assert.deepEqual(buildUserPayload({ username: 'viewer', display_name: 'Viewer', role: 'viewer', terminals: ['all', 'cua_lo'] }).terminals, ['cua_lo']);
 });
 
+test('weekly plans keep all seven days, permit future weeks and use the ISO year across calendar boundaries', () => {
+  assert.deepEqual(planWeekDates('2026-W38'), { start_date: '2026-09-14', end_date: '2026-09-20' });
+  assert.deepEqual(planWeekDates('2030-W01'), { start_date: '2029-12-31', end_date: '2030-01-06' });
+  assert.deepEqual(planWeekDates('2026-W53'), { start_date: '2026-12-28', end_date: '2027-01-03' });
+  assert.deepEqual(planWeekDates('2099-W53'), { start_date: '2099-12-28', end_date: '2100-01-03' });
+  assert.deepEqual(planWeekDates('2000-W01'), { start_date: '2000-01-03', end_date: '2000-01-09' });
+  assert.equal(planDateDefaults('2027-01-01').week, '2026-W53');
+  assert.equal(planPeriodLabel({ period_type: 'week', week: '2026-W38' }), 'Tuần 38/2026 · 14/09/2026 – 20/09/2026');
+  assert.equal(planPeriodLabel({ period_type: 'week', week: '2026-W53' }), 'Tuần 53/2026 · 28/12/2026 – 03/01/2027');
+});
+
+test('weekly plan validation rejects invalid weeks and safely clears inactive fields when switching draft types', () => {
+  const form = { terminal: 'all', period_type: 'week', week: '2026-W38', month: '2026-09', year: 2026, metric: 'tonnage', amount: '12.345,67', reference: ' KH-W38 ' };
+  const validated = validatePlanEntry(form, ['cua_lo', 'ben_thuy']);
+  assert.deepEqual(validated.errors, {});
+  assert.deepEqual(validated.payload, { terminal: 'all', period_type: 'week', week: '2026-W38', metric: 'tonnage', amount: '12345.67', reference: 'KH-W38', note: '' });
+  assert.equal(validatePlanEntry(form, ['cua_lo']).payload, null);
+  for (const week of ['', undefined, null, '2025-W53', '2026-W00', '2026-W54', '2026-W3', '2026-w38', '1999-W52', '2100-W01']) {
+    assert.equal(planWeekDates(week), null);
+    assert.equal(validatePlanEntry({ ...form, week }, ['cua_lo', 'ben_thuy']).payload, null);
+    assert.throws(() => planPeriodFields({ period_type: 'week', week }));
+  }
+  assert.equal(planPeriodLabel({ period_type: 'week', week: '2025-W53' }), '—');
+  const weeklyUpdate = buildPlanUpdatePayload(validated.payload, ['cua_lo', 'ben_thuy']);
+  assert.equal(weeklyUpdate.week, '2026-W38');
+  for (const field of ['month', 'quarter', 'year', 'start_date', 'end_date', 'voyage_id']) assert.equal(weeklyUpdate[field], null);
+  const monthlyUpdate = buildPlanUpdatePayload({ ...validated.payload, period_type: 'month', month: '2026-09' }, ['cua_lo', 'ben_thuy']);
+  assert.equal(monthlyUpdate.week, null);
+  assert.equal(monthlyUpdate.month, '2026-09');
+  assert.equal(queryPath('/plans', { period_type: 'week', ...planPeriodFields(form), terminal: 'all' }), '/plans?period_type=week&week=2026-W38&terminal=all');
+});
+
 test('targets send only the active period fields and permit full future targets', () => {
-  const form = { terminal: 'cua_lo', period_type: 'month', month: '2026-09', quarter: '2026-Q4', year: '2027', start_date: '2026-07-01', end_date: '2026-12-31', voyage_id: 101, metric: 'tonnage', amount: '200', reference: 'KH' };
-  const periods = { month: { month: '2026-09' }, quarter: { quarter: '2026-Q4' }, year: { year: 2027 }, custom: { start_date: '2026-07-01', end_date: '2026-12-31' }, voyage: { voyage_id: 101 } };
+  const form = { terminal: 'cua_lo', period_type: 'month', week: '2099-W53', month: '2026-09', quarter: '2026-Q4', year: '2027', start_date: '2026-07-01', end_date: '2026-12-31', voyage_id: 101, metric: 'tonnage', amount: '200', reference: 'KH' };
+  const periods = { week: { week: '2099-W53' }, month: { month: '2026-09' }, quarter: { quarter: '2026-Q4' }, year: { year: 2027 }, custom: { start_date: '2026-07-01', end_date: '2026-12-31' }, voyage: { voyage_id: 101 } };
   for (const [period_type, fields] of Object.entries(periods)) {
     const payload = buildPlanPayload({ ...form, period_type }, ['cua_lo']);
     assert.deepEqual(payload, { terminal: 'cua_lo', period_type, metric: 'tonnage', amount: 200, reference: 'KH', note: '', ...fields });
@@ -110,7 +143,7 @@ test('targets send only the active period fields and permit full future targets'
 });
 
 test('period labels and defaults keep quarter, year and custom targets distinguishable in history and lists', () => {
-  assert.deepEqual(planDateDefaults('2026-10-01', '2026-10-17'), { month: '2026-10', quarter: '2026-Q4', year: '2026', start_date: '2026-10-01', end_date: '2026-10-17' });
+  assert.deepEqual(planDateDefaults('2026-10-01', '2026-10-17'), { week: '2026-W40', month: '2026-10', quarter: '2026-Q4', year: '2026', start_date: '2026-10-01', end_date: '2026-10-17' });
   assert.equal(planPeriodLabel({ period_type: 'quarter', quarter: '2026-Q3' }), 'Quý 3/2026');
   assert.equal(planPeriodLabel({ period_type: 'year', year: 2026 }), 'Năm 2026');
   assert.equal(planPeriodLabel({ period_type: 'custom', start_date: '2026-09-01', end_date: '2026-10-15' }), '01/09/2026 – 15/10/2026');
@@ -122,7 +155,7 @@ test('changing a draft period explicitly clears old period fields when PATCH is 
   const month = { terminal: 'cua_lo', period_type: 'month', month: '2026-09', voyage_id: null, metric: 'tonnage', amount: 200, reference: 'KH' };
   const quarter = { ...month, period_type: 'quarter', quarter: '2026-Q3' };
   const update = buildPlanUpdatePayload(quarter, ['cua_lo']);
-  assert.deepEqual({ ...month, ...update }, { terminal: 'cua_lo', period_type: 'quarter', month: null, quarter: '2026-Q3', year: null, start_date: null, end_date: null, voyage_id: null, metric: 'tonnage', amount: 200, reference: 'KH', note: '' });
+  assert.deepEqual({ ...month, ...update }, { terminal: 'cua_lo', period_type: 'quarter', week: null, month: null, quarter: '2026-Q3', year: null, start_date: null, end_date: null, voyage_id: null, metric: 'tonnage', amount: 200, reference: 'KH', note: '' });
   const unchanged = buildPlanUpdatePayload({ ...month, amount: 300 }, ['cua_lo']);
   assert.equal(unchanged.month, '2026-09');
   assert.equal(unchanged.amount, 300);
@@ -150,12 +183,13 @@ test('Excel confirmation requires a valid preview and every row stays within ass
     { valid: true, rows: [{ ...row, amount: -1 }], errors: [] },
   ]) assert.throws(() => validatedPlanPreview(preview, ['cua_lo']));
   const extended = [
+    { ...row, period_type: 'week', week: '2026-W38' },
     { ...row, terminal: 'all', period_type: 'quarter', quarter: '2026-Q3' },
     { ...row, period_type: 'year', year: 2026 },
     { ...row, period_type: 'custom', start_date: '2026-07-01', end_date: '2026-09-30' },
   ];
   const preview = validatedPlanPreview({ valid: true, rows: extended, errors: [] }, ['cua_lo', 'ben_thuy']);
-  assert.deepEqual(preview.rows.map((item) => item.period_type), ['quarter', 'year', 'custom']);
+  assert.deepEqual(preview.rows.map((item) => item.period_type), ['week', 'quarter', 'year', 'custom']);
   assert.ok(preview.rows.every((item) => !Object.hasOwn(item, 'month')));
   assert.throws(() => validatedPlanPreview({ valid: true, rows: extended, errors: [] }, ['cua_lo']));
 });

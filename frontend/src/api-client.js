@@ -2,7 +2,7 @@ const API_BASE = import.meta.env?.VITE_API_URL || '/api';
 const SESSION_KEY = 'port-dashboard-session';
 let memoryToken = null;
 
-const FIELD_LABELS = { terminal: 'Xí nghiệp', period_type: 'Loại kế hoạch', month: 'Tháng kế hoạch', quarter: 'Quý kế hoạch', year: 'Năm kế hoạch', start_date: 'Ngày bắt đầu', end_date: 'Ngày kết thúc', voyage_id: 'Chuyến tàu', metric: 'Chỉ tiêu', amount: 'Giá trị kế hoạch', reference: 'Văn bản / nguồn phê duyệt', note: 'Ghi chú', expected_revision: 'Phiên bản dữ liệu' };
+const FIELD_LABELS = { terminal: 'Xí nghiệp', period_type: 'Loại kế hoạch', week: 'Tuần kế hoạch', month: 'Tháng kế hoạch', quarter: 'Quý kế hoạch', year: 'Năm kế hoạch', start_date: 'Ngày bắt đầu', end_date: 'Ngày kết thúc', voyage_id: 'Chuyến tàu', metric: 'Chỉ tiêu', amount: 'Giá trị kế hoạch', reference: 'Văn bản / nguồn phê duyệt', note: 'Ghi chú', expected_revision: 'Phiên bản dữ liệu' };
 
 function validationFields(detail) {
   if (!Array.isArray(detail)) return {};

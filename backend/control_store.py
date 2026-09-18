@@ -22,14 +22,14 @@ from fastapi import HTTPException
 TERMINALS = frozenset({"cua_lo", "ben_thuy"})
 ROLES = frozenset({"admin", "manager", "viewer"})
 PRODUCTION_SCOPE_LABELS = {'nghe_tinh': 'Cảng Nghệ Tĩnh', 'vietsun': 'Cầu 5', 'unclassified': 'Chưa xác định cầu'}
-PLAN_PERIOD_TYPES = frozenset({'month', 'quarter', 'year', 'custom', 'voyage'})
-PLAN_PERIOD_FIELDS = ('month', 'quarter', 'year', 'start_date', 'end_date', 'voyage_id')
+PLAN_PERIOD_TYPES = frozenset({'week', 'month', 'quarter', 'year', 'custom', 'voyage'})
+PLAN_PERIOD_FIELDS = ('week', 'month', 'quarter', 'year', 'start_date', 'end_date', 'voyage_id')
 
 
 def plan_period(value):
     """Canonical identity and full target bounds; no source or state access."""
     kind = value.get('period_type', 'month')
-    accepted = {'month': {'month'}, 'quarter': {'quarter'}, 'year': {'year'},
+    accepted = {'week': {'week'}, 'month': {'month'}, 'quarter': {'quarter'}, 'year': {'year'},
                 'custom': {'start_date', 'end_date'}, 'voyage': {'voyage_id'}}
     invalid = lambda: ControlError(422, 'INVALID_PLAN_PERIOD', 'Kỳ kế hoạch không hợp lệ; chỉ điền các trường của loại kỳ đã chọn.')
     if kind not in accepted or any(value.get(field) is not None for field in set(PLAN_PERIOD_FIELDS) - accepted[kind]):
@@ -40,7 +40,15 @@ def plan_period(value):
             if isinstance(voyage, bool) or not isinstance(voyage, int) or not 1 <= voyage <= 2147483647:
                 raise ValueError()
             return str(voyage), None, None
-        if kind == 'month':
+        if kind == 'week':
+            key = value.get('week')
+            if not isinstance(key, str) or not re.fullmatch(r'20\d{2}-W(0[1-9]|[1-4]\d|5[0-3])', key):
+                raise ValueError()
+            # ISO week years differ from calendar years at New Year. The
+            # standard constructor also rejects W53 in a 52-week year.
+            year, week = int(key[:4]), int(key[-2:])
+            start, end = date.fromisocalendar(year, week, 1), date.fromisocalendar(year, week, 7)
+        elif kind == 'month':
             key = value.get('month')
             if not isinstance(key, str) or not re.fullmatch(r'20\d{2}-(0[1-9]|1[0-2])', key):
                 raise ValueError()
@@ -721,7 +729,7 @@ class ControlStore:
         return self.create_plans(actor, [value])[0]
 
     def list_plans(self, actor, terminal=None, month=None, voyage_id=None, status=None, page=1, page_size=50, *, period_type=None,
-                   quarter=None, year=None, start_date=None, end_date=None, include_deleted=False):
+                   week=None, quarter=None, year=None, start_date=None, end_date=None, include_deleted=False):
         self._pagination(page, page_size)
         if not isinstance(include_deleted, bool):
             raise ControlError(422, 'INVALID_PLAN_FILTER', 'Bộ lọc kế hoạch đã xóa không hợp lệ.')
@@ -741,7 +749,7 @@ class ControlStore:
             if voyage_id is not None:
                 terms += " AND period_type='voyage' AND period_key=?"
                 params.append(str(voyage_id))
-            for kind, value in [('quarter', quarter), ('year', year)]:
+            for kind, value in [('week', week), ('quarter', quarter), ('year', year)]:
                 if value is not None:
                     key, _, _ = plan_period({'period_type': kind, kind: value})
                     terms += ' AND period_type=? AND period_key=?'

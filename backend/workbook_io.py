@@ -17,8 +17,8 @@ else:
 
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_PLAN_ROWS = 500
-PLAN_COLUMNS = ['Xí nghiệp', 'Loại kế hoạch', 'Tháng', 'ID chuyến', 'Chỉ tiêu', 'Sản lượng', 'Số văn bản', 'Ghi chú', 'Quý', 'Năm', 'Từ ngày', 'Đến ngày']
-PLAN_KEYS = ['terminal', 'period_type', 'month', 'voyage_id', 'metric', 'amount', 'reference', 'note', 'quarter', 'year', 'start_date', 'end_date']
+PLAN_COLUMNS = ['Xí nghiệp', 'Loại kế hoạch', 'Tháng', 'ID chuyến', 'Chỉ tiêu', 'Sản lượng', 'Số văn bản', 'Ghi chú', 'Quý', 'Năm', 'Từ ngày', 'Đến ngày', 'Tuần']
+PLAN_KEYS = ['terminal', 'period_type', 'month', 'voyage_id', 'metric', 'amount', 'reference', 'note', 'quarter', 'year', 'start_date', 'end_date', 'week']
 NAVY = '153D39'
 
 
@@ -76,7 +76,7 @@ def plan_template():
     sheet = book.active
     sheet.title = 'Kế hoạch'
     _table(sheet, PLAN_COLUMNS, [], {7: 30, 8: 45})
-    for column, values in [('A', 'all,cua_lo,ben_thuy'), ('B', 'month,quarter,year,custom,voyage'), ('E', 'tonnage,teu')]:
+    for column, values in [('A', 'all,cua_lo,ben_thuy'), ('B', 'week,month,quarter,year,custom,voyage'), ('E', 'tonnage,teu')]:
         validation = DataValidation(type='list', formula1=f'"{values}"', allow_blank=False)
         validation.errorTitle = 'Giá trị không hợp lệ'
         validation.error = 'Chọn một giá trị trong danh sách.'
@@ -87,12 +87,13 @@ def plan_template():
         for cell in row:
             cell.fill = PatternFill('solid', fgColor='EEF4FC')
             cell.font = Font(name='Calibri', size=11, color='245D8C')
-            if cell.column in {3, 4, 7, 9, 11, 12}:
+            if cell.column in {3, 4, 7, 9, 11, 12, 13}:
                 cell.number_format = '@'
     guide = book.create_sheet('Hướng dẫn')
     _table(guide, ['Trường', 'Cách nhập'], [
         ['Xí nghiệp', 'all: toàn công ty; cua_lo hoặc ben_thuy: từng cảng. Kế hoạch chuyến phải chọn một cảng.'],
-        ['Loại kế hoạch', 'month: tháng; quarter: quý; year: năm; custom: khoảng ngày; voyage: toàn chuyến. Chỉ điền các trường của loại kỳ được chọn.'],
+        ['Loại kế hoạch', 'week: tuần; month: tháng; quarter: quý; year: năm; custom: khoảng ngày; voyage: toàn chuyến. Chỉ điền các trường của loại kỳ được chọn.'],
+        ['Tuần', 'YYYY-Www theo ISO, ví dụ 2026-W38: 14/09–20/09/2026. Tuần đủ thứ Hai đến Chủ nhật, có thể là tuần tương lai. Năm ISO từ 2000 đến 2099; tuần giao năm có thể chứa ngày thuộc năm khác. Chỉ điền với week.'],
         ['Tháng', 'YYYY-MM, chỉ điền với kế hoạch tháng.'],
         ['Quý', 'YYYY-Q1 đến YYYY-Q4, ví dụ 2026-Q3. Chỉ điền với kế hoạch quý.'],
         ['Năm', 'Số nguyên từ 2000 đến 2099, chỉ điền với kế hoạch năm.'],
@@ -127,12 +128,14 @@ def parse_plan_workbook(content):
         sheet = book['Kế hoạch'] if 'Kế hoạch' in book.sheetnames else book.worksheets[0]
         if sheet.max_row and sheet.max_row > MAX_PLAN_ROWS + 1:
             raise ValueError('Mỗi lần nhập tối đa 500 dòng kế hoạch.')
+        if sheet.max_column and sheet.max_column > len(PLAN_COLUMNS):
+            raise ValueError('Các cột chưa đúng mẫu. Hãy tải mẫu Excel từ dashboard.')
         iterator = sheet.iter_rows(max_row=MAX_PLAN_ROWS + 2, max_col=len(PLAN_COLUMNS))
         first = next(iterator, ())
         header = [cell.value for cell in first]
         while header and header[-1] is None:
             header.pop()
-        if header not in [PLAN_COLUMNS, PLAN_KEYS, PLAN_COLUMNS[:8], PLAN_KEYS[:8]]:
+        if header not in [PLAN_COLUMNS, PLAN_KEYS, PLAN_COLUMNS[:12], PLAN_KEYS[:12], PLAN_COLUMNS[:8], PLAN_KEYS[:8]]:
             raise ValueError('Các cột chưa đúng mẫu. Hãy tải mẫu Excel từ dashboard.')
         seen = set()
         for row_no, cells in enumerate(iterator, 2):
@@ -140,11 +143,14 @@ def parse_plan_workbook(content):
                 continue
             if row_no > MAX_PLAN_ROWS + 1:
                 raise ValueError('Mỗi lần nhập tối đa 500 dòng kế hoạch.')
+            if any(cell.value is not None for cell in cells[len(header):]):
+                errors.append({'row': row_no, 'message': 'Có dữ liệu ngoài các cột của mẫu. Hãy tải mẫu Excel mới từ dashboard.'})
+                continue
             if any(cell.data_type == 'f' for cell in cells):
                 errors.append({'row': row_no, 'message': 'Chuyển công thức thành giá trị trước khi nhập.'})
                 continue
             record = dict(zip(PLAN_KEYS, [cell.value for cell in cells]))
-            for key in ['terminal', 'period_type', 'month', 'quarter', 'metric', 'reference', 'note']:
+            for key in ['terminal', 'period_type', 'month', 'quarter', 'week', 'metric', 'reference', 'note']:
                 record[key] = str(record[key] or '').strip()
             try:
                 amount = record['amount']
@@ -156,7 +162,7 @@ def parse_plan_workbook(content):
                 record['amount'] = str(amount)
                 if record['terminal'] not in {'all', 'cua_lo', 'ben_thuy'} or record['metric'] not in {'tonnage', 'teu'}:
                     raise ValueError('Xí nghiệp hoặc chỉ tiêu chưa đúng danh mục trong mẫu.')
-                for field in ['month', 'quarter', 'year', 'voyage_id', 'start_date', 'end_date']:
+                for field in ['month', 'quarter', 'year', 'voyage_id', 'start_date', 'end_date', 'week']:
                     if record[field] == '':
                         record[field] = None
                 if record['voyage_id'] is not None:
@@ -293,7 +299,7 @@ def report_workbook(report, operations, *, title='Báo cáo sản lượng', shi
     throughput = report.get('throughput_progress')
     if throughput is not None:
         sheet = book.create_sheet('Mục tiêu thông qua')
-        labels = {'month': 'Tháng', 'quarter': 'Quý', 'year': 'Năm', 'custom': 'Khoảng ngày'}
+        labels = {'week': 'Tuần', 'month': 'Tháng', 'quarter': 'Quý', 'year': 'Năm', 'custom': 'Khoảng ngày'}
         if throughput.get('items'):
             _table(sheet, ['Loại kỳ', 'Kỳ kế hoạch', 'Từ ngày', 'Đến ngày', 'Mục tiêu tấn', 'Thực hiện tấn',
                            '% hoàn thành xác nhận', '% tạm tính', 'Đã đạt', 'Trạng thái', 'Nguồn mục tiêu',

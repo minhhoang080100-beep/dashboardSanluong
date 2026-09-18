@@ -6,6 +6,45 @@ const report = { meta: { report_id: 'snapshot-1', filters: { start_date: '2026-0
 const item = { key: 'quarter/2026-Q3', period_type: 'quarter', start_date: '2026-07-01', end_date: '2026-09-30', target: 1000, actual: 400, actual_status: 'ready' };
 const response = () => ({ report_id: 'snapshot-1', production_scope: 'nghe_tinh', berth_rule_version: 'initial-berth-v1', period: { ...report.meta.filters }, eligible: true, reason: null, items: [{ ...item }] });
 
+test('weekly plans open Monday-to-date actuals while completed weeks retain Sunday', () => {
+  const plan = { period_type: 'week', period_key: '2026-W38', period_start: '2026-09-14', period_end: '2026-09-20', terminal: 'all', metric: 'tonnage', status: 'approved', is_current: true };
+  assert.deepEqual(reportSelectionForPlan(plan, 'cua_lo', '2026-09-18'), {
+    filters: { start_date: '2026-09-14', end_date: '2026-09-18', terminal: 'all', production_scope: 'nghe_tinh' },
+    periodType: 'week', periodKey: 'week:2026-W38',
+  });
+  assert.equal(reportSelectionForPlan(plan, 'all', '2026-09-21').filters.end_date, '2026-09-20');
+  assert.throws(() => reportSelectionForPlan(plan, 'all', '2026-09-13'), /chưa bắt đầu/);
+  assert.throws(() => reportSelectionForPlan({ ...plan, period_end: '2026-09-18' }, 'all', '2026-09-18'));
+  const crossYear = { ...plan, period_key: '2020-W53', period_start: '2020-12-28', period_end: '2021-01-03' };
+  assert.equal(reportSelectionForPlan(crossYear, 'all', '2021-01-01').filters.end_date, '2021-01-01');
+  assert.equal(progressPeriodLabel({ period_type: 'week', start_date: '2024-12-30' }), 'Tuần 1/2025');
+  assert.equal(progressPeriodLabel({ period_type: 'week', start_date: '2020-12-28' }), 'Tuần 53/2020');
+});
+
+test('weekly progress uses the same snapshot and full weekly target, preserving provisional status', () => {
+  const weeklyReport = structuredClone(report);
+  weeklyReport.meta.filters.start_date = '2026-09-14';
+  weeklyReport.meta.filters.end_date = '2026-09-18';
+  const weekly = { ...item, key: 'week:2026-W38', period_type: 'week', start_date: '2026-09-14', end_date: '2026-09-20' };
+  const value = { ...response(), period: { ...weeklyReport.meta.filters }, items: [weekly],
+    available_periods: [{ key: weekly.key, period_type: 'week', start_date: weekly.start_date, end_date: weekly.end_date, target: 1000, terminal: 'all' }] };
+  assert.equal(validateThroughputProgress(value, weeklyReport).items[0].target, 1000);
+  assert.equal(completionView(weekly).percent, 40);
+  weeklyReport.overview.tonnage_status = weekly.actual_status = 'partial';
+  assert.equal(completionView(validateThroughputProgress(value, weeklyReport).items[0]).provisional, true);
+  for (const mutate of [
+    (data) => { data.items[0].actual = 401; },
+    (data) => { data.items[0].end_date = data.available_periods[0].end_date = '2026-09-18'; },
+    (data) => { data.available_periods[0].start_date = '2026-09-15'; },
+  ]) {
+    const invalid = structuredClone(value); mutate(invalid);
+    assert.throws(() => validateThroughputProgress(invalid, weeklyReport));
+  }
+  const custom = { ...weekly, key: 'custom:2026-09-14/2026-09-20', period_type: 'custom' };
+  assert.equal(selectProgressItem([custom, weekly], '', 'week'), weekly);
+  assert.equal(selectProgressItem([custom, weekly], custom.key, 'week'), custom);
+});
+
 test('approved annual plan opens year-to-date actuals instead of dividing September by the annual target', () => {
   const annual = { period_type: 'year', period_key: '2026', period_start: '2026-01-01', period_end: '2026-12-31', terminal: 'all', metric: 'tonnage', status: 'approved', is_current: true };
   assert.deepEqual(reportSelectionForPlan(annual, 'cua_lo', '2026-09-17'), {

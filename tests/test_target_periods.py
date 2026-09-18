@@ -25,6 +25,12 @@ def report(terminal='all', start='2026-01-01', end='2026-01-13', value=50, statu
 
 
 @pytest.mark.parametrize('value,key,start,end', [
+    ({'period_type':'week','week':'2026-W38'}, '2026-W38', '2026-09-14', '2026-09-20'),
+    ({'period_type':'week','week':'2020-W53'}, '2020-W53', '2020-12-28', '2021-01-03'),
+    ({'period_type':'week','week':'2025-W01'}, '2025-W01', '2024-12-30', '2025-01-05'),
+    ({'period_type':'week','week':'2030-W01'}, '2030-W01', '2029-12-31', '2030-01-06'),
+    ({'period_type':'week','week':'2000-W01'}, '2000-W01', '2000-01-03', '2000-01-09'),
+    ({'period_type':'week','week':'2099-W53'}, '2099-W53', '2099-12-28', '2100-01-03'),
     ({'period_type':'month','month':'2024-02'}, '2024-02', '2024-02-01', '2024-02-29'),
     ({'period_type':'quarter','quarter':'2026-Q1'}, '2026-Q1', '2026-01-01', '2026-03-31'),
     ({'period_type':'quarter','quarter':'2026-Q4'}, '2026-Q4', '2026-10-01', '2026-12-31'),
@@ -37,6 +43,10 @@ def test_full_calendar_bounds_are_independent_of_today(value,key,start,end):
 
 
 @pytest.mark.parametrize('value', [
+    *[{'period_type':'week','week':week} for week in [None, 38, True, '2021-W53', '2026-W00', '2026-W54',
+        '2026-W1', '2026-w38', '2026-W38 ', '2026-W38-1', '1999-W52', '2100-W01']],
+    {'period_type':'week','week':'2026-W38','month':'2026-09'},
+    {'period_type':'month','month':'2026-09','week':'2026-W38'},
     {'period_type':'quarter','quarter':'2026-Q5'}, {'period_type':'quarter','quarter':'2026-Q1','month':'2026-01'},
     {'period_type':'year','year':True}, {'period_type':'year','year':2100},
     {'period_type':'custom','start_date':'2026-02-30','end_date':'2026-03-01'},
@@ -117,6 +127,47 @@ def test_approved_targets_are_available_for_navigation_without_mismatched_actual
     # Empty navigation under a different production scope, no leaking company targets.
     assert store.throughput_progress(admin,report(scope='vietsun'))['available_periods']==[]
     assert store.throughput_progress(admin,report(terminal='cua_lo'))['available_periods']==[]
+
+
+def test_weekly_progress_uses_full_target_for_partial_week_and_requires_matching_start(state):
+    store, admin, _, _ = state
+    approved = target(store, admin, period_type='week', week='2026-W38', amount=700)
+    current = report(start='2026-09-14', end='2026-09-18', value=350)
+    progress = store.throughput_progress(admin, current)
+    item = progress['items'][0]
+    assert item['key'] == 'week:2026-W38'
+    assert item['start_date'] == '2026-09-14' and item['end_date'] == '2026-09-20'
+    assert item['target'] == 700 and item['actual'] == 350 and item['completion_percent'] == 50
+    assert item['plans'][0]['week'] == '2026-W38' and item['plans'][0]['id'] == approved['id']
+    assert item['band'] == 'yellow'
+    # A partial source is never promoted to confirmed achievement.
+    partial = store.throughput_progress(admin, report(start='2026-09-14', end='2026-09-18', value=700, status='partial'))['items'][0]
+    assert partial['completion_percent'] is None and partial['provisional_completion_percent'] == 100
+    assert partial['achieved'] is False
+    for start, end in [('2026-09-01', '2026-09-18'), ('2026-09-15', '2026-09-18'), ('2026-09-14', '2026-09-21')]:
+        mismatched = store.throughput_progress(admin, report(start=start, end=end))
+        assert mismatched['items'] == []
+        available = mismatched['available_periods'][0]
+        assert available['key'] == 'week:2026-W38' and available['target'] == 700
+        assert 'actual' not in available
+    assert store.throughput_progress(admin, report(scope='vietsun', start='2026-09-14', end='2026-09-18'))['available_periods'] == []
+
+
+def test_weekly_terminal_targets_require_both_sources_and_closed_target_is_frozen(state):
+    store, admin, _, _ = state
+    target(store, admin, terminal='cua_lo', period_type='week', week='2020-W53', amount=100)
+    snapshot = report(start='2020-12-28', end='2021-01-01', value=150)
+    missing = store.throughput_progress(admin, snapshot)['items'][0]
+    assert missing['status'] == 'missing_plan' and missing['target'] is None
+    target(store, admin, terminal='ben_thuy', period_type='week', week='2020-W53', amount=200)
+    combined = store.throughput_progress(admin, snapshot)['items'][0]
+    assert combined['target'] == 300 and combined['completion_percent'] == 50
+    closed = store.close_report(admin, 'all', '2020-12-28', '2021-01-01', snapshot, [], planning_actuals={})
+    target(store, admin, period_type='week', week='2020-W53', amount=600)
+    assert store.throughput_progress(admin, snapshot)['items'][0]['target'] == 600
+    frozen = store.get_closed_report(admin, closed['id'])['report']['throughput_progress']['items'][0]
+    assert frozen['target'] == 300 and frozen['end_date'] == '2021-01-03'
+    assert frozen['completion_percent'] == 50
 
 
 def test_period_draft_lifecycle_and_scope_remain_protected(state):

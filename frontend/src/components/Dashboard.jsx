@@ -267,7 +267,7 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
     const next = { ...draft, ...dates };
     setQuarterYear(Number(dates.start_date.slice(0, 4)));
     setSelectedWeek(isoWeekValue(dates.start_date));
-    setPreferredPeriodType(preset.startsWith('quarter-') ? 'quarter' : preset === 'year' ? 'year' : ['month', 'previous'].includes(preset) ? 'month' : 'custom');
+    setPreferredPeriodType(preset.startsWith('quarter-') ? 'quarter' : preset === 'year' ? 'year' : ['month', 'previous'].includes(preset) ? 'month' : ['week', 'previous-week'].includes(preset) ? 'week' : 'custom');
     setPreferredPeriodKey('');
     setDraft(next);
     setFilters(next);
@@ -284,7 +284,7 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
     setFormError(validation);
     if (validation) return;
     setQuarterYear(Math.max(2000, Number(dates.start_date.slice(0, 4))));
-    setPreferredPeriodType('custom');
+    setPreferredPeriodType('week');
     setPreferredPeriodKey('');
     setDraft(next);
     setFilters(next);

@@ -30,9 +30,9 @@ def payload(**period):
             'reference':'SYNTHETIC HTTP ONLY','note':'',**period}
 
 
-def test_four_period_http_create_edit_approve_and_history_preserve_exact_values(plan_api):
+def test_calendar_period_http_create_edit_approve_and_history_preserve_exact_values(plan_api):
     client, store, actor, headers = plan_api
-    for period in [{'period_type':'month','month':'2026-09'}, {'period_type':'quarter','quarter':'2026-Q3'},
+    for period in [{'period_type':'week','week':'2026-W38'}, {'period_type':'month','month':'2026-09'}, {'period_type':'quarter','quarter':'2026-Q3'},
                    {'period_type':'year','year':2026}, {'period_type':'custom','start_date':'2026-09-01','end_date':'2026-09-17'}]:
         created = client.post('/api/plans',headers=headers,json=payload(**period))
         assert created.status_code==201,created.text
@@ -49,7 +49,41 @@ def test_four_period_http_create_edit_approve_and_history_preserve_exact_values(
         history = client.get(path,headers=headers).json()['history']
         assert [item['action'] for item in history]==['created','updated','approved']
         assert history[-1]['snapshot']['amount_decimal']=='150001.123456'
-    assert store.list_plans(actor)['total']==4
+    assert store.list_plans(actor)['total']==5
+
+
+def test_weekly_http_import_listing_rekey_and_validation(plan_api):
+    client, store, actor, headers = plan_api
+    records = [payload(period_type='week', week='2026-W38'), payload(period_type='week', week='2030-W01'),
+               payload(period_type='month', month='2026-09')]
+    imported = client.post('/api/plans/import', headers=headers, json={'rows':records})
+    assert imported.status_code == 201, imported.text
+    drafts = imported.json()['items']
+    future = drafts[1]
+    assert future['week'] == future['period_key'] == '2030-W01'
+    assert future['period_start'] == '2029-12-31' and future['period_end'] == '2030-01-06'
+    assert all(future[field] is None for field in ['month','quarter','year','start_date','end_date','voyage_id'])
+    assert client.get('/api/plans?period_type=week', headers=headers).json()['total'] == 2
+    filtered = client.get('/api/plans?period_type=week&week=2026-W38', headers=headers)
+    assert filtered.status_code == 200 and [row['id'] for row in filtered.json()['items']] == [drafts[0]['id']]
+    assert client.get('/api/plans?week=2030-W01', headers=headers).json()['total'] == 1
+    assert client.get('/api/plans?week=2021-W53', headers=headers).status_code == 422
+    for week in ['2021-W53', '2026-W00', '2026-W54', '2026-W1', None]:
+        response = client.post('/api/plans', headers=headers, json=payload(period_type='week', week=week))
+        assert response.status_code == 422, response.text
+    for extra in [{'month':'2026-09'}, {'year':2026}, {'start_date':'2026-09-14'}, {'voyage_id':1}]:
+        assert client.post('/api/plans', headers=headers, json=payload(period_type='week', week='2026-W38', **extra)).status_code == 422
+    # Failed batches are atomic, and moving between period types must clear the old field.
+    failed = client.post('/api/plans/import', headers=headers, json={'rows':[records[0], payload(period_type='week', week='2021-W53')]})
+    assert failed.status_code == 422 and store.list_plans(actor)['total'] == 3
+    path = f"/api/plans/{drafts[2]['id']}"
+    change = {'expected_revision':1, 'period_type':'week', 'week':'2026-W38'}
+    assert client.patch(path, headers=headers, json=change).status_code == 422
+    moved = client.patch(path, headers=headers, json={**change,'month':None})
+    assert moved.status_code == 200, moved.text
+    assert moved.json()['week'] == '2026-W38' and moved.json()['version'] == 2
+    assert client.post(path+'/approve', headers=headers, json={'expected_revision':2}).status_code == 200
+    assert client.get('/api/plans?week=2026-W38&status=approved', headers=headers).json()['total'] == 1
 
 
 def test_http_amount_precision_zeroes_and_invalid_formats_are_consistent(plan_api):

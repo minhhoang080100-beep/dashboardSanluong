@@ -13,7 +13,7 @@ from browser_voyages import report_fixture
 from backend.control_store import plan_period, saved_plan_period, throughput_progress_item
 from playwright.sync_api import expect, sync_playwright
 
-PLAN_PERIOD_QUERY_KEYS = {"period_type", "month", "quarter", "year", "start_date", "end_date", "voyage_id"}
+PLAN_PERIOD_QUERY_KEYS = {"period_type", "week", "month", "quarter", "year", "start_date", "end_date", "voyage_id"}
 
 
 def open_workspace(page, mode):

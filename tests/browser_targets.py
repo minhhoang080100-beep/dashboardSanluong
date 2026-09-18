@@ -1,4 +1,4 @@
-"""Quarter presets and leadership targets in React, with intercepted APIs only.
+"""Week/quarter presets and leadership targets in React, with intercepted APIs only.
 
 The browser and Python fixture share a fixed Vietnam calendar day. No source
 reads, user changes, plan writes or approvals reach an application server.
@@ -19,7 +19,7 @@ from playwright.sync_api import Error, expect, sync_playwright
 
 TODAY = date(2026, 9, 17)
 FILTER_KEYS = ("start_date", "end_date", "terminal", "production_scope")
-PLAN_PERIOD_QUERY_KEYS = {"period_type", "month", "quarter", "year", "start_date", "end_date", "voyage_id"}
+PLAN_PERIOD_QUERY_KEYS = {"period_type", "week", "month", "quarter", "year", "start_date", "end_date", "voyage_id"}
 
 
 def main():
@@ -165,6 +165,17 @@ def main():
         wait_filters("2026-09-01", "2026-09-17")
         checks.append("Q1/Q2 exact dates; current Q3 stops today; future Q4 disabled; historical Q4 selectable")
 
+        page.get_by_role('button', name='Tuần này', exact=True).click()
+        wait_filters('2026-09-14', '2026-09-17')
+        page.get_by_role('button', name='Tuần trước', exact=True).click()
+        wait_filters('2026-09-07', '2026-09-13')
+        page.get_by_label('Chọn tuần', exact=True).fill('2020-W53')
+        page.get_by_role('button', name='Xem tuần', exact=True).click()
+        wait_filters('2020-12-28', '2021-01-03')
+        page.get_by_role('button', name='Tháng này', exact=True).click()
+        wait_filters('2026-09-01', '2026-09-17')
+        checks.append('weekly report presets and ISO week 53 request the correct Monday/Sunday bounds')
+
         # An older approved target exists only in this intercepted fixture. It
         # must remain visible in All even while the report shows this month.
         prior_key, _, _ = plan_period({"period_type": "year", "year": 2025})
@@ -211,10 +222,13 @@ def main():
         expect(create.get_by_label('Giá trị kế hoạch', exact=True)).to_have_attribute('aria-invalid', 'true')
         assert state['payloads'] == [], 'invalid form must not reach API'
         dashboard_reads = sum(row['path'] == '/dashboard' for row in state['requests'])
-        for kind in ("month", "quarter", "year", "custom"):
+        for kind in ("month", "quarter", "year", "custom", "week"):
             create.get_by_role("combobox", name="Loại kế hoạch", exact=True).select_option(kind)
             create.get_by_role("combobox", name="Xí nghiệp kế hoạch", exact=True).select_option("all")
-            if kind == "month":
+            if kind == 'week':
+                create.get_by_label('Tuần áp dụng', exact=True).fill('2026-W38')
+                expect(create).to_contain_text('14/09/2026 – 20/09/2026')
+            elif kind == "month":
                 create.get_by_label("Tháng áp dụng", exact=True).fill("2026-09")
             elif kind == "quarter":
                 create.get_by_role("combobox", name="Quý áp dụng", exact=True).select_option("3")
@@ -238,38 +252,49 @@ def main():
             latest_list = next(row['query'] for row in reversed(state['requests']) if row['path'] == '/plans' and row['method'] == 'GET')
             assert PLAN_PERIOD_QUERY_KEYS.isdisjoint(latest_list)
             assert latest_list['page'] == '1'
-        assert [row["period_type"] for row in state["payloads"]] == ["month", "quarter", "year", "custom"]
+        assert [row["period_type"] for row in state["payloads"]] == ["month", "quarter", "year", "custom", "week"]
         assert state["payloads"][1]["quarter"] == "2026-Q3"
         assert state["payloads"][2]["year"] == 2026
         assert state["payloads"][3]["start_date"] == "2026-09-05"
+        assert state['payloads'][4]['week'] == '2026-W38'
+        assert set(state['payloads'][4]).isdisjoint({'month', 'quarter', 'year', 'start_date', 'end_date', 'voyage_id'})
         assert all(row['amount'] == '4000' for row in state['payloads'])
         assert sum(row['path'] == '/dashboard' for row in state['requests']) == dashboard_reads, 'approval must not reread production SQL'
         assert not any(row['path'] == '/dashboard' or row['path'].startswith('/reports/') for row in state['requests'][report_reads:]), 'plan entry and approval must not request report progress'
-        checks.append("month/quarter/year/custom company targets create and approve using only planning APIs, with no report controls or progress panel")
+        checks.append("week/month/quarter/year/custom company targets create and approve using only planning APIs, with no report controls or progress panel")
 
-        expect(management.locator('.plans-table tbody tr')).to_have_count(5)
-        for reference in ('SYNTHETIC-MONTH', 'SYNTHETIC-QUARTER', 'SYNTHETIC-YEAR', 'SYNTHETIC-CUSTOM', 'SYNTHETIC-PRIOR-YEAR'):
+        expect(management.locator('.plans-table tbody tr')).to_have_count(6)
+        for reference in ('SYNTHETIC-MONTH', 'SYNTHETIC-QUARTER', 'SYNTHETIC-YEAR', 'SYNTHETIC-CUSTOM', 'SYNTHETIC-WEEK', 'SYNTHETIC-PRIOR-YEAR'):
             expect(management.locator('.plans-table tbody tr').filter(has_text=reference)).to_be_visible()
+        listing.select_option('week')
+        management.get_by_label('Tuần kế hoạch', exact=True).fill('2026-W38')
+        expect(management.locator('.plans-table tbody tr')).to_have_count(1)
+        expect(management.locator('.plans-table tbody tr')).to_contain_text('SYNTHETIC-WEEK')
         listing.select_option('year')
         management.get_by_label('Năm kế hoạch', exact=True).fill('2025')
         expect(management.locator('.plans-table tbody tr')).to_have_count(1)
         expect(management.locator('.plans-table tbody tr')).to_contain_text('SYNTHETIC-PRIOR-YEAR')
         listing.select_option('all')
-        expect(management.locator('.plans-table tbody tr')).to_have_count(5)
+        expect(management.locator('.plans-table tbody tr')).to_have_count(6)
         returned_query = next(row['query'] for row in reversed(state['requests']) if row['path'] == '/plans' and row['method'] == 'GET')
         assert PLAN_PERIOD_QUERY_KEYS.isdisjoint(returned_query)
-        checks.append('all plans shows four period types across different years; year filtering narrows rows and returning to all clears every period parameter')
+        checks.append('all plans shows five period types across different years; week/year filtering narrows rows and returning to all clears every period parameter')
 
         management.get_by_role('combobox', name='Danh sách kế hoạch', exact=True).select_option('year')
         management.get_by_label('Năm kế hoạch', exact=True).fill('2026')
         annual_row = management.get_by_role('row').filter(has_text='SYNTHETIC-YEAR')
         annual_row.get_by_role('button', name='Tạo phiên bản mới', exact=True).click()
         expect(create.get_by_label('Giá trị kế hoạch', exact=True)).to_have_value('4.000')
-        assert len(state['plans']) == 5 and all(plan['status'] == 'approved' for plan in state['plans'])
+        assert len(state['plans']) == 6 and all(plan['status'] == 'approved' for plan in state['plans'])
         annual_row.get_by_role('button', name='Xem tiến độ', exact=True).click()
         expect(page.locator('.top-nav a[href="#overview"]')).to_have_attribute('aria-current', 'page')
         wait_filters('2026-01-01', '2026-09-17')
         expect(panel).to_contain_text('Năm 2026')
+        panel.get_by_role('combobox', name='Kế hoạch đối chiếu', exact=True).select_option('week:2026-W38')
+        wait_filters('2026-09-14', '2026-09-17')
+        expect(panel).to_contain_text('Tuần 38/2026')
+        expect(panel).to_contain_text('20/09/2026')
+        expect(panel.get_by_role('progressbar')).to_have_attribute('aria-valuenow', '75.003125')
         panel.get_by_role('combobox', name='Kế hoạch đối chiếu', exact=True).select_option('month:2026-09')
         wait_filters('2026-09-01', '2026-09-17')
         checks.append('approved annual plan opens year-to-date actuals; cloned version stays unsaved until explicit submission')

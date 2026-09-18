@@ -8,7 +8,7 @@ from browser_auth_support import install_auth_fixture
 from browser_smoke import fixture
 from playwright.sync_api import expect, sync_playwright
 
-PLAN_PERIOD_QUERY_KEYS = {"period_type", "month", "quarter", "year", "start_date", "end_date", "voyage_id"}
+PLAN_PERIOD_QUERY_KEYS = {"period_type", "week", "month", "quarter", "year", "start_date", "end_date", "voyage_id"}
 
 
 def install_navigation_fixture(page, role="admin"):

@@ -98,6 +98,7 @@ test('422 field validation identifies planning fields without exposing rejected 
     return true;
   });
   await assert.rejects(apiRequest('/plans', { fetcher: async () => Response.json({ detail: [{ loc: ['body', 'unknown'], input: 'private synthetic input' }] }, { status: 422 }) }), (error) => error.message.includes('HTTP 422') && !error.message.includes('private'));
+  await assert.rejects(apiRequest('/plans', { fetcher: async () => Response.json({ detail: [{ loc: ['body', 'week'], type: 'string_pattern_mismatch', input: 'private synthetic input' }] }, { status: 422 }) }), (error) => /Tuần kế hoạch/.test(error.message) && Boolean(error.fieldErrors.week) && !error.message.includes('private'));
 });
 
 test('pre-cancelled requests do not fetch; network failures are localized without session expiry or retries', async (t) => {

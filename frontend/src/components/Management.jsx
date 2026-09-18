@@ -4,7 +4,7 @@ import { apiRequest, downloadFile } from '../api-client.js';
 import { productionScopeLabel } from '../production-scope.js';
 import { reportSelectionForPlan } from '../throughput-progress.js';
 import { formatDate, formatNumber, formatTimestamp, todayInVietnam } from '../dashboard-data.js';
-import { buildPlanUpdatePayload, buildUserPayload, canManage, sameClosedReportScope, ISSUE_LABELS, ISSUE_STATUS_LABELS, MANAGEMENT_ROLES, MANAGEMENT_TERMINALS, METRIC_LABELS, PLAN_PERIOD_LABELS, PLAN_STATUS_LABELS, PLAN_TERMINALS, planAmountInput, planDateDefaults, planDeletePayload, planEntryPeriod, planPeriodEligibility, planPeriodFields, planPeriodLabel, planTerminals, parseVietnamesePlanAmount, queryPath, userTerminals, validatedItems, validatePlanEntry, validatedPlanPreview } from '../management-data.js';
+import { buildPlanUpdatePayload, buildUserPayload, canManage, sameClosedReportScope, ISSUE_LABELS, ISSUE_STATUS_LABELS, MANAGEMENT_ROLES, MANAGEMENT_TERMINALS, METRIC_LABELS, PLAN_PERIOD_LABELS, PLAN_STATUS_LABELS, PLAN_TERMINALS, planAmountInput, planDateDefaults, planDeletePayload, planEntryPeriod, planPeriodEligibility, planPeriodFields, planPeriodLabel, planTerminals, planWeekDates, parseVietnamesePlanAmount, queryPath, userTerminals, validatedItems, validatePlanEntry, validatedPlanPreview } from '../management-data.js';
 import './Management.css';
 
 function useResource(path, apiBase, revision = 0) {
@@ -137,6 +137,12 @@ function VoyagePicker({ terminal, value, onChange, apiBase, disabled, validation
   </div>;
 }
 
+function WeekField({ value, onChange, disabled = false, label = 'Tuần áp dụng', validation = {} }) {
+  const helpId = useId();
+  const dates = planWeekDates(value);
+  return <div className="plan-field management-week-field"><label>{label}<input {...validation} aria-describedby={[validation['aria-describedby'], helpId].filter(Boolean).join(' ')} type="week" min="2000-W01" max="2099-W53" pattern="20[0-9]{2}-W[0-9]{2}" placeholder="2026-W38" value={value || ''} onChange={(event) => onChange(event.target.value)} required disabled={disabled} /></label><small id={helpId} className="plan-field-help">{dates ? `${formatDate(dates.start_date)} – ${formatDate(dates.end_date)} · Thứ Hai – Chủ nhật` : 'Chọn tuần theo năm ISO, từ 2000 đến 2099.'}</small></div>;
+}
+
 function QuarterFields({ value, onChange, disabled = false, yearLabel = 'Năm áp dụng', quarterLabel = 'Quý áp dụng', validation = {} }) {
   const [year = '', quarter = '1'] = String(value || '').split('-Q');
   return <><label>{yearLabel}<input {...validation} type="number" min="2000" max="2099" step="1" value={year} onChange={(event) => onChange(`${event.target.value}-Q${quarter}`)} required disabled={disabled} /></label><label>{quarterLabel}<select {...validation} value={quarter} onChange={(event) => onChange(`${year}-Q${event.target.value}`)} disabled={disabled}>{[1, 2, 3, 4].map((number) => <option key={number} value={number}>Quý {number}</option>)}</select></label></>;
@@ -155,13 +161,14 @@ function PlanFields({ form, setForm, terminals, apiBase, disabled, errors = {} }
   const update = (key) => (event) => setForm((value) => ({ ...value, [key]: event.target.value, ...(key === 'terminal' ? { voyage_id: '' } : {}), ...(key === 'period_type' && event.target.value === 'voyage' && value.terminal === 'all' ? { terminal: terminals[0] || '', voyage_id: '' } : {}) }));
   const scopes = planTerminals(terminals, form.period_type);
   const fieldProps = (key, help = false) => ({ id: `${prefix}-${key}`, 'aria-invalid': Boolean(errors[key]), 'aria-describedby': [errors[key] && `${prefix}-${key}-error`, help && `${prefix}-${key}-help`].filter(Boolean).join(' ') || undefined });
-  const periodError = errors.period || errors.period_type || errors.month || errors.quarter || errors.year || errors.start_date || errors.end_date || errors.voyage_id;
+  const periodError = errors.period || errors.period_type || errors.week || errors.month || errors.quarter || errors.year || errors.start_date || errors.end_date || errors.voyage_id;
   const periodValidation = { 'aria-invalid': Boolean(periodError), 'aria-describedby': periodError ? `${prefix}-period-error` : undefined };
   let amountPreview = '';
   try { amountPreview = planAmountInput(parseVietnamesePlanAmount(form.amount)); } catch { /* Show a field error after submission; do not guess a malformed amount. */ }
   return <>
     <PlanField id={`${prefix}-terminal`} label="Xí nghiệp kế hoạch" error={errors.terminal}><select {...fieldProps('terminal')} value={form.terminal} onChange={update('terminal')} required disabled={disabled}>{scopes.map((item) => <option value={item} key={item}>{PLAN_TERMINALS[item]}</option>)}</select></PlanField>
     <label>Loại kế hoạch<select {...fieldProps('period_type')} value={form.period_type} onChange={update('period_type')} disabled={disabled}>{Object.entries(PLAN_PERIOD_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+    {form.period_type === 'week' && <WeekField value={form.week} onChange={(week) => setForm((value) => ({ ...value, week }))} disabled={disabled} validation={periodValidation} />}
     {form.period_type === 'month' && <label>Tháng áp dụng<input {...periodValidation} type="month" min="2000-01" max="2099-12" value={form.month} onChange={update('month')} required disabled={disabled} /></label>}
     {form.period_type === 'quarter' && <QuarterFields value={form.quarter} onChange={(quarter) => setForm((value) => ({ ...value, quarter }))} disabled={disabled} validation={periodValidation} />}
     {form.period_type === 'year' && <label>Năm áp dụng<input {...periodValidation} type="number" min="2000" max="2099" step="1" value={form.year} onChange={update('year')} required disabled={disabled} /></label>}
@@ -312,7 +319,7 @@ function PlansPanel({ user, filters, apiBase, onSelectPlan, preferredPeriodType 
       setLastCreated(outcome.result); setCopiedPlan(null); setAttempted(false); setForm((value) => ({ ...value, amount: '', note: '' }));
       if (periodType !== 'all') {
         setPeriodType(form.period_type);
-        setListPeriod({ month: form.month, quarter: form.quarter, year: form.year, start_date: form.start_date, end_date: form.end_date });
+        setListPeriod({ week: form.week, month: form.month, quarter: form.quarter, year: form.year, start_date: form.start_date, end_date: form.end_date });
         setTerminal(form.terminal);
       } else setTerminal((current) => current === 'all' ? current : form.terminal);
       setPage(1); refresh();
@@ -337,6 +344,7 @@ function PlansPanel({ user, filters, apiBase, onSelectPlan, preferredPeriodType 
   return <div className="management-stack"><p className="management-caption plan-scope-caption">Kế hoạch áp dụng cho Cảng Nghệ Tĩnh.</p>
     <section className="management-card plans-section"><div className="management-heading"><h3 ref={listHeading} tabIndex={-1}>Kế hoạch và phiên bản</h3><div className="management-actions">{canManage(user) && <button className="button primary" type="button" disabled={task.busy || !terminals.length} onClick={() => openCreate()}><Plus size={15} />Tạo kế hoạch</button>}<button className="button" type="button" onClick={refresh} disabled={result.resource.loading}><RefreshCw size={15} />Tải lại</button></div></div>
       <div className="management-filters"><label>Danh sách kế hoạch<select value={periodType} onChange={(event) => { setPeriodType(event.target.value); setPage(1); }}><option value="all">Tất cả kế hoạch</option>{Object.entries(PLAN_PERIOD_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        {periodType === 'week' && <WeekField value={listPeriod.week} onChange={(week) => changePeriod('week', week)} label="Tuần kế hoạch" />}
         {periodType === 'month' && <label>Tháng kế hoạch<input type="month" min="2000-01" max="2099-12" value={listPeriod.month} onChange={(event) => changePeriod('month', event.target.value)} /></label>}
         {periodType === 'quarter' && <QuarterFields value={listPeriod.quarter} onChange={(quarter) => changePeriod('quarter', quarter)} yearLabel="Năm kế hoạch" quarterLabel="Quý kế hoạch" />}
         {periodType === 'year' && <label>Năm kế hoạch<input type="number" min="2000" max="2099" step="1" value={listPeriod.year} onChange={(event) => changePeriod('year', event.target.value)} /></label>}

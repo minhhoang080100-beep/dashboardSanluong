@@ -30,6 +30,8 @@
 .plan-field { min-width: 0; }
 .plan-field-help, .plan-field-error { margin: 7px 0 0; font-size: 12px; line-height: 1.6; }
 .plan-field-help { color: var(--text-muted); }
+.management-week-field > .plan-field-help { display: block; }
+.management-filters > .management-week-field { flex: 0 1 340px; }
 .plan-field-help strong { display: block; color: var(--text-main); font-weight: 600; }
 .plan-field-error { color: var(--danger-color); }
 .management [aria-invalid="true"] { border-color: var(--danger-color); }
@@ -88,7 +90,7 @@
   .management-heading h3 { font-size: 16px; }
   .management-heading > .button { padding: 8px 10px; min-height: 36px; }
   .management-form { grid-template-columns: minmax(0, 1fr); }
-  .management-filters > label, .management-upload > label { flex: 1 1 160px; }
+  .management-filters > label, .management-filters > .management-week-field, .management-upload > label { flex: 1 1 160px; }
   .management-editor { padding: 12px; }
   .management-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .management-config { grid-template-columns: minmax(0, 1fr); }

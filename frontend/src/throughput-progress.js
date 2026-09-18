@@ -1,4 +1,5 @@
 import { BERTH_RULE_VERSION } from './production-scope.js';
+import { isoWeekValue, weekDates } from './dashboard-data.js';
 
 export const PROGRESS_BANDS = [
   { upper: 20, label: 'Dưới 20%', color: '#aa6c60', name: 'red' },
@@ -9,9 +10,16 @@ export const PROGRESS_BANDS = [
 ];
 
 const number = (value) => typeof value === 'number' && Number.isFinite(value);
-const periodTypes = ['month', 'quarter', 'year', 'custom'];
-const validDate = (value) => /^20\d{2}-\d{2}-\d{2}$/.test(value || '') && Number.isFinite(Date.parse(value))
+const periodTypes = ['week', 'month', 'quarter', 'year', 'custom'];
+const validDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || '') && value >= '1900-01-01' && Number.isFinite(Date.parse(value))
   && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+
+function validWeekBounds(type, start, end) {
+  if (type !== 'week') return true;
+  const week = isoWeekValue(start);
+  const bounds = /^20\d{2}-W\d{2}$/.test(week) && weekDates(week, '2100-01-10');
+  return Boolean(bounds && bounds.start_date === start && bounds.end_date === end);
+}
 
 export function reportSelectionForPlan(plan, terminal, today) {
   const start = plan?.period_start || plan?.start_date;
@@ -19,6 +27,7 @@ export function reportSelectionForPlan(plan, terminal, today) {
   if (!periodTypes.includes(plan?.period_type) || (plan.metric && plan.metric !== 'tonnage')
     || (plan.status && !['approved', 'ready', 'missing_plan'].includes(plan.status)) || plan.is_current === false
     || !validDate(start) || !validDate(end) || !validDate(today) || end < start
+    || !validWeekBounds(plan.period_type, start, end)
     || (Date.parse(end) - Date.parse(start)) / 86400000 >= 366) {
     throw new Error('Kế hoạch chưa đủ điều kiện mở tiến độ sản lượng thông qua.');
   }
@@ -53,6 +62,10 @@ export function completionView(item) {
 
 export function progressPeriodLabel(item) {
   const date = item.start_date || '';
+  if (item.period_type === 'week') {
+    const week = isoWeekValue(date);
+    return week ? `Tuần ${Number(week.slice(-2))}/${week.slice(0, 4)}` : 'Tuần';
+  }
   if (item.period_type === 'month') return `Tháng ${Number(date.slice(5, 7))}/${date.slice(0, 4)}`;
   if (item.period_type === 'quarter') return `Quý ${Math.ceil(Number(date.slice(5, 7)) / 3)}/${date.slice(0, 4)}`;
   if (item.period_type === 'year') return `Năm ${date.slice(0, 4)}`;
@@ -68,7 +81,7 @@ export function planProvenance(item) {
 export function selectProgressItem(items, selectedKey, preferredPeriodType) {
   return items.find((item) => item.key === selectedKey)
     || items.find((item) => item.period_type === preferredPeriodType)
-    || ['month', 'quarter', 'year', 'custom'].map((kind) => items.find((item) => item.period_type === kind)).find(Boolean) || null;
+    || periodTypes.map((kind) => items.find((item) => item.period_type === kind)).find(Boolean) || null;
 }
 
 export function validateThroughputProgress(value, report) {
@@ -84,7 +97,8 @@ export function validateThroughputProgress(value, report) {
   const keys = new Set();
   for (const item of value.items) {
     if (!item || typeof item.key !== 'string' || !item.key || keys.has(item.key)
-      || !['month', 'quarter', 'year', 'custom'].includes(item.period_type)
+      || !periodTypes.includes(item.period_type)
+      || !validWeekBounds(item.period_type, item.start_date, item.end_date)
       || item.start_date !== filters.start_date || !/^\d{4}-\d{2}-\d{2}$/.test(item.end_date || '')
       || item.end_date < filters.end_date || (item.target !== null && (!number(item.target) || item.target < 0))
       || (item.actual !== null && !number(item.actual))
@@ -103,6 +117,7 @@ export function validateThroughputProgress(value, report) {
     for (const candidate of value.available_periods) {
       if (!candidate || typeof candidate.key !== 'string' || !candidate.key || options.has(candidate.key)
         || !periodTypes.includes(candidate.period_type) || !validDate(candidate.start_date) || !validDate(candidate.end_date)
+        || !validWeekBounds(candidate.period_type, candidate.start_date, candidate.end_date)
         || candidate.end_date < candidate.start_date || (Date.parse(candidate.end_date) - Date.parse(candidate.start_date)) / 86400000 >= 366
         || (candidate.terminal && candidate.terminal !== filters.terminal)
         || (candidate.target !== null && (!number(candidate.target) || candidate.target < 0))

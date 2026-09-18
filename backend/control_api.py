@@ -17,7 +17,7 @@ else:
 router = APIRouter(prefix="/api")
 Terminal = Literal["cua_lo", "ben_thuy"]
 PlanTerminal = Literal['all', 'cua_lo', 'ben_thuy']
-PlanPeriod = Literal['month', 'quarter', 'year', 'custom', 'voyage']
+PlanPeriod = Literal['week', 'month', 'quarter', 'year', 'custom', 'voyage']
 
 
 @lru_cache(maxsize=1)
@@ -102,6 +102,7 @@ class UserUpdate(InputModel):
 class PlanBody(InputModel):
     terminal: PlanTerminal
     period_type: PlanPeriod = "month"
+    week: str | None = None
     month: str | None = None
     quarter: str | None = None
     year: int | None = Field(default=None, ge=2000, le=2099)
@@ -122,6 +123,7 @@ class PlanUpdate(InputModel):
     expected_revision: int = Field(ge=1)
     terminal: PlanTerminal | None = None
     period_type: PlanPeriod | None = None
+    week: str | None = None
     month: str | None = None
     quarter: str | None = None
     year: int | None = Field(default=None, ge=2000, le=2099)
@@ -213,13 +215,13 @@ def plans(terminal: Literal["all", "cua_lo", "ben_thuy"] | None = None,
           month: str | None = None, voyage_id: int | None = Query(default=None, ge=1),
           status: Literal["draft", "approved", "cancelled"] | None = None,
           period_type: PlanPeriod | None = None,
-          quarter: str | None = None, year: int | None = Query(default=None, ge=2000, le=2099),
+          week: str | None = None, quarter: str | None = None, year: int | None = Query(default=None, ge=2000, le=2099),
           start_date: date | None = None, end_date: date | None = None,
           page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=100),
           include_deleted: bool = False,
           user: dict = Depends(require_user), store: ControlStore = Depends(get_store)):
     return store.list_plans(user, terminal, month, voyage_id, status, page, page_size, period_type=period_type,
-                            quarter=quarter, year=year, start_date=start_date, end_date=end_date, include_deleted=include_deleted)
+                            week=week, quarter=quarter, year=year, start_date=start_date, end_date=end_date, include_deleted=include_deleted)
 
 
 @router.post("/plans", status_code=201)

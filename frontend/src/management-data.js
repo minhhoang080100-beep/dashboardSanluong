@@ -1,8 +1,9 @@
 import { BERTH_RULE_VERSION, isProductionScope } from './production-scope.js';
+import { isoWeekValue, weekDates } from './dashboard-data.js';
 
 export const MANAGEMENT_TERMINALS = { cua_lo: 'Cửa Lò', ben_thuy: 'Bến Thủy' };
 export const PLAN_TERMINALS = { all: 'Toàn công ty', ...MANAGEMENT_TERMINALS };
-export const PLAN_PERIOD_LABELS = { month: 'Theo tháng', quarter: 'Theo quý', year: 'Theo năm', custom: 'Khoảng ngày tùy chọn', voyage: 'Theo chuyến tàu' };
+export const PLAN_PERIOD_LABELS = { week: 'Theo tuần', month: 'Theo tháng', quarter: 'Theo quý', year: 'Theo năm', custom: 'Khoảng ngày tùy chọn', voyage: 'Theo chuyến tàu' };
 export const MANAGEMENT_ROLES = { viewer: 'Xem báo cáo', manager: 'Quản lý', admin: 'Quản trị' };
 export const ISSUE_LABELS = { missing_weight: 'Thiếu trọng lượng', unknown_unit: 'Chưa xác định đơn vị', negative: 'Giá trị âm' };
 export const ISSUE_STATUS_LABELS = { open: 'Đang xử lý', resolved: 'Đã xử lý', ignored: 'Không xử lý' };
@@ -25,11 +26,11 @@ export function planTerminals(allowedTerminals, periodType = 'month') {
 
 export function planDateDefaults(startDate, endDate = startDate) {
   const year = startDate.slice(0, 4);
-  return { month: startDate.slice(0, 7), quarter: `${year}-Q${Math.ceil(Number(startDate.slice(5, 7)) / 3)}`, year, start_date: startDate, end_date: endDate };
+  return { week: isoWeekValue(startDate), month: startDate.slice(0, 7), quarter: `${year}-Q${Math.ceil(Number(startDate.slice(5, 7)) / 3)}`, year, start_date: startDate, end_date: endDate };
 }
 
 export function planEntryPeriod(filters, preferredPeriodType) {
-  if (['month', 'quarter', 'year', 'custom'].includes(preferredPeriodType)) return preferredPeriodType;
+  if (['week', 'month', 'quarter', 'year', 'custom'].includes(preferredPeriodType)) return preferredPeriodType;
   const { start_date: start = '', end_date: end = '' } = filters || {};
   if (start.endsWith('-01') && start.slice(0, 7) === end.slice(0, 7)) return 'month';
   if (/^\d{4}-(01|04|07|10)-01$/.test(start)) {
@@ -80,7 +81,17 @@ function validPlanDate(value) {
   return /^20\d{2}-(0[1-9]|1[0-2])-\d{2}$/.test(value || '') && Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
 }
 
+export function planWeekDates(week) {
+  // Plans cover the whole ISO week, including future days and dates in the
+  // next calendar year. Report weekDates instead clips its end to today.
+  return /^20\d{2}-W\d{2}$/.test(week || '') ? weekDates(week, '2100-01-10') : null;
+}
+
 export function planPeriodFields(form) {
+  if (form.period_type === 'week') {
+    if (!planWeekDates(form.week)) throw new Error('Chọn tuần kế hoạch hợp lệ từ năm 2000 đến 2099.');
+    return { week: form.week };
+  }
   if (form.period_type === 'month') {
     if (!/^20\d{2}-(0[1-9]|1[0-2])$/.test(form.month || '')) throw new Error('Chọn tháng kế hoạch từ năm 2000 đến 2099.');
     return { month: form.month };
@@ -109,6 +120,10 @@ export function planPeriodFields(form) {
 
 export function planPeriodLabel(plan) {
   const date = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || '') ? value.split('-').reverse().join('/') : '—';
+  if (plan.period_type === 'week') {
+    const dates = planWeekDates(plan.week);
+    return dates ? `Tuần ${plan.week.slice(-2)}/${plan.week.slice(0, 4)} · ${date(dates.start_date)} – ${date(dates.end_date)}` : '—';
+  }
   if (plan.period_type === 'month') return plan.month || '—';
   if (plan.period_type === 'quarter') return /^20\d{2}-Q[1-4]$/.test(plan.quarter || '') ? `Quý ${plan.quarter.slice(-1)}/${plan.quarter.slice(0, 4)}` : '—';
   if (plan.period_type === 'year') return `Năm ${plan.year || '—'}`;
@@ -150,7 +165,7 @@ export function buildPlanPayload(form, allowedTerminals) {
 }
 
 export function buildPlanUpdatePayload(form, allowedTerminals) {
-  return { month: null, quarter: null, year: null, start_date: null, end_date: null, voyage_id: null, ...buildPlanPayload(form, allowedTerminals) };
+  return { week: null, month: null, quarter: null, year: null, start_date: null, end_date: null, voyage_id: null, ...buildPlanPayload(form, allowedTerminals) };
 }
 
 export function planDeletePayload(plan) {

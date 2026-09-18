@@ -49,7 +49,8 @@ Mỗi lựa chọn thay nội dung chính của trang. Có thể dùng nút quay
 
 ## Kế hoạch & đối soát
 
-- **Kế hoạch:** nhập tay hoặc tải mẫu Excel, điền số liệu từ văn bản đã duyệt, xem trước rồi lưu nháp. Duyệt phiên bản sau khi kiểm tra số văn bản và phạm vi. Hỗ trợ tháng hoặc chuyến, chỉ tiêu tấn/TEU riêng; không có số kế hoạch giả lập trong ứng dụng.
+- **Kế hoạch:** nhập tay hoặc tải mẫu Excel, điền số liệu từ văn bản đã duyệt, xem trước rồi lưu nháp. Duyệt phiên bản sau khi kiểm tra số văn bản và phạm vi. Hỗ trợ tuần, tháng, quý, năm, khoảng ngày hoặc chuyến, chỉ tiêu tấn/TEU riêng; không có số kế hoạch giả lập trong ứng dụng.
+- **Theo tuần:** chọn tuần ISO `YYYY-Www` trong biểu mẫu hoặc bộ lọc danh sách, kiểm tra khoảng thứ Hai–Chủ nhật trước khi lưu. Cho phép lập tuần tương lai; tuần hiện tại đối chiếu thực tế từ thứ Hai đến hôm nay với chỉ tiêu đủ 7 ngày. Tuần giao năm dùng năm ISO, có thể chứa ngày thuộc năm khác. Excel có cột **Tuần** cuối mẫu, dùng `period_type=week`; mẫu 8/12 cột cũ vẫn nhập được cho loại kỳ cũ.
 - **Sửa nháp / Hủy nháp:** bản nháp được sửa trước khi duyệt hoặc hủy kèm lý do. Bản đã duyệt giữ nguyên; cần thay đổi thì tạo phiên bản mới. Nếu người khác đã sửa bản nháp, tải lại danh sách và kiểm tra lại trước khi tiếp tục. **Lịch sử** hiển thị người lập/duyệt theo ID tài khoản, thời gian, giá trị và văn bản từng lần thay đổi.
 - Kế hoạch chuyến dùng danh mục chuyến tại xí nghiệp độc lập kỳ báo cáo. Chọn xí nghiệp, nhập tên tàu hoặc mã, bấm **Tìm chuyến**, đối chiếu mã và ngày vào rồi chọn. Chuyến chưa có sản lượng trong kỳ vẫn có thể lập kế hoạch nếu đã có trong nguồn.
 - **Thực hiện so với kế hoạch tháng:** dùng kỳ từ ngày 1 đến một ngày trong cùng tháng, so với kế hoạch cả tháng; không chia kế hoạch tuyến tính theo số ngày. Thiếu kế hoạch, kế hoạch 0 hoặc thực hiện thiếu dữ liệu hiển thị trạng thái phù hợp.

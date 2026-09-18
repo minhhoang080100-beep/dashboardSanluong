@@ -4,7 +4,7 @@ Trong **Báo cáo sản lượng**, chọn **Năm xem quý**, sau đó bấm **Q
 
 Trang **Kế hoạch** dùng để nhập, duyệt và tra cứu các phiên bản; không cần tải số liệu sản lượng trước. Dùng bộ lọc **Danh sách kế hoạch**, kỳ và **Xí nghiệp** ngay trong danh sách. Khi mở biểu mẫu tạo mới còn trống, kỳ và xí nghiệp lấy theo bộ lọc này; nội dung đang nhập được giữ nguyên khi mở lại biểu mẫu. Thanh tiến độ và bộ lọc kỳ báo cáo nằm tại **Báo cáo sản lượng**.
 
-Mặc định danh sách chọn **Tất cả kế hoạch** và **Trong phạm vi được cấp**: hiển thị kế hoạch của mọi loại kỳ, mọi năm và các phiên bản được phép xem. Danh sách chia trang 25 dòng; dùng **Trước / Sau** khi có nhiều kết quả. Có thể lọc theo tháng, quý, năm, khoảng ngày hoặc chuyến tàu rồi chọn lại **Tất cả kế hoạch** để bỏ giới hạn kỳ. Kế hoạch đã xóa chỉ hiện khi bật **Hiện kế hoạch đã xóa**. Khi đang xem tất cả, biểu mẫu tạo mới vẫn yêu cầu một loại kỳ cụ thể; không có loại kế hoạch “tất cả”.
+Mặc định danh sách chọn **Tất cả kế hoạch** và **Trong phạm vi được cấp**: hiển thị kế hoạch của mọi loại kỳ, mọi năm và các phiên bản được phép xem. Danh sách chia trang 25 dòng; dùng **Trước / Sau** khi có nhiều kết quả. Có thể lọc theo tuần, tháng, quý, năm, khoảng ngày hoặc chuyến tàu rồi chọn lại **Tất cả kế hoạch** để bỏ giới hạn kỳ. Kế hoạch đã xóa chỉ hiện khi bật **Hiện kế hoạch đã xóa**. Khi đang xem tất cả, biểu mẫu tạo mới vẫn yêu cầu một loại kỳ cụ thể; không có loại kế hoạch “tất cả”.
 
 Hai tab **Đối soát** và **Báo cáo đã chốt** vẫn dùng bộ lọc kỳ báo cáo và phạm vi sản lượng để kiểm tra hoặc chốt đúng dữ liệu. Bảng **Kế hoạch tháng theo từng xí nghiệp (tấn, TEU)** nằm trong tab **Đối soát**; bấm mở khi cần xem.
 
@@ -13,7 +13,7 @@ Hai tab **Đối soát** và **Báo cáo đã chốt** vẫn dùng bộ lọc k�
 Tài khoản có quyền **Quản lý** hoặc **Quản trị** thực hiện:
 
 1. Mở **Kế hoạch**, bấm **Tạo kế hoạch**; hoặc bấm **Nhập kế hoạch** trên thanh tiến độ của báo cáo.
-2. Chọn kỳ **tháng / quý / năm / tùy chọn**; nhập kỳ tương ứng. Khoảng ngày tùy chọn tối đa 366 ngày. Có thể lập kế hoạch cho kỳ tương lai.
+2. Chọn kỳ **tuần / tháng / quý / năm / tùy chọn**; nhập kỳ tương ứng. Khoảng ngày tùy chọn tối đa 366 ngày. Có thể lập kế hoạch cho kỳ tương lai.
 3. Chọn **Toàn công ty** hoặc xí nghiệp. Chọn **Sản lượng thông qua (tấn)**, nhập chỉ tiêu và văn bản hoặc nguồn giao kế hoạch. Nhập số theo cách viết Việt Nam: `150.000` là 150 nghìn tấn; `150.000,5` là 150 nghìn phẩy 5 tấn. Cũng có thể nhập `150000`. Kiểm tra giá trị diễn giải ngay dưới ô nhập; tối đa 6 chữ số thập phân.
 4. Lưu bản nháp, kiểm tra lại và bấm **Duyệt**. Bản nháp chưa dùng để tính tiến độ.
 5. Bấm **Xem tiến độ** sau khi duyệt hoặc tại dòng kế hoạch đã duyệt đang có hiệu lực. Dashboard tự mở đúng phạm vi, từ ngày đầu kỳ đến hôm nay hoặc ngày cuối kỳ nếu kỳ đã kết thúc. Kế hoạch tương lai vẫn lưu và duyệt được; chưa xem tiến độ trước ngày bắt đầu.
@@ -25,6 +25,16 @@ Nếu lưu bị lỗi, đọc thông báo ngay cạnh ô cần sửa. Nếu mấ
 Khi mở tiến độ cả năm hoặc khoảng ngày dài hơn 92 ngày, tổng hợp dữ liệu có thể cần khoảng một phút. Trang chờ tối đa 90 giây và hiển thị trạng thái đang tải. Nếu nguồn SQL báo lỗi, bấm thử lại; không cần nhập hoặc duyệt lại kế hoạch.
 
 Ví dụ: lập kế hoạch **Quý 3/2026 = 500.000 tấn**, chọn báo cáo **Quý 3/2026**. Ngày 17/09, thanh tiến độ lấy sản lượng từ 01/07 đến 17/09 chia cho 500.000 tấn của cả quý. Chỉ tiêu không tự chia nhỏ theo số ngày đã qua.
+
+## Kế hoạch theo tuần
+
+Trong biểu mẫu tạo kế hoạch, chọn **Theo tuần**, chọn tuần rồi kiểm tra khoảng ngày hiển thị bên dưới. Mỗi kế hoạch tuần gồm đủ **thứ Hai đến Chủ nhật**. Có thể lập và duyệt tuần tương lai; nút **Xem tiến độ** chỉ dùng khi tuần đã bắt đầu. Để tìm lại, chọn **Theo tuần** trong bộ lọc danh sách kế hoạch và chọn tuần cần xem.
+
+Tuần dùng lịch ISO với mã `YYYY-Www`, năm từ 2000 đến 2099. Ví dụ `2026-W38` là **14/09–20/09/2026**. Năm trong mã là năm ISO, nên tuần giao năm có thể chứa ngày của năm trước hoặc năm sau; `2020-W53` là **28/12/2020–03/01/2021**. Không phải năm nào cũng có tuần 53.
+
+Khi xem tiến độ tuần đang diễn ra, thực tế lấy từ thứ Hai đến hôm nay, còn chỉ tiêu vẫn là **toàn bộ 7 ngày**, không chia theo số ngày đã qua. Ví dụ tuần 38 giao 20.000 tấn, đến 18/09 đã thực hiện 12.000 tấn thì tiến độ là **60%**. Khi tuần kết thúc, báo cáo lấy đủ thứ Hai–Chủ nhật. Dùng **Tuần này**, **Tuần trước** hoặc **Chọn tuần → Xem tuần** tại Báo cáo sản lượng để mở đúng kỳ.
+
+Với Excel, tải mẫu mới, chọn `week` ở cột **Loại kế hoạch** và nhập `2026-W38` vào cột **Tuần** cuối bảng. Để trống Tháng, Quý, Năm, Từ ngày, Đến ngày và ID chuyến trên dòng đó. Cột Tuần không làm thay đổi vị trí các cột cũ; các mẫu 8 hoặc 12 cột đã tải trước đây vẫn nhập được cho các loại kế hoạch tương ứng.
 
 ## Đọc thanh tiến độ
 
@@ -46,7 +56,7 @@ Nếu nguồn còn thiếu số liệu, tỷ lệ được ghi **Tạm tính** v
 
 - Kế hoạch công ty áp dụng cho phần **Cảng Nghệ Tĩnh**, đã tách các chuyến cập đầu tiên vào **Cầu 5** của Vietsun.
 - Khi xem toàn công ty, kế hoạch toàn công ty được ưu tiên. Nếu chưa có, chỉ cộng kế hoạch của hai xí nghiệp khi đủ cả hai và cùng loại kỳ, cùng thời gian. Không cộng thêm kế hoạch xí nghiệp vào kế hoạch toàn công ty.
-- Không cộng chồng kế hoạch tháng, quý và năm. Mỗi lần đối chiếu dùng một kỳ kế hoạch được chọn.
+- Không cộng chồng kế hoạch tuần, tháng, quý và năm. Mỗi lần đối chiếu dùng một kỳ kế hoạch được chọn.
 - Thay đổi chỉ tiêu đã duyệt bằng nút **Tạo phiên bản mới**, sửa chỉ tiêu/căn cứ rồi lưu nháp và duyệt. Phiên bản cũ vẫn có hiệu lực cho đến khi bản mới được duyệt; lịch sử vẫn được giữ. Báo cáo đã chốt giữ các chỉ tiêu tại thời điểm chốt.
 - Local dùng API Railway thì các kế hoạch nhập tại local cũng được lưu trên server Railway.
 
