@@ -1,6 +1,6 @@
 # Sử dụng kế hoạch sản lượng
 
-Trong **Báo cáo sản lượng**, chọn **Năm xem quý**, sau đó bấm **Quý 1**, **Quý 2**, **Quý 3** hoặc **Quý 4**. Quý đã kết thúc lấy đủ ba tháng; quý đang diễn ra lấy từ đầu quý đến hôm nay. Quý chưa bắt đầu chưa có số liệu thực tế để xem. Muốn xem quý của năm trước, đổi năm trước khi chọn quý.
+Trong **Báo cáo sản lượng**, chọn **Loại kỳ → Quý**, chọn **Năm**, **Quý** và **Phạm vi xí nghiệp**, rồi bấm **Xem báo cáo**. Quý đã kết thúc lấy đủ ba tháng; quý đang diễn ra lấy từ đầu quý đến hôm nay. Quý chưa bắt đầu chưa có số liệu thực tế để xem.
 
 Trang **Kế hoạch** dùng để nhập, duyệt và tra cứu các phiên bản; không cần tải số liệu sản lượng trước. Dùng bộ lọc **Danh sách kế hoạch**, kỳ và **Xí nghiệp** ngay trong danh sách. Khi mở biểu mẫu tạo mới còn trống, kỳ và xí nghiệp lấy theo bộ lọc này; nội dung đang nhập được giữ nguyên khi mở lại biểu mẫu. Thanh tiến độ và bộ lọc kỳ báo cáo nằm tại **Báo cáo sản lượng**.
 
@@ -22,6 +22,10 @@ Tài khoản có quyền **Quản lý** hoặc **Quản trị** thực hiện:
 
 Trên thanh tiến độ, **Kế hoạch đối chiếu** liệt kê các kỳ đã duyệt trong phạm vi đang xem. Chọn kế hoạch năm khi đang xem tháng sẽ mở báo cáo từ đầu năm, không lấy sản lượng riêng của tháng chia cho chỉ tiêu cả năm. Kế hoạch chưa đủ hai xí nghiệp khi xem toàn công ty sẽ báo thiếu chỉ tiêu, không hiển thị tỷ lệ giả.
 
+Nếu chưa có kế hoạch cho phạm vi đang xem nhưng có kế hoạch đã duyệt ở xí nghiệp khác được phép truy cập, thanh tiến độ hiển thị **Kế hoạch ở phạm vi khác**. Chọn kế hoạch và bấm **Xem tiến độ…** để mở đúng kỳ và xí nghiệp. Ví dụ, kế hoạch Cửa Lò tháng 09 không dùng sản lượng Bến Thủy để tính tỷ lệ. Có thể mở trực tiếp bằng **Xem tiến độ** tại dòng kế hoạch trong danh sách.
+
+Nút **Tải lại tiến độ** đọc lại các kế hoạch đã duyệt, hữu ích khi vừa duyệt ở cửa sổ khác; không tải lại số liệu sản lượng. Muốn cập nhật cả sản lượng thực tế, dùng nút tải lại báo cáo ở bộ lọc kỳ.
+
 Nếu lưu bị lỗi, đọc thông báo ngay cạnh ô cần sửa. Nếu mất kết nối khi lưu hoặc duyệt, tải lại danh sách để kiểm tra trạng thái trước khi thử lại, tránh nhập trùng. Số văn bản/nguồn phê duyệt là bắt buộc.
 
 Khi mở tiến độ cả năm hoặc khoảng ngày dài hơn 92 ngày, tổng hợp dữ liệu có thể cần khoảng một phút. Trang chờ tối đa 90 giây và hiển thị trạng thái đang tải. Nếu nguồn SQL báo lỗi, bấm thử lại; không cần nhập hoặc duyệt lại kế hoạch.
@@ -34,7 +38,7 @@ Trong biểu mẫu tạo kế hoạch, chọn **Theo tuần**, chọn tuần r�
 
 Tuần dùng lịch ISO với mã `YYYY-Www`, năm từ 2000 đến 2099. Ví dụ `2026-W38` là **14/09–20/09/2026**. Năm trong mã là năm ISO, nên tuần giao năm có thể chứa ngày của năm trước hoặc năm sau; `2020-W53` là **28/12/2020–03/01/2021**. Không phải năm nào cũng có tuần 53.
 
-Khi xem tiến độ tuần đang diễn ra, thực tế lấy từ thứ Hai đến hôm nay, còn chỉ tiêu vẫn là **toàn bộ 7 ngày**, không chia theo số ngày đã qua. Ví dụ tuần 38 giao 20.000 tấn, đến 18/09 đã thực hiện 12.000 tấn thì tiến độ là **60%**. Khi tuần kết thúc, báo cáo lấy đủ thứ Hai–Chủ nhật. Dùng **Tuần này**, **Tuần trước** hoặc **Chọn tuần → Xem tuần** tại Báo cáo sản lượng để mở đúng kỳ.
+Khi xem tiến độ tuần đang diễn ra, thực tế lấy từ thứ Hai đến hôm nay, còn chỉ tiêu vẫn là **toàn bộ 7 ngày**, không chia theo số ngày đã qua. Ví dụ tuần 38 giao 20.000 tấn, đến 18/09 đã thực hiện 12.000 tấn thì tiến độ là **60%**. Khi tuần kết thúc, báo cáo lấy đủ thứ Hai–Chủ nhật. Tại Báo cáo sản lượng, chọn **Loại kỳ → Tuần**, chọn năm và tuần hoặc dùng **Tuần này**, **Tuần trước**, rồi bấm **Xem báo cáo**.
 
 Với Excel, tải mẫu mới, chọn `week` ở cột **Loại kế hoạch** và nhập `2026-W38` vào cột **Tuần** cuối bảng. Để trống Tháng, Quý, Năm, Từ ngày, Đến ngày và ID chuyến trên dòng đó. Cột Tuần không làm thay đổi vị trí các cột cũ; các mẫu 8 hoặc 12 cột đã tải trước đây vẫn nhập được cho các loại kế hoạch tương ứng.
 

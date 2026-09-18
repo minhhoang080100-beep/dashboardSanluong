@@ -21,6 +21,26 @@ function validWeekBounds(type, start, end) {
   return Boolean(bounds && bounds.start_date === start && bounds.end_date === end);
 }
 
+function validNavigationPeriod(candidate) {
+  const { period_type: type, period_key: key, start_date: start, end_date: end } = candidate;
+  if (typeof key !== 'string' || candidate.key !== `${type}:${key}`) return false;
+  const year = start.slice(0, 4);
+  const month = Number(start.slice(5, 7));
+  if (type === 'week') return key === isoWeekValue(start) && validWeekBounds(type, start, end);
+  if (type === 'custom') return key === `${start}/${end}`;
+  if (type === 'year') return key === year && start === `${year}-01-01` && end === `${year}-12-31`;
+  if (type === 'month') {
+    const last = new Date(Date.UTC(Number(year), month, 0)).toISOString().slice(0, 10);
+    return key === start.slice(0, 7) && start.endsWith('-01') && end === last;
+  }
+  if (type === 'quarter') {
+    const quarter = Math.ceil(month / 3);
+    const last = new Date(Date.UTC(Number(year), quarter * 3, 0)).toISOString().slice(0, 10);
+    return key === `${year}-Q${quarter}` && [1, 4, 7, 10].includes(month) && start.endsWith('-01') && end === last;
+  }
+  return false;
+}
+
 export function reportSelectionForPlan(plan, terminal, today) {
   const start = plan?.period_start || plan?.start_date;
   const end = plan?.period_end || plan?.end_date;
@@ -84,7 +104,7 @@ export function selectProgressItem(items, selectedKey, preferredPeriodType) {
     || periodTypes.map((kind) => items.find((item) => item.period_type === kind)).find(Boolean) || null;
 }
 
-export function validateThroughputProgress(value, report) {
+export function validateThroughputProgress(value, report, permittedTerminals = null) {
   const filters = report?.meta?.filters;
   const fail = () => { throw new Error('Tiến độ kế hoạch chưa khớp kỳ và phạm vi báo cáo. Vui lòng tải lại.'); };
   if (!filters || !value || value.report_id !== report.meta.report_id
@@ -127,6 +147,25 @@ export function validateThroughputProgress(value, report) {
     for (const item of value.items) {
       const candidate = options.get(item.key);
       if (!candidate || ['period_type', 'start_date', 'end_date', 'target'].some((field) => candidate[field] !== item[field])) fail();
+    }
+  }
+  if (value.other_scope_periods !== undefined) {
+    if (!Array.isArray(value.other_scope_periods)
+      || ((!value.eligible || value.items.length > 0) && value.other_scope_periods.length)
+      || (permittedTerminals !== null && !Array.isArray(permittedTerminals))) fail();
+    const metadataFields = new Set(['key', 'period_type', 'period_key', 'start_date', 'end_date', 'terminal', 'target']);
+    const alternatives = new Set();
+    for (const candidate of value.other_scope_periods) {
+      if (!candidate || Object.keys(candidate).some((field) => !metadataFields.has(field))
+        || !periodTypes.includes(candidate.period_type) || !validDate(candidate.start_date) || !validDate(candidate.end_date)
+        || candidate.end_date < candidate.start_date || (Date.parse(candidate.end_date) - Date.parse(candidate.start_date)) / 86400000 >= 366
+        || !validNavigationPeriod(candidate)
+        || !['all', 'cua_lo', 'ben_thuy'].includes(candidate.terminal) || candidate.terminal === filters.terminal
+        || (permittedTerminals !== null && !permittedTerminals.includes(candidate.terminal))
+        || !number(candidate.target) || candidate.target < 0) fail();
+      const identity = `${candidate.terminal}/${candidate.key}`;
+      if (alternatives.has(identity)) fail();
+      alternatives.add(identity);
     }
   }
   return value;

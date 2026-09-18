@@ -78,6 +78,101 @@ test('other approved periods can be offered without manufacturing their actuals'
   assert.throws(() => validateThroughputProgress(value, report));
 });
 
+function otherScopeFixture() {
+  const selectedReport = structuredClone(report);
+  selectedReport.meta.filters.terminal = 'ben_thuy';
+  const candidate = { key: 'quarter:2026-Q3', period_type: 'quarter', period_key: '2026-Q3', start_date: '2026-07-01', end_date: '2026-09-30', terminal: 'cua_lo', target: 1000 };
+  const value = { ...response(), period: { ...selectedReport.meta.filters }, items: [], available_periods: [], other_scope_periods: [candidate] };
+  return { selectedReport, value, candidate };
+}
+
+test('a Ben Thuy report may offer an authorized Cua Lo plan only as navigation metadata', () => {
+  const { selectedReport, value, candidate } = otherScopeFixture();
+  const validated = validateThroughputProgress(value, selectedReport, ['all', 'cua_lo', 'ben_thuy']);
+  assert.deepEqual(validated.other_scope_periods, [candidate]);
+  assert.deepEqual(validated.items, []);
+  assert.deepEqual(progressPeriodOptions(validated), []);
+  assert.equal(selectProgressItem(validated.items, candidate.key, 'quarter'), null);
+  assert.equal(completionView(candidate).percent, null);
+  assert.deepEqual(reportSelectionForPlan(candidate, 'ben_thuy', '2026-09-18'), {
+    filters: { start_date: '2026-07-01', end_date: '2026-09-18', terminal: 'cua_lo', production_scope: 'nghe_tinh' },
+    periodType: 'quarter', periodKey: 'quarter:2026-Q3',
+  });
+  assert.equal(selectedReport.overview.total_tonnage, 400);
+  assert.deepEqual(validateThroughputProgress(response(), report), response()); // older server without alternatives
+  assert.equal(validateThroughputProgress(value, selectedReport).other_scope_periods.length, 1);
+});
+
+test('other-scope plan suggestions cannot contain actuals, completion, detail records or unauthorized targets', () => {
+  const { selectedReport, value } = otherScopeFixture();
+  for (const extra of [
+    { actual: 400 }, { actual: null }, { actual_status: 'ready' }, { completion_percent: 40 },
+    { completion: 40 }, { plans: [{ reference: 'private-reference' }] }, { status: 'approved' },
+  ]) {
+    const invalid = structuredClone(value);
+    Object.assign(invalid.other_scope_periods[0], extra);
+    assert.throws(() => validateThroughputProgress(invalid, selectedReport, ['all', 'cua_lo', 'ben_thuy']));
+  }
+  assert.throws(() => validateThroughputProgress(value, selectedReport, ['ben_thuy']));
+  assert.throws(() => validateThroughputProgress(value, selectedReport, []));
+  assert.throws(() => validateThroughputProgress(value, selectedReport, { cua_lo: true }));
+  const company = structuredClone(value);
+  company.other_scope_periods[0].terminal = 'all';
+  assert.throws(() => validateThroughputProgress(company, selectedReport, ['ben_thuy', 'cua_lo']));
+  assert.equal(validateThroughputProgress(company, selectedReport, ['all', 'ben_thuy', 'cua_lo']).other_scope_periods[0].terminal, 'all');
+});
+
+test('alternatives are absent when the report is ineligible or already has a matching plan', () => {
+  const { selectedReport, value } = otherScopeFixture();
+  const matching = { ...value, items: [{ ...item }] };
+  delete matching.available_periods;
+  assert.throws(() => validateThroughputProgress(matching, selectedReport));
+  matching.other_scope_periods = [];
+  assert.equal(validateThroughputProgress(matching, selectedReport).items.length, 1);
+  const ineligible = { ...value, eligible: false };
+  assert.throws(() => validateThroughputProgress(ineligible, selectedReport));
+  ineligible.other_scope_periods = [];
+  assert.deepEqual(validateThroughputProgress(ineligible, selectedReport).other_scope_periods, []);
+  for (const invalid of [null, {}, 'cua_lo']) {
+    assert.throws(() => validateThroughputProgress({ ...value, other_scope_periods: invalid }, selectedReport));
+  }
+});
+
+test('other-scope alternatives reject duplicate terminal-period pairs but allow the same period in distinct scopes', () => {
+  const { selectedReport, value, candidate } = otherScopeFixture();
+  const scopes = ['all', 'cua_lo', 'ben_thuy'];
+  const duplicate = { ...value, other_scope_periods: [{ ...candidate }, { ...candidate }] };
+  assert.throws(() => validateThroughputProgress(duplicate, selectedReport, scopes));
+  const distinct = { ...value, other_scope_periods: [{ ...candidate }, { ...candidate, terminal: 'all', target: 2000 }] };
+  assert.equal(validateThroughputProgress(distinct, selectedReport, scopes).other_scope_periods.length, 2);
+  for (const terminal of ['ben_thuy', 'unknown', '', undefined]) {
+    assert.throws(() => validateThroughputProgress({ ...value, other_scope_periods: [{ ...candidate, terminal }] }, selectedReport, scopes));
+  }
+});
+
+test('other-scope candidates require canonical identities and complete valid target bounds', () => {
+  const { selectedReport, value, candidate } = otherScopeFixture();
+  for (const changes of [
+    { key: 'quarter/2026-Q3' }, { period_key: '2026-Q4' }, { period_type: 'voyage' },
+    { start_date: '2026-07-02' }, { start_date: '2026-08-01' }, { end_date: '2026-09-18' },
+    { start_date: '2026-02-30' }, { end_date: '2026-09-31' }, { end_date: '2025-09-30' },
+    { end_date: '2027-09-30' }, { target: null }, { target: -1 }, { target: NaN }, { target: Infinity }, { target: '1000' },
+  ]) assert.throws(() => validateThroughputProgress({ ...value, other_scope_periods: [{ ...candidate, ...changes }] }, selectedReport));
+  for (const period of [
+    { key: 'month:2024-02', period_type: 'month', period_key: '2024-02', start_date: '2024-02-01', end_date: '2024-02-29' },
+    { key: 'year:2026', period_type: 'year', period_key: '2026', start_date: '2026-01-01', end_date: '2026-12-31' },
+    { key: 'custom:2026-08-12/2026-09-04', period_type: 'custom', period_key: '2026-08-12/2026-09-04', start_date: '2026-08-12', end_date: '2026-09-04' },
+    { key: 'week:2020-W53', period_type: 'week', period_key: '2020-W53', start_date: '2020-12-28', end_date: '2021-01-03' },
+  ]) {
+    const data = { ...value, other_scope_periods: [{ ...candidate, ...period }] };
+    assert.equal(validateThroughputProgress(data, selectedReport).other_scope_periods.length, 1);
+    const wrongEnd = structuredClone(data);
+    wrongEnd.other_scope_periods[0].end_date = period.start_date;
+    assert.throws(() => validateThroughputProgress(wrongEnd, selectedReport));
+  }
+  assert.throws(() => validateThroughputProgress({ ...value, other_scope_periods: [{ ...candidate, key: 'week:2025-W53', period_type: 'week', period_key: '2025-W53', start_date: '2025-12-29', end_date: '2026-01-04' }] }, selectedReport));
+});
+
 test('five bands use exact values at thresholds, without rounding into the next band', () => {
   for (const [actual, band] of [[0, 'red'], [199.999, 'red'], [200, 'orange'], [399.999, 'orange'], [400, 'yellow'], [599.999, 'yellow'], [600, 'light-green'], [799.999, 'light-green'], [800, 'dark-green']]) {
     assert.equal(completionView({ ...item, actual }).band.name, band);

@@ -146,6 +146,38 @@ def test_deleted_company_target_does_not_fall_back_to_terminal_sum(state):
     assert store.throughput_progress(actor, report())['items'][0]['plans'][0]['id'] == replacement['id']
 
 
+def test_deleted_company_targets_offer_navigation_to_live_terminal_plan_without_company_actuals(state):
+    store, actor, _, _ = state
+    for kind, period in [('month', {'month': '2026-09'}), ('quarter', {'quarter': '2026-Q3'}), ('year', {'year': 2026})]:
+        target(store, actor, period_type=kind, **period, amount=1000)
+        current = target(store, actor, period_type=kind, **period, amount=2000)
+        store.delete_plan(actor, current['id'], current['revision'])
+    terminal = target(store, actor, terminal='cua_lo', period_type='month', month='2026-09', amount=700)
+    company_report = report(start='2026-09-01', end='2026-09-18', value=999)
+    company = store.throughput_progress(actor, company_report)
+    assert company['items'] == company['available_periods'] == []
+    assert company['other_scope_periods'] == [{
+        'key': 'month:2026-09', 'period_type': 'month', 'period_key': '2026-09',
+        'start_date': '2026-09-01', 'end_date': '2026-09-30', 'terminal': 'cua_lo', 'target': 700}]
+    terminal_report = store.throughput_progress(actor, report(terminal='cua_lo', start='2026-09-01', end='2026-09-18', value=350))
+    item = terminal_report['items'][0]
+    assert item['plans'][0]['id'] == terminal['id']
+    assert item['actual'] == 350 and item['target'] == 700 and item['completion_percent'] == 50
+    assert terminal_report['other_scope_periods'] == []
+
+
+def test_other_scope_navigation_does_not_revive_an_older_approval_after_latest_is_deleted(state):
+    store, actor, _, _ = state
+    target(store, actor, terminal='ben_thuy', amount=100)
+    latest = target(store, actor, terminal='ben_thuy', amount=200)
+    store.delete_plan(actor, latest['id'], latest['revision'])
+    assert store.throughput_progress(actor, report(terminal='cua_lo'))['other_scope_periods'] == []
+    replacement = target(store, actor, terminal='ben_thuy', amount=300)
+    assert replacement['version'] == 3
+    alternatives = store.throughput_progress(actor, report(terminal='cua_lo'))['other_scope_periods']
+    assert len(alternatives) == 1 and alternatives[0]['target'] == 300
+
+
 def test_deleted_terminal_target_is_missing_not_older_value_in_company_progress(state):
     store, actor, _, _ = state
     target(store, actor, terminal='cua_lo', amount=50)

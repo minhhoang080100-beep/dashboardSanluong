@@ -822,7 +822,7 @@ class ControlStore:
         eligible = scope['production_scope'] == 'nghe_tinh' and not scope['legacy_scope']
         result = {'report_id': report.get('meta', {}).get('report_id'), 'production_scope': scope['production_scope'],
                   'berth_rule_version': scope['berth_rule_version'], 'period': dict(filters), 'eligible': eligible,
-                  'reason': None, 'items': [], 'available_periods': []}
+                  'reason': None, 'items': [], 'available_periods': [], 'other_scope_periods': []}
         if not eligible:
             result['reason'] = 'Chỉ đối chiếu kế hoạch Cảng Nghệ Tĩnh với dữ liệu đã phân loại theo quy tắc cầu cập đầu tiên.'
             return result
@@ -870,7 +870,29 @@ class ControlStore:
                 result['items'].append(throughput_progress_item(period, plans, overview.get('total_tonnage'),
                                       overview.get('tonnage_status', 'unavailable'), source, complete_target=complete))
         if not result['items']:
-            result['reason'] = 'Chưa có kế hoạch tấn thông qua đã duyệt bắt đầu đúng ngày đầu kỳ và bao phủ kỳ báo cáo.'
+            # Offer navigation to an explicitly different authorized scope;
+            # never compare that target with this report's numerator. Keep
+            # deleted approvals in the supersession check so older versions
+            # cannot reappear after deletion, including company targets.
+            other_terms, other_params = self._scope_filter(actor, None)
+            alternatives = db.execute(f"""SELECT selected.* FROM plans selected WHERE {other_terms}
+                AND terminal<>? AND metric='tonnage' AND period_type<>'voyage'
+                AND status='approved' AND selected.deleted_at IS NULL
+                AND NOT EXISTS (SELECT 1 FROM plans newer WHERE newer.terminal=selected.terminal
+                    AND newer.period_type=selected.period_type AND newer.period_key=selected.period_key
+                    AND newer.metric=selected.metric AND newer.status='approved' AND newer.version>selected.version)
+                ORDER BY terminal,period_type,period_key""", (*other_params, terminal)).fetchall()
+            for row in alternatives:
+                plan = self._plan_view(row, row['version'])
+                result['other_scope_periods'].append({
+                    'key': f"{plan['period_type']}:{plan['period_key']}",
+                    'period_type': plan['period_type'], 'period_key': plan['period_key'],
+                    'start_date': plan['period_start'], 'end_date': plan['period_end'],
+                    'terminal': plan['terminal'], 'target': float(Decimal(plan['amount_decimal']))})
+            if result['available_periods']:
+                result['reason'] = 'Kỳ báo cáo chưa khớp kế hoạch đã duyệt trong phạm vi đang xem. Chọn kế hoạch để mở đúng kỳ.'
+            else:
+                result['reason'] = 'Chưa có kế hoạch tấn thông qua đã duyệt còn hiệu lực cho phạm vi đang xem.'
         return result
 
     def throughput_progress(self, actor, report):
@@ -945,6 +967,9 @@ class ControlStore:
                 # The approved period targets share the closure transaction;
                 # a concurrent approval cannot change the captured versions.
                 throughput = {**self._throughput_progress(db, actor, report), 'captured': True, 'captured_at': _iso(self.clock())}
+                # Cross-scope navigation is authorized for the current actor,
+                # not every future reader of a single-terminal closed report.
+                throughput['other_scope_periods'] = []
                 report_json = _json({**report, 'planning': planning, 'throughput_progress': throughput})
                 if len(report_json.encode('utf-8')) + len(facts_json.encode('utf-8')) > 64 * 1024 * 1024:
                     raise ControlError(413, 'REPORT_TOO_LARGE', 'Báo cáo vượt giới hạn lưu trữ; hãy thu hẹp kỳ.')

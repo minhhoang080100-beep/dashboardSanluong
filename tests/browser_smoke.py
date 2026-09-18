@@ -19,10 +19,10 @@ from browser_auth_support import install_auth_fixture
 from browser_filter_support import apply_report, custom_period, report_shortcut
 
 
-def fixture(filters, empty=False, native=False, missing=False):
+def fixture(filters, empty=False, native=False, missing=False, *, cua_lo_tonnage=1000.125):
     start = date.fromisoformat(filters["start_date"])
     rows = []
-    terminals = [("cua_lo", "Cửa Lò", 1000.125, 10), ("ben_thuy", "Bến Thủy", 2000, 20)]
+    terminals = [("cua_lo", "Cửa Lò", cua_lo_tonnage, 10), ("ben_thuy", "Bến Thủy", 2000, 20)]
     for terminal, name, tonnage, teu in terminals:
         if filters["terminal"] not in ("all", terminal):
             continue

@@ -69,6 +69,125 @@ def check_midnight_draft(browser, url):
         page.close()
 
 
+def check_plan_scope_recovery(browser, url):
+    """Use another scope's metadata only after opening that scope's actuals."""
+    plan = {"id": 1200, "version": 1, "revision": 2, "terminal": "cua_lo", "metric": "tonnage",
+            "period_type": "month", "period_key": "2026-09", "period_start": "2026-09-01",
+            "period_end": "2026-09-30", "amount": 1000, "amount_decimal": "1000",
+            "status": "approved", "is_current": True, "reference": "SYNTHETIC-CUA-LO-TARGET",
+            "approved_at": "2026-09-17T05:00:00Z"}
+    option = {"key": "month:2026-09", "period_type": "month", "period_key": "2026-09",
+              "start_date": "2026-09-01", "end_date": "2026-09-30", "terminal": "cua_lo", "target": 1000}
+
+    for initial_terminal in ("ben_thuy", "cua_lo"):
+        page = browser.new_page(viewport={"width": 1440, "height": 1050})
+        page.clock.set_fixed_time(datetime(2026, 9, 17, 5, tzinfo=timezone.utc))
+        auth = install_auth_fixture(page, role="admin")
+        initial = {"start_date": "2026-09-01", "end_date": "2026-09-17",
+                   "terminal": initial_terminal, "production_scope": "nghe_tinh"}
+        page.add_init_script(f"localStorage.setItem('port-report-filters-9001', JSON.stringify({json.dumps(initial)}));")
+        state = {"reports": {}, "requests": [], "ready": initial_terminal == "ben_thuy", "hold": False, "held": []}
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+
+        def respond(route):
+            parsed = urlparse(route.request.url)
+            path = parsed.path.removeprefix("/api")
+            state["requests"].append(path)
+            if path == "/dashboard":
+                query = parse_qs(parsed.query)
+                filters = {key: query[key][0] for key in FILTER_KEYS}
+                report = fixture(filters, cua_lo_tonnage=1000)
+                report_id = f"synthetic-scope-{len(state['reports']) + 1}"
+                report["meta"].update(report_id=report_id, source_read_at="2026-09-17T05:00:00Z")
+                state["reports"][report_id] = report
+                route.fulfill(json=report)
+            elif path.endswith("/throughput-progress"):
+                report = state["reports"][path.split("/")[2]]
+                filters = report["meta"]["filters"]
+                response = {"report_id": report["meta"]["report_id"], "period": dict(filters),
+                            "production_scope": "nghe_tinh", "berth_rule_version": "initial-berth-v1",
+                            "eligible": True, "items": [], "available_periods": [], "other_scope_periods": [],
+                            "reason": "Chưa có kế hoạch được duyệt khớp kỳ và phạm vi báo cáo."}
+                if state["ready"] and filters["terminal"] == "cua_lo":
+                    response["items"] = [throughput_progress_item(plan, [plan], report["overview"]["total_tonnage"],
+                                                                    report["overview"]["tonnage_status"], "terminal")]
+                    response["available_periods"] = [dict(option)]
+                    response["reason"] = None
+                elif state["ready"]:
+                    response["other_scope_periods"] = [dict(option)]
+                    response["available_periods"] = [{"key": "year:2025", "period_type": "year", "period_key": "2025",
+                        "start_date": "2025-01-01", "end_date": "2025-12-31", "terminal": "ben_thuy", "target": 4000}]
+                    response["reason"] = "Kỳ báo cáo chưa khớp kế hoạch đã duyệt trong phạm vi đang xem. Chọn kế hoạch để mở đúng kỳ."
+                if state["hold"]:
+                    state["hold"] = False
+                    state["held"].append((route, response))
+                else:
+                    route.fulfill(json=response)
+            else:
+                route.fallback()
+
+        page.route("**/api/**", respond)
+        try:
+            page.goto(url)
+            panel = page.locator(".throughput-progress")
+            expect(panel).not_to_contain_text("Đang đọc kế hoạch")
+            reload = panel.get_by_role("button", name="Tải lại tiến độ", exact=True)
+            expect(reload).to_be_enabled()
+            expect(panel.get_by_role("progressbar")).to_have_count(0)
+            before = len(state["reports"])
+            if initial_terminal == "ben_thuy":
+                expect(page.locator(".kpi-value").first.locator(".inspect-value")).to_have_text("2.000")
+                expect(panel.locator(".throughput-progress-recovery")).to_contain_text("Đang xem Xí nghiệp Bến Thủy")
+                expect(panel.get_by_role("combobox", name="Kế hoạch đối chiếu", exact=True)).to_contain_text("Năm 2025")
+                other = panel.get_by_label("Kế hoạch ở phạm vi khác", exact=True)
+                other.select_option("cua_lo/month:2026-09")
+                assert len(state["reports"]) == before, "choosing another target must not use current-scope actuals"
+                expect(panel.get_by_role("progressbar")).to_have_count(0)
+                for width in (320, 390, 768, 1440):
+                    page.set_viewport_size({"width": width, "height": 1050})
+                    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), width
+                    for control in panel.locator("select, button, a").all():
+                        if control.is_visible():
+                            assert control.evaluate("element => { const box = element.getBoundingClientRect(); return box.left >= 0 && box.right <= innerWidth; }"), width
+                    if width in (390, 1440):
+                        page.evaluate("element => window.scrollTo(0, element.getBoundingClientRect().top + window.scrollY - 100)", panel.element_handle())
+                        panel.screenshot(path=str(Path("outputs") / f"browser-targets-recovery-{width}.png"))
+                panel.get_by_role("button", name="Xem tiến độ Xí nghiệp Cửa Lò", exact=True).click()
+                expect(panel.get_by_role("progressbar")).to_have_attribute("aria-valuetext", "100% kế hoạch")
+                expect(page.locator(".kpi-value").first.locator(".inspect-value")).to_have_text("1.000")
+                expect(other).to_have_count(0)
+                expect(period_controls(page).get_by_label("Phạm vi xí nghiệp", exact=True)).to_have_value("cua_lo")
+                expect(period_controls(page).get_by_label("Loại kỳ", exact=True)).to_have_value("month")
+                expect(period_controls(page).get_by_label("Năm", exact=True)).to_have_value("2026")
+                expect(period_controls(page).get_by_label("Tháng", exact=True)).to_have_value("09")
+                expect(page.locator(".report-context")).to_contain_text("01/09/2026 – 17/09/2026")
+                expect(page.locator(".report-period-preview")).to_contain_text("01/09/2026 – 17/09/2026")
+                assert len(state["reports"]) > before
+                latest_filters = list(state["reports"].values())[-1]["meta"]["filters"]
+                assert {key: latest_filters[key] for key in FILTER_KEYS} == {**initial, "terminal": "cua_lo"}
+                expect(panel.locator(".throughput-progress-percent")).to_have_text("100%")
+            else:
+                expect(panel).to_contain_text("Chưa có kế hoạch được duyệt")
+                state["ready"] = True
+                state["hold"] = True
+                progress_before = sum(path.endswith("/throughput-progress") for path in state["requests"])
+                reload.click()
+                expect(reload).to_be_disabled()
+                expect(panel).to_contain_text("Đang đọc kế hoạch")
+                assert len(state["held"]) == 1
+                route, response = state["held"].pop()
+                route.fulfill(json=response)
+                expect(panel.get_by_role("progressbar")).to_have_attribute("aria-valuetext", "100% kế hoạch")
+                expect(reload).to_be_enabled()
+                assert len(state["reports"]) == before, "reloading newly approved plans must not query production again"
+                assert sum(path.endswith("/throughput-progress") for path in state["requests"]) == progress_before + 1
+            assert not errors, errors
+            assert not auth["unexpected"], auth["unexpected"]
+        finally:
+            page.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:5173")
@@ -526,6 +645,9 @@ def main():
         assert all(row["status"] == "approved" for row in state["plans"])
         check_midnight_draft(browser, args.url)
         checks.append("Vietnam midnight extends only the monthly draft preview; old snapshot and disabled CSV remain until explicit submission")
+        check_plan_scope_recovery(browser, args.url)
+        checks.append("a Cửa Lò target on Bến Thủy report is metadata only; opening matching actuals yields 100%, never the wrong 200%")
+        checks.append("refreshing empty plan progress discovers newly approved targets without another dashboard read and disables double refresh")
         print(json.dumps({"passed": len(checks), "checks": checks, "page_errors": errors,
                           "unexpected_api": auth["unexpected"], "synthetic_approved_plans": len(state["plans"])}, ensure_ascii=False))
         browser.close()

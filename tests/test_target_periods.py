@@ -153,6 +153,74 @@ def test_weekly_progress_uses_full_target_for_partial_week_and_requires_matching
     assert store.throughput_progress(admin, report(scope='vietsun', start='2026-09-14', end='2026-09-18'))['available_periods'] == []
 
 
+def test_other_scope_navigation_is_explicit_metadata_and_only_returned_without_matching_items(state):
+    store, admin, _, _ = state
+    target(store, admin, terminal='ben_thuy', period_type='month', month='2026-09', amount=200)
+    target(store, admin, period_type='month', month='2026-09', amount=500)
+    snapshot = report(terminal='cua_lo', start='2026-09-01', end='2026-09-18')
+    progress = store.throughput_progress(admin, snapshot)
+    assert progress['items'] == progress['available_periods'] == []
+    assert progress['reason'] == 'Chưa có kế hoạch tấn thông qua đã duyệt còn hiệu lực cho phạm vi đang xem.'
+    expected_fields = {'key', 'period_type', 'period_key', 'start_date', 'end_date', 'terminal', 'target'}
+    assert len(progress['other_scope_periods']) == 2
+    assert {(row['terminal'], row['key'], row['target']) for row in progress['other_scope_periods']} == {
+        ('all', 'month:2026-09', 500), ('ben_thuy', 'month:2026-09', 200)}
+    for row in progress['other_scope_periods']:
+        assert set(row) == expected_fields  # No source actuals, percentages, or private plan metadata.
+        assert row['start_date'] == '2026-09-01' and row['end_date'] == '2026-09-30'
+    target(store, admin, terminal='cua_lo', period_type='month', month='2026-09', amount=100)
+    matched = store.throughput_progress(admin, snapshot)
+    assert matched['items'][0]['actual'] == 50 and matched['items'][0]['target'] == 100
+    assert matched['other_scope_periods'] == []
+    wrong_period = store.throughput_progress(admin, report(terminal='cua_lo', start='2026-09-02', end='2026-09-18'))
+    assert wrong_period['items'] == [] and len(wrong_period['available_periods']) == 1
+    assert wrong_period['reason'] == 'Kỳ báo cáo chưa khớp kế hoạch đã duyệt trong phạm vi đang xem. Chọn kế hoạch để mở đúng kỳ.'
+
+
+def test_other_scope_navigation_never_leaks_company_or_other_terminal_targets_to_single_terminal_user(state):
+    store, admin, _, _ = state
+    target(store, admin, amount=500)
+    target(store, admin, terminal='ben_thuy', amount=200)
+    limited = account(store, admin)['user']
+    assert store.throughput_progress(limited, report(terminal='cua_lo'))['other_scope_periods'] == []
+    with pytest.raises(ControlError) as failure:
+        store.throughput_progress(limited, report())
+    assert failure.value.status_code == 403
+
+
+def test_other_scope_navigation_keeps_latest_approval_and_ignores_drafts_teu_voyages_and_ineligible_reports(state):
+    store, admin, _, _ = state
+    target(store, admin, terminal='ben_thuy', amount=100)
+    target(store, admin, terminal='ben_thuy', amount=250)
+    store.create_plan(admin, terminal='ben_thuy', period_type='year', year=2026, metric='tonnage', amount=999, reference='DRAFT')
+    for fields in [dict(period_type='month', month='2026-09', metric='teu'),
+                   dict(period_type='voyage', voyage_id=101, metric='tonnage')]:
+        row = store.create_plan(admin, terminal='ben_thuy', amount=800, reference='OTHER METRIC OR PERIOD', **fields)
+        store.approve_plan(admin, row['id'], row['revision'])
+    progress = store.throughput_progress(admin, report(terminal='cua_lo'))
+    assert len(progress['other_scope_periods']) == 1
+    assert progress['other_scope_periods'][0]['key'] == 'year:2026'
+    assert progress['other_scope_periods'][0]['target'] == 250
+    for scope in ['vietsun', 'unclassified']:
+        assert store.throughput_progress(admin, report(terminal='cua_lo', scope=scope))['other_scope_periods'] == []
+    legacy = report(terminal='cua_lo')
+    del legacy['meta']['berth_rule_version']
+    assert store.throughput_progress(admin, legacy)['other_scope_periods'] == []
+
+
+def test_closed_report_never_captures_navigation_outside_its_terminal_scope(state):
+    store, admin, _, _ = state
+    target(store, admin, amount=500)
+    target(store, admin, terminal='ben_thuy', amount=200)
+    snapshot = report(terminal='cua_lo', start='2026-01-02')
+    assert len(store.throughput_progress(admin, snapshot)['other_scope_periods']) == 2
+    closed = store.close_report(admin, 'cua_lo', '2026-01-02', '2026-01-13', snapshot, [], planning_actuals={})
+    limited = account(store, admin)['user']
+    frozen = store.get_closed_report(limited, closed['id'])['report']['throughput_progress']
+    assert frozen['captured'] is True
+    assert frozen['items'] == frozen['available_periods'] == frozen['other_scope_periods'] == []
+
+
 def test_weekly_terminal_targets_require_both_sources_and_closed_target_is_frozen(state):
     store, admin, _, _ = state
     target(store, admin, terminal='cua_lo', period_type='week', week='2020-W53', amount=100)
