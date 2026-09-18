@@ -21,7 +21,7 @@ Không đặt mật khẩu SQL hoặc thông tin bí mật trong biến `VITE_*`
 Thanh điều hướng đầu trang mở ba khu vực riêng:
 
 - **Báo cáo sản lượng** (`#overview`): bộ lọc kỳ/xí nghiệp, KPI, biểu đồ và tra cứu tác nghiệp/chuyến tàu.
-- **Kế hoạch & đối soát** (`#management`): ba tab **Kế hoạch**, **Đối soát**, **Báo cáo đã chốt**. Người xem đọc dữ liệu; người quản lý và quản trị viên thao tác theo phạm vi được cấp.
+- **Kế hoạch** (`#management`): ba tab **Kế hoạch**, **Đối soát**, **Báo cáo đã chốt**. Người xem đọc dữ liệu; người quản lý và quản trị viên thao tác theo phạm vi được cấp.
 - **Quản trị** (`#admin`): hai tab **Tài khoản**, **Vận hành**, chỉ dành cho quản trị viên.
 
 Mỗi lựa chọn thay nội dung chính của trang. Có thể dùng nút quay lại/tiến tới của trình duyệt để chuyển khu vực. Bộ lọc báo cáo tiếp tục xác định kỳ và xí nghiệp khi đối soát hoặc chốt báo cáo.
@@ -29,8 +29,10 @@ Mỗi lựa chọn thay nội dung chính của trang. Có thể dùng nút quay
 ## Sử dụng báo cáo
 
 - Đăng nhập tài khoản nội bộ; mật khẩu tạm phải được đổi trước khi đọc báo cáo. Phiên lưu theo tab trình duyệt và hết hạn sau 8 giờ. Có nút đổi mật khẩu/đăng xuất ở đầu trang; tài khoản chỉ thấy xí nghiệp được cấp.
-- Chọn hôm nay, hôm qua, **tuần này**, **tuần trước**, tháng này, tháng trước, từ đầu năm; hoặc nhập khoảng ngày và chọn xí nghiệp rồi bấm **Áp dụng**. Khoảng ngày bao gồm cả hai đầu, tối đa 366 ngày, theo giờ Việt Nam. Bộ lọc được nhớ riêng theo tài khoản trên trình duyệt, kiểm tra lại theo quyền hiện tại khi mở.
-- **Lọc theo tuần:** tuần bắt đầu thứ Hai, kết thúc Chủ nhật. “Tuần này” tính đến hôm nay; “Tuần trước” lấy đủ 7 ngày. Để xem một tuần khác, dùng **Chọn tuần → Xem tuần**; khoảng ngày được hiển thị cạnh ô chọn trước khi áp dụng. Tuần được đánh số theo ISO, nên tuần 1 có thể bắt đầu cuối năm trước. Không chọn được tuần chưa bắt đầu; xí nghiệp và phạm vi Cảng Nghệ Tĩnh/Cầu 5 đang chọn được giữ nguyên.
+- Chọn **Loại kỳ**: Ngày, Tuần, Tháng, Quý, Năm hoặc Tùy chọn. Chỉ các ô cần thiết của loại kỳ đó xuất hiện. Chọn thời gian, xí nghiệp, kiểm tra dòng **Khoảng thời gian sẽ xem**, rồi bấm **Xem báo cáo**. Các nút chọn nhanh chỉ điền kỳ, chưa truy vấn cho đến khi bấm nút này.
+- **Theo tuần:** chọn năm và tuần có ghi sẵn khoảng ngày (ví dụ “Tuần 38 · 14/09 – 20/09”). Tuần bắt đầu thứ Hai, kết thúc Chủ nhật, đánh số theo ISO; tuần 1 có thể bắt đầu cuối năm trước. Nút **Tuần này / Tuần trước** nằm trong chế độ Tuần. **Tháng này / Tháng trước** nằm trong chế độ Tháng; **Hôm nay / Hôm qua** nằm trong chế độ Ngày.
+- Tuần/tháng/quý/năm đang diễn ra lấy đến hôm nay; kỳ đã kết thúc lấy toàn bộ kỳ. Kỳ tương lai bị khóa. Chế độ **Tùy chọn** cho nhập ngày bắt đầu/kết thúc, tối đa 366 ngày, bao gồm cả hai đầu, theo giờ Việt Nam. Bộ lọc được nhớ riêng theo tài khoản và kiểm tra lại theo quyền khi mở.
+- Phạm vi báo cáo chỉ có **Cảng Nghệ Tĩnh** và **Cầu 5**. Dữ liệu chưa xác định cầu vẫn được giữ riêng tại nguồn/API, không tự cộng vào hai phạm vi trên. Bộ lọc cũ lưu “Chưa xác định cầu” được chuyển về Cảng Nghệ Tĩnh, giữ kỳ và xí nghiệp hợp lệ.
 - Bấm số tấn/TEU, cột ngày hoặc ngày trong bảng, tên xí nghiệp, nhóm hàng và khách hàng để mở các dòng tác nghiệp cùng bản dữ liệu. Có phân trang, lọc dòng và xuất Excel toàn bộ kết quả đã lọc; không giới hạn file xuất vào trang đang xem. Nếu bản dữ liệu hết hạn, chọn **Tải lại báo cáo**.
 - Đọc **sản lượng qua cảng (tấn)**, TEU và số chuyến có phát sinh. Tấn chỉ cộng khối lượng có đơn vị nguồn xác định; các đơn vị khác hiển thị riêng tại **Sản lượng chưa cộng vào tấn**.
 - Khối lượng và số lượng giữ tối đa 3 chữ số thập phân; số chuyến hiển thị số nguyên. Giá trị chưa đủ cơ sở tính hiển thị `—`. Các lưu ý và độ đầy đủ được gom trong mục **Nguồn dữ liệu & định nghĩa**, đóng mặc định.

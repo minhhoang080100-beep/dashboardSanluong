@@ -441,13 +441,14 @@ def main():
         assert download.value.suggested_filename == "bao-cao-da-chot-nghe_tinh-1-v1.xlsx"
         checks.append("closing sends only the trusted report ID; closed/current comparison and authenticated download work")
 
-        for scope in ("Cầu 5", "Chưa xác định cầu"):
+        expect(page.get_by_role("tab", name="Chưa xác định cầu", exact=True)).to_have_count(0)
+        for scope in ("Cầu 5",):
             page.get_by_role("tab", name=scope, exact=True).click()
             expect(management.get_by_role("button", name="Chốt báo cáo hiện tại", exact=True)).to_be_enabled()
             expect(management.get_by_role("button", name="So sánh", exact=True)).to_be_disabled()
         page.get_by_role("tab", name="Cảng Nghệ Tĩnh", exact=True).click()
         expect(management.get_by_role("button", name="So sánh", exact=True)).to_be_enabled()
-        checks.append("closed reports retain their scope; comparison is disabled for Vietsun and unclassified views")
+        checks.append("closed reports retain their scope; comparison is disabled for Vietsun and the unclassified tab is absent")
 
         management = open_workspace(page, "admin")
         expect(management.get_by_role("tab")).to_have_count(2)

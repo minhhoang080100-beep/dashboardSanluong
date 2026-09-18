@@ -9,29 +9,6 @@
 .button.primary:hover:not(:disabled) { background: var(--primary-hover); border-color: var(--primary-hover); }
 .button.secondary { background: var(--surface); border-color: var(--border-color); }
 .button.icon-button { min-width: 42px; padding: 11px; }
-.filter-panel { border: 1px solid var(--border-color); border-radius: 12px; background: var(--surface); padding: 16px 20px 18px; box-shadow: var(--shadow-panel); }
-.filter-top { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 15px; padding-bottom: 14px; border-bottom: 1px solid var(--border-soft); }
-.filter-top > span { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; }
-.preset-buttons { display: flex; flex-wrap: wrap; gap: 3px; border-radius: 8px; padding: 3px; background: var(--surface-muted); }
-.preset-buttons button { border: 1px solid transparent; background: transparent; color: var(--text-muted); padding: 6px 11px; border-radius: 6px; font-size: 12px; min-height: 32px; white-space: nowrap; }
-.preset-buttons button[aria-pressed="true"] { background: var(--surface-selected); color: var(--primary-hover); font-weight: 600; }
-.preset-buttons button:hover:not(:disabled) { background: var(--surface-hover); }
-.calendar-filters { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px 28px; padding: 16px 0; border-bottom: 1px solid var(--border-soft); }
-.week-filter { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-content: start; align-items: end; gap: 8px 12px; min-width: 0; }
-.week-filter > label { display: grid; gap: 6px; min-width: 0; color: var(--text-muted); font-size: 12px; }
-.week-filter input { min-width: 0; width: 100%; height: 42px; padding: 0 10px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--surface-muted); color: var(--text-main); font-size: 14px; }
-.week-filter input[aria-invalid="true"] { border-color: var(--danger-color); }
-.week-filter > span, .quarter-filter > span { grid-column: 1 / -1; min-width: 0; color: var(--text-muted); font-size: 12px; line-height: 1.6; }
-.quarter-filter { display: grid; grid-template-columns: 108px minmax(0, 1fr); align-content: start; align-items: end; gap: 8px 12px; min-width: 0; }
-.quarter-filter > label { display: grid; gap: 6px; min-width: 0; font-size: 12px; color: var(--text-muted); }
-.quarter-filter select { min-width: 0; width: 100%; min-height: 42px; padding: 0 10px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--surface-muted); color: var(--text-main); font-size: 14px; }
-.quarter-buttons { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.quarter-buttons button { min-height: 36px; padding: 6px 8px; }
-.filter-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.4fr) auto; align-items: end; gap: 12px; margin-top: 16px; }
-.filter-actions { display: flex; align-items: center; gap: 8px; }
-.filter-form label { color: var(--text-muted); font-size: 12px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.filter-form input, .filter-form select { color: var(--text-main); background: var(--surface-muted); border: 1px solid var(--border-color); border-radius: 7px; height: 42px; padding: 0 11px; font-size: 14px; width: 100%; min-width: 0; }
-.filter-form input:hover, .filter-form select:hover { border-color: #a9bab0; }
 .form-error { color: var(--danger-color); font-size: 13px; margin-top: 10px; }
 .draft-note { color: var(--warning-color); font-size: 13px; margin-top: 10px; }
 .report-toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 14px 24px; padding: 0 2px; }
@@ -204,10 +181,6 @@ tbody tr:hover { background: var(--surface-muted); }
 }
 @media (max-width: 1000px) {
   .dashboard-intro { align-items: flex-start; }
-  .calendar-filters { grid-template-columns: minmax(0, 1fr); gap: 16px; }
-  .quarter-filter { grid-template-columns: 108px minmax(0, 1fr); }
-  .filter-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .filter-actions .primary { flex: 1; }
   .production-grid { grid-template-columns: 1fr; }
   .terminal-list { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
   .terminal-item + .terminal-item { border-top: 0; padding-top: 0; border-left: 1px solid var(--border-soft); padding-left: 22px; }
@@ -229,17 +202,6 @@ tbody tr:hover { background: var(--surface-muted); }
   .dashboard-intro:has(.export-button) h1 { padding-right: 48px; }
   .export-button { position: absolute; top: -5px; right: 0; padding: 10px; }
   .export-button span { display: none; }
-  .filter-panel { padding: 14px; }
-  .filter-top { align-items: flex-start; flex-direction: column; gap: 10px; padding-bottom: 12px; }
-  .filter-top > .preset-buttons { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; gap: 4px; }
-  .preset-buttons button { padding: 6px 8px; min-height: 36px; }
-  .week-filter { gap: 8px; }
-  .quarter-filter { grid-template-columns: minmax(0, 1fr); gap: 8px; }
-  .quarter-filter > label { grid-template-columns: minmax(0, 1fr) 100px; align-items: center; }
-  .filter-form { gap: 12px 8px; }
-  .filter-form label:nth-child(3) { grid-column: 1 / -1; }
-  .filter-actions { grid-column: 1 / -1; }
-  .filter-form input, .filter-form select, .week-filter input, .quarter-filter select { font-size: 16px; }
   .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .kpi-card { padding: 15px; }
   .kpi-primary { grid-column: 1 / -1; }
@@ -277,10 +239,6 @@ tbody tr:hover { background: var(--surface-muted); }
   .skeleton-grid { grid-template-columns: 1fr; }
   .skeleton-grid > div { height: 135px; }
   .error-state { padding: 35px 18px; }
-}
-@media (max-width: 380px) {
-  .filter-top > .preset-buttons { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .filter-form input[type="date"] { padding-inline: 6px; }
 }
 @media print {
   .dashboard { padding: 0; max-width: none; }

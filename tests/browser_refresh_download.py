@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from browser_auth_support import install_auth_fixture
+from browser_filter_support import custom_period, quarter_period, report_shortcut
 from browser_voyages import detail_fixture, report_fixture
 from playwright.sync_api import expect, sync_playwright
 
@@ -87,11 +88,11 @@ def main():
         page.clock.fast_forward(120100)
         assert len(state["reports"]) == before
         page.evaluate("delete document.hidden")
-        page.get_by_label("Từ ngày", exact=True).fill("2026-09-02")
+        custom_period(page, "2026-09-02", "2026-09-13")
         page.get_by_role("heading", name="Báo cáo sản lượng", exact=True).click()
         page.clock.fast_forward(120100)
         assert len(state["reports"]) == before
-        page.get_by_role("button", name="Tháng này", exact=True).click()
+        report_shortcut(page, "month", "Tháng này")
         expect(page.locator(".refresh-progress")).to_have_count(0)
         page.locator('.top-nav a[href="#management"]').click()
         expect(page.locator("#management-content")).to_be_visible()
@@ -101,7 +102,7 @@ def main():
         checks.append("typing, unapplied filters, hidden documents and management pages pause automatic reads")
 
         page.locator('.top-nav a[href="#overview"]').click()
-        page.get_by_role("button", name="Tháng trước", exact=True).click()
+        report_shortcut(page, "month", "Tháng trước")
         expect(page.locator(".kpi-card")).to_have_count(3)
         expect(page.locator(".report-refresh-control")).to_contain_text("Chỉ cập nhật tự động")
         before = len(state["reports"])
@@ -128,7 +129,7 @@ def main():
         # Retrying an initial error must accept that cached result, not rebuild it.
         before = len(state["reports"])
         state["fail"] = True
-        page.get_by_role("button", name="Quý 2", exact=True).click()
+        quarter_period(page, 2026, 2)
         page.clock.run_for(1000)
         expect(page.locator(".error-state")).to_contain_text("Chưa tải được báo cáo")
         expect(page.locator(".kpi-card")).to_have_count(0)
@@ -140,7 +141,7 @@ def main():
         assert all("refresh" not in query for query in state["reports"][before:])
         checks.append("filter changes and initial-error retries omit forced refresh while stale retries request fresh reads")
 
-        page.get_by_role("button", name="Tháng này", exact=True).click()
+        report_shortcut(page, "month", "Tháng này")
         expect(page.locator(".kpi-card")).to_have_count(3)
         expect(page.locator(".refresh-progress")).to_have_count(0)
         page.get_by_role("button", name="Xem chi tiết CUA LO TEST · TEST-101 · Cửa Lò", exact=True).click()

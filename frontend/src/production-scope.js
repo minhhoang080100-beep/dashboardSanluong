@@ -3,8 +3,13 @@ export const PRODUCTION_SCOPES = {
   vietsun: 'Cầu 5',
   unclassified: 'Chưa xác định cầu',
 };
+export const REPORT_PRODUCTION_SCOPES = {
+  nghe_tinh: PRODUCTION_SCOPES.nghe_tinh,
+  vietsun: PRODUCTION_SCOPES.vietsun,
+};
 export const BERTH_RULE_VERSION = 'initial-berth-v1';
 export const isProductionScope = (value) => Object.hasOwn(PRODUCTION_SCOPES, value);
+export const isReportProductionScope = (value) => Object.hasOwn(REPORT_PRODUCTION_SCOPES, value);
 export const productionScopeLabel = (value) => isProductionScope(value) ? PRODUCTION_SCOPES[value] : 'Chưa lưu phạm vi';
 const scopeDescriptions = {
   nghe_tinh: 'Toàn chuyến được tính theo cầu cập đầu tiên; không gồm chuyến cập Cầu 5 trước tiên tại Cửa Lò.',

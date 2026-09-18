@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 from browser_smoke import fixture
 from playwright.sync_api import Error, expect, sync_playwright
 from browser_auth_support import install_auth_fixture
+from browser_filter_support import apply_report
 
 
 def report_fixture(filters):
@@ -187,7 +188,7 @@ def main():
         expect(dialog.locator(".voyage-detail-loading")).to_be_visible()
         page.keyboard.press("Escape")
         page.get_by_label("Phạm vi xí nghiệp").select_option("ben_thuy")
-        page.get_by_role("button", name="Áp dụng", exact=True).click()
+        apply_report(page)
         expect(page.locator(".kpi-value").nth(2)).to_contain_text("1")
         state["detail"] = "data"
         for route, filters, terminal, number, size, operation_filter in held:

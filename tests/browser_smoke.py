@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from backend.repository import DashboardRepository
 from playwright.sync_api import Error, expect, sync_playwright
 from browser_auth_support import install_auth_fixture
+from browser_filter_support import apply_report, custom_period, report_shortcut
 
 
 def fixture(filters, empty=False, native=False, missing=False):
@@ -120,7 +121,7 @@ def main():
 
         page.get_by_label("Phạm vi xí nghiệp").select_option("ben_thuy")
         expect(page.get_by_role("button", name="Xuất báo cáo CSV")).to_be_disabled()
-        page.get_by_role("button", name="Áp dụng", exact=True).click()
+        apply_report(page)
         expect(page.locator(".kpi-value").first).to_contain_text("2.000")
         assert requests[-1]["terminal"] == "ben_thuy"
         with page.expect_download() as download_info:
@@ -131,20 +132,19 @@ def main():
         checks.append("filters and CSV: scope applied, draft disables export, formula escaping")
 
         old_count = len(requests)
-        page.get_by_label("Từ ngày", exact=True).fill("2026-08-10")
-        page.get_by_label("Đến ngày", exact=True).fill("2026-08-01")
-        page.get_by_role("button", name="Áp dụng", exact=True).click()
+        custom_period(page, "2026-08-10", "2026-08-01")
+        apply_report(page)
         expect(page.get_by_role("alert")).to_contain_text("Ngày bắt đầu")
         assert len(requests) == old_count
         checks.append("invalid dates: validation without a request")
 
-        page.get_by_role("button", name="Tháng này", exact=True).click()
+        report_shortcut(page, "month", "Tháng này")
         expect(page.locator(".kpi-card")).to_have_count(3)
         state["delay_terminal"] = "ben_thuy"
         page.get_by_role("button", name="Tải lại báo cáo đang chọn").click()
         expect(page.get_by_text("Đang cập nhật số liệu…", exact=True)).to_be_visible()
         page.get_by_label("Phạm vi xí nghiệp").select_option("cua_lo")
-        page.get_by_role("button", name="Áp dụng", exact=True).click()
+        apply_report(page)
         expect(page.locator(".kpi-value").first).to_contain_text("1.000")
         for route, filters in held:
             try:

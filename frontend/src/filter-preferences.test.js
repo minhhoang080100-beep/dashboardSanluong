@@ -80,3 +80,25 @@ test('scope preference persists per user while legacy or invalid scope resets to
     assert.equal(restored.start_date, '2026-09-01');
   }
 });
+
+test('a saved unclassified report switches only its scope and preserves a valid period and permitted terminal', (t) => {
+  const data = environment(t);
+  const user = { id: 41, terminals: ['cua_lo', 'ben_thuy'] };
+  for (const terminal of ['all', 'cua_lo', 'ben_thuy']) {
+    const saved = { start_date: '2026-08-10', end_date: '2026-08-16', terminal, production_scope: 'unclassified' };
+    rememberFilters(user, saved);
+    assert.deepEqual(restoreFilters(user), { ...saved, production_scope: 'nghe_tinh' });
+    assert.equal(JSON.parse(data.get('port-report-filters-41')).production_scope, 'unclassified');
+  }
+});
+
+test('unclassified preference migration still rejects invalid dates and unauthorized terminals', (t) => {
+  environment(t);
+  const user = { id: 42, terminals: ['ben_thuy'] };
+  const defaults = { start_date: '2026-09-01', end_date: '2026-09-13', terminal: 'ben_thuy', production_scope: 'nghe_tinh' };
+  const saved = { start_date: '2026-08-10', end_date: '2026-08-16', terminal: 'ben_thuy', production_scope: 'unclassified' };
+  for (const change of [{ terminal: 'all' }, { terminal: 'cua_lo' }, { start_date: '2026-02-30' }, { end_date: '2026-09-14' }]) {
+    rememberFilters(user, { ...saved, ...change });
+    assert.deepEqual(restoreFilters(user), defaults);
+  }
+});

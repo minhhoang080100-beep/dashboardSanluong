@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from browser_auth_support import install_auth_fixture
+from browser_filter_support import apply_report, custom_period
 from browser_smoke import fixture
 from playwright.sync_api import expect, sync_playwright
 
@@ -90,10 +91,9 @@ def main():
         go_view(page, "overview")
         expect(page.locator(".kpi-card")).to_have_count(3)
         expect(page.locator(".management")).to_be_hidden()
-        page.get_by_label("Từ ngày", exact=True).fill("2026-08-01")
-        page.get_by_label("Đến ngày", exact=True).fill("2026-08-31")
+        custom_period(page, "2026-08-01", "2026-08-31")
         page.get_by_label("Phạm vi xí nghiệp").select_option("ben_thuy")
-        page.get_by_role("button", name="Áp dụng", exact=True).click()
+        apply_report(page)
         expect(page.locator(".kpi-value").first).to_contain_text("2.000")
         expect(page.locator(".throughput-progress")).to_contain_text("Chưa có kế hoạch được duyệt")
         selected = dict(state["reports"][-1])

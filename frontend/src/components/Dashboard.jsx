@@ -1,14 +1,16 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, ArrowDownRight, ArrowUpRight, ArrowUpRight as OpenArrow, BarChart3, Boxes, CalendarDays, Check, CircleAlert, Clock3, Database, Download, Info, MapPin, Package, RefreshCw, Ship, SlidersHorizontal, Users, Warehouse } from 'lucide-react';
-import { dashboardCsv, dashboardRequestTimeout, dashboardResourceView, fetchDashboard, formatDate, formatNumber, formatTimestamp, isNumber, isoWeekValue, presetDates, ratioAvailability, TERMINALS, todayInVietnam, validateFilters, weekDates } from '../dashboard-data';
+import { Activity, ArrowDownRight, ArrowUpRight, ArrowUpRight as OpenArrow, BarChart3, Boxes, CalendarDays, CircleAlert, Clock3, Database, Download, Info, MapPin, Package, RefreshCw, Ship, Users, Warehouse } from 'lucide-react';
+import { dashboardCsv, dashboardRequestTimeout, dashboardResourceView, fetchDashboard, formatDate, formatNumber, formatTimestamp, isNumber, presetDates, ratioAvailability, TERMINALS, todayInVietnam, validateFilters } from '../dashboard-data';
 import Voyages from './Voyages';
 import CargoBreakdown from './CargoBreakdown';
 import Management from './Management';
 import ThroughputProgress from './ThroughputProgress';
 import OperationsExplorer from './OperationsExplorer';
+import ReportFilters from './ReportFilters';
 import { allowedTerminals, rememberFilters, restoreFilters } from '../filter-preferences';
 import { AUTO_REFRESH_MS, currentReportPeriod, rememberAutoRefresh, reportRequestRefresh, restoreAutoRefresh, shouldAutoRefresh } from '../report-refresh';
-import { PRODUCTION_SCOPES, isProductionScope, productionScopeDescription, productionScopeLabel } from '../production-scope';
+import { REPORT_PRODUCTION_SCOPES, isReportProductionScope, productionScopeLabel } from '../production-scope';
+import { reportPeriodDates, reportPeriodSelection, switchReportPeriodType } from '../report-period';
 import { reportSelectionForPlan } from '../throughput-progress';
 import './Dashboard.css';
 
@@ -133,8 +135,7 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
   const [reportRequested, setReportRequested] = useState(isReportView);
   const [filters, setFilters] = useState(() => restoreFilters(user));
   const [draft, setDraft] = useState(filters);
-  const [quarterYear, setQuarterYear] = useState(() => Math.max(2000, Number(filters.start_date.slice(0, 4))));
-  const [selectedWeek, setSelectedWeek] = useState(() => isoWeekValue(filters.start_date));
+  const [periodSelection, setPeriodSelection] = useState(() => reportPeriodSelection(filters, todayInVietnam(), 'month'));
   const [preferredPeriodType, setPreferredPeriodType] = useState(null);
   const [preferredPeriodKey, setPreferredPeriodKey] = useState('');
   const [reportRequest, setReportRequest] = useState({ revision: 0, filterKey: '', forceRefresh: false });
@@ -156,10 +157,10 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
   const reportTimeout = dashboardRequestTimeout(filters);
   const data = view.data;
   const error = view.status === 'error' ? view.error : '';
-  const hasDraft = JSON.stringify(draft) !== filterKey;
   const hasSignedInput = (data?.meta.data_quality?.negative_value_count || 0) > 0;
   const reportToday = todayInVietnam(new Date(clock));
-  const selectedWeekDates = weekDates(selectedWeek, reportToday);
+  const draftDates = reportPeriodDates(periodSelection, reportToday);
+  const hasDraft = !draftDates || JSON.stringify({ ...draft, ...draftDates }) !== filterKey;
   const currentPeriod = currentReportPeriod(filters, reportToday);
   const incomplete = ['partial', 'unavailable'].includes(data?.overview.tonnage_status) || ['partial', 'unavailable'].includes(data?.overview.teu_status);
   const sourceTime = Date.parse(data?.meta.source_read_at || data?.meta.generated_at || '');
@@ -168,7 +169,7 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
   useEffect(() => {
     // Fast Refresh may retain pre-scope filters. Migrate the selection, then
     // fetch a new scoped report; never relabel a retained legacy payload.
-    if (!isProductionScope(filters.production_scope)) {
+    if (!isReportProductionScope(filters.production_scope)) {
       setFilters((current) => ({ ...current, production_scope: 'nghe_tinh' }));
       setDraft((current) => ({ ...current, production_scope: 'nghe_tinh' }));
     }
@@ -221,7 +222,7 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
   }, [view.status, requestReport]);
 
   useEffect(() => {
-    if (!reportRequested || !isProductionScope(filters.production_scope)) return;
+    if (!reportRequested || !isReportProductionScope(filters.production_scope)) return;
     const controller = new AbortController();
     let active = true;
     let timedOut = false;
@@ -248,51 +249,45 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
     return () => { active = false; clearTimeout(timer); controller.abort(); };
   }, [filters, filterKey, reportRequest, reportRequested, reportTimeout]);
 
+  function changePeriod(nextSelection) {
+    setPeriodSelection(nextSelection);
+    const dates = reportPeriodDates(nextSelection, reportToday);
+    setDraft((current) => ({ ...current, ...(dates || { start_date: '', end_date: '' }) }));
+    setFormError('');
+  }
+
+  function changePeriodType(type) {
+    changePeriod(switchReportPeriodType(periodSelection, type, reportToday));
+  }
+
   function applyFilters(event) {
     event.preventDefault();
-    const validation = validateFilters(draft);
+    const dates = reportPeriodDates(periodSelection, reportToday);
+    const enteredDates = periodSelection.type === 'custom'
+      ? { start_date: periodSelection.start_date, end_date: periodSelection.end_date }
+      : dates || { start_date: '', end_date: '' };
+    const next = { ...draft, ...enteredDates };
+    const validation = !dates && periodSelection.type !== 'custom'
+      ? 'Vui lòng chọn thời gian hợp lệ. Chỉ xem được các kỳ đã bắt đầu.'
+      : validateFilters(next, reportToday) || (!dates ? 'Vui lòng chọn kỳ hợp lệ từ năm 1900 đến hôm nay.' : '');
     setFormError(validation);
     if (validation) return;
     setExportMessage('');
-    setQuarterYear(Number(draft.start_date.slice(0, 4)));
-    setSelectedWeek(isoWeekValue(draft.start_date));
-    setPreferredPeriodType('custom');
-    setPreferredPeriodKey('');
-    setFilters({ ...draft });
-  }
-
-  function applyPreset(preset) {
-    const dates = presetDates(preset, todayInVietnam(), quarterYear);
-    if (!dates) return;
-    const next = { ...draft, ...dates };
-    setQuarterYear(Number(dates.start_date.slice(0, 4)));
-    setSelectedWeek(isoWeekValue(dates.start_date));
-    setPreferredPeriodType(preset.startsWith('quarter-') ? 'quarter' : preset === 'year' ? 'year' : ['month', 'previous'].includes(preset) ? 'month' : ['week', 'previous-week'].includes(preset) ? 'week' : 'custom');
+    setPreferredPeriodType(periodSelection.type === 'day' ? 'custom' : periodSelection.type);
     setPreferredPeriodKey('');
     setDraft(next);
     setFilters(next);
-    setFormError('');
-    setExportMessage('');
   }
 
-  function applyWeek(event) {
-    event.preventDefault();
-    const dates = weekDates(selectedWeek);
+  function choosePreset(preset) {
+    const dates = presetDates(preset, reportToday);
     if (!dates) return;
-    const next = { ...draft, ...dates };
-    const validation = validateFilters(next);
-    setFormError(validation);
-    if (validation) return;
-    setQuarterYear(Math.max(2000, Number(dates.start_date.slice(0, 4))));
-    setPreferredPeriodType('week');
-    setPreferredPeriodKey('');
-    setDraft(next);
-    setFilters(next);
-    setExportMessage('');
+    const type = preset === 'year' ? 'year' : ['month', 'previous'].includes(preset) ? 'month' : ['week', 'previous-week'].includes(preset) ? 'week' : 'day';
+    changePeriod(reportPeriodSelection({ ...draft, ...dates }, reportToday, type));
   }
 
   function selectScope(production_scope) {
-    if (production_scope === filters.production_scope) return;
+    if (!isReportProductionScope(production_scope) || production_scope === filters.production_scope) return;
     setFilters((current) => ({ ...current, production_scope }));
     setDraft((current) => ({ ...current, production_scope }));
     setInspection(null);
@@ -305,8 +300,7 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
       if (!allowedTerminals(user).includes(next.filters.terminal)) throw new Error('Kế hoạch nằm ngoài phạm vi xí nghiệp được cấp.');
       setPreferredPeriodType(next.periodType);
       setPreferredPeriodKey(next.periodKey);
-      setQuarterYear(Number(next.filters.start_date.slice(0, 4)));
-      setSelectedWeek(isoWeekValue(next.filters.start_date));
+      setPeriodSelection(reportPeriodSelection(next.filters, reportToday, next.periodType));
       setDraft(next.filters);
       if (JSON.stringify(filters) === JSON.stringify(next.filters) && (!data || view.status === 'stale')) requestReport(view.status === 'stale');
       setFilters((current) => JSON.stringify(current) === JSON.stringify(next.filters) ? current : next.filters);
@@ -320,7 +314,7 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
   }
 
   function navigateScopes(event, index) {
-    const scopes = Object.keys(PRODUCTION_SCOPES);
+    const scopes = Object.keys(REPORT_PRODUCTION_SCOPES);
     const next = event.key === 'ArrowRight' ? (index + 1) % scopes.length : event.key === 'ArrowLeft' ? (index + scopes.length - 1) % scopes.length : event.key === 'Home' ? 0 : event.key === 'End' ? scopes.length - 1 : null;
     if (next === null) return;
     event.preventDefault();
@@ -349,44 +343,15 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
       {isReportView && <button className="button secondary export-button" type="button" aria-label="Xuất báo cáo CSV" title="Xuất báo cáo CSV" onClick={exportCsv} disabled={!data || hasDraft}><Download size={16} aria-hidden="true" /><span>Xuất báo cáo CSV</span></button>}
     </section>
     {usesReportContext && <div className="production-scope-selector">
-      <div className="production-scope-tabs" role="tablist" aria-label="Phạm vi sản lượng">{Object.entries(PRODUCTION_SCOPES).map(([scope, label], index) => <button key={scope} ref={(element) => { scopeButtons.current[index] = element; }} id={`production-scope-${scope}`} type="button" role="tab" aria-selected={filters.production_scope === scope} aria-controls="production-scope-report" tabIndex={filters.production_scope === scope ? 0 : -1} onClick={() => selectScope(scope)} onKeyDown={(event) => navigateScopes(event, index)}>{label}</button>)}</div>
-      <p>{filters.production_scope === 'unclassified' ? productionScopeDescription(filters.production_scope) : 'Theo cầu ban đầu của toàn chuyến; chuyển cầu không đổi phạm vi.'}</p>
+      <div className="production-scope-tabs" role="tablist" aria-label="Phạm vi sản lượng">{Object.entries(REPORT_PRODUCTION_SCOPES).map(([scope, label], index) => <button key={scope} ref={(element) => { scopeButtons.current[index] = element; }} id={`production-scope-${scope}`} type="button" role="tab" aria-selected={filters.production_scope === scope} aria-controls="production-scope-report" tabIndex={filters.production_scope === scope ? 0 : -1} onClick={() => selectScope(scope)} onKeyDown={(event) => navigateScopes(event, index)}>{label}</button>)}</div>
+      <p>Theo cầu ban đầu của toàn chuyến; chuyển cầu không đổi phạm vi.</p>
     </div>}
     <div id="production-scope-report" role={usesReportContext ? 'tabpanel' : undefined} aria-labelledby={usesReportContext ? `production-scope-${filters.production_scope}` : undefined}>
     {usesReportContext && <>
-    <section className="filter-panel" aria-label="Bộ lọc báo cáo">
-      <div className="filter-top"><span><SlidersHorizontal size={16} aria-hidden="true" />Kỳ báo cáo</span><div className="preset-buttons" role="group" aria-label="Chọn nhanh kỳ báo cáo">
-        {[['today', 'Hôm nay'], ['yesterday', 'Hôm qua'], ['week', 'Tuần này'], ['previous-week', 'Tuần trước'], ['month', 'Tháng này'], ['previous', 'Tháng trước'], ['year', 'Từ đầu năm']].map(([key, label]) => {
-          const dates = presetDates(key, reportToday);
-          return <button type="button" key={key} disabled={!dates} aria-pressed={Boolean(dates && filters.start_date === dates.start_date && filters.end_date === dates.end_date)} onClick={() => applyPreset(key)}>{label}</button>;
-        })}
-      </div></div>
-      <div className="calendar-filters">
-      <form className="week-filter" onSubmit={applyWeek}>
-        <label htmlFor="report-week">Chọn tuần<input id="report-week" type="week" min="1900-W01" max={isoWeekValue(reportToday)} pattern="[0-9]{4}-W[0-9]{2}" placeholder="2026-W38" required value={selectedWeek} aria-describedby="week-help" aria-invalid={Boolean(selectedWeek && !selectedWeekDates)} onChange={(event) => setSelectedWeek(event.target.value)} /></label>
-        <button type="submit" className="button" disabled={!selectedWeekDates}>Xem tuần</button>
-        <span id="week-help" aria-live="polite">{selectedWeekDates ? `${formatDate(selectedWeekDates.start_date)} – ${formatDate(selectedWeekDates.end_date)} · Tuần từ thứ Hai đến Chủ nhật; tuần hiện tại tính đến hôm nay.` : selectedWeek ? 'Tuần không hợp lệ hoặc chưa bắt đầu.' : 'Chọn tuần rồi bấm “Xem tuần” để cập nhật báo cáo.'}</span>
-      </form>
-      <div className="quarter-filter">
-        <label htmlFor="quarter-year">Năm xem quý<select id="quarter-year" value={quarterYear} onChange={(event) => setQuarterYear(Number(event.target.value))}>{Array.from({ length: Number(todayInVietnam().slice(0, 4)) - 1999 }, (_, index) => Number(todayInVietnam().slice(0, 4)) - index).map((year) => <option key={year} value={year}>{year}</option>)}</select></label>
-        <div className="preset-buttons quarter-buttons" role="group" aria-label="Chọn quý báo cáo">{[1, 2, 3, 4].map((quarter) => {
-          const dates = presetDates(`quarter-${quarter}`, todayInVietnam(), quarterYear);
-          return <button key={quarter} type="button" disabled={!dates} title={!dates ? 'Quý chưa bắt đầu' : undefined} aria-pressed={Boolean(dates && filters.start_date === dates.start_date && filters.end_date === dates.end_date)} onClick={() => applyPreset(`quarter-${quarter}`)}>Quý {quarter}</button>;
-        })}</div>
-        <span>Quý hiện tại tính đến hôm nay.</span>
-      </div>
-      </div>
-      <form className="filter-form" onSubmit={applyFilters}>
-        <label htmlFor="start-date">Từ ngày<input id="start-date" type="date" required max={todayInVietnam()} value={draft.start_date} onChange={(event) => { setDraft({ ...draft, start_date: event.target.value }); setFormError(''); }} /></label>
-        <label htmlFor="end-date">Đến ngày<input id="end-date" type="date" required max={todayInVietnam()} value={draft.end_date} onChange={(event) => { setDraft({ ...draft, end_date: event.target.value }); setFormError(''); }} /></label>
-        <label htmlFor="terminal">Phạm vi xí nghiệp<select id="terminal" value={draft.terminal} onChange={(event) => setDraft({ ...draft, terminal: event.target.value })}>{allowedTerminals(user).map((key) => <option key={key} value={key}>{TERMINALS[key]}</option>)}</select></label>
-        <div className="filter-actions"><button className="button primary" type="submit"><Check size={16} aria-hidden="true" />Áp dụng</button>
-        <button className="button icon-button" type="button" aria-label="Tải lại báo cáo đang chọn" title="Tải lại báo cáo đang chọn" disabled={loading} onClick={() => { requestReport(true); setExportMessage(''); }}><RefreshCw size={17} aria-hidden="true" /></button>
-        </div>
-      </form>
-      {formError && <p className="form-error" role="alert">{formError}</p>}
-      {hasDraft && !formError && <p className="draft-note">Bộ lọc đã thay đổi. Chọn “Áp dụng” để cập nhật báo cáo.</p>}
-    </section>
+    <ReportFilters user={user} selection={periodSelection} draft={draft} today={reportToday} loading={loading} hasDraft={hasDraft} error={formError}
+      onChange={changePeriod} onTypeChange={changePeriodType} onPreset={choosePreset} onSubmit={applyFilters}
+      onTerminalChange={(terminal) => { setDraft((current) => ({ ...current, terminal })); setFormError(''); }}
+      onRefresh={() => { requestReport(true); setExportMessage(''); }} />
     <div className="report-toolbar">
       <div className="report-context"><span><CalendarDays size={15} aria-hidden="true" /><strong>{formatDate(filters.start_date)} – {formatDate(filters.end_date)}</strong><span className="context-divider" aria-hidden="true">·</span>{TERMINALS[filters.terminal]}<span className="context-divider" aria-hidden="true">·</span><strong>{productionScopeLabel(filters.production_scope)}</strong></span><span className="source-status">{data ? `Đọc nguồn: ${formatTimestamp(data.meta.source_read_at || data.meta.generated_at)}` : 'Giờ Việt Nam · UTC+7'}{incomplete && <a className="data-status-tag" href="#data-quality" onClick={() => { const details = document.getElementById('data-quality'); if (details) details.open = true; }}>Số liệu chưa đầy đủ</a>}{data && (view.status === 'stale' || oldSource) && <span className="data-status-tag">{view.status === 'stale' ? 'Chưa cập nhật được' : 'Dữ liệu hơn 3 phút trước'}</span>}</span></div>
       {isReportView && <div className="report-refresh-control"><label title={currentPeriod ? 'Tạm dừng khi đang nhập, mở chi tiết hoặc chuyển khỏi báo cáo.' : 'Chỉ cập nhật tự động với kỳ kết thúc hôm nay.'}><input type="checkbox" aria-describedby="refresh-help" checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} />Tự cập nhật mỗi 2 phút</label><span id="refresh-help" className="sr-only">{currentPeriod ? 'Tạm dừng khi đang nhập, mở chi tiết hoặc chuyển khỏi báo cáo.' : 'Chỉ cập nhật tự động với kỳ kết thúc hôm nay.'}</span></div>}

@@ -1,4 +1,4 @@
-"""Week/quarter presets and leadership targets in React, with intercepted APIs only.
+"""Report-period drafts and leadership targets in React, with intercepted APIs only.
 
 The browser and Python fixture share a fixed Vietnam calendar day. No source
 reads, user changes, plan writes or approvals reach an application server.
@@ -8,9 +8,11 @@ from copy import deepcopy
 from datetime import date, datetime, timezone
 import json
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 from browser_auth_support import install_auth_fixture
+from browser_filter_support import apply_report, choose_period, custom_period, period_controls, quarter_period, report_shortcut
 from browser_smoke import fixture
 from backend import repository
 from backend.control_store import plan_period, saved_plan_period, throughput_progress_item
@@ -20,6 +22,51 @@ from playwright.sync_api import Error, expect, sync_playwright
 TODAY = date(2026, 9, 17)
 FILTER_KEYS = ("start_date", "end_date", "terminal", "production_scope")
 PLAN_PERIOD_QUERY_KEYS = {"period_type", "week", "month", "quarter", "year", "start_date", "end_date", "voyage_id"}
+
+
+def check_midnight_draft(browser, url):
+    """A new Vietnam day updates the preview without silently changing actuals."""
+    page = browser.new_page(viewport={"width": 1440, "height": 1050})
+    page.clock.install(time=datetime(2026, 9, 17, 16, 59, 30, tzinfo=timezone.utc))
+    auth = install_auth_fixture(page)
+    requests, errors = [], []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+
+    def respond(route):
+        query = parse_qs(urlparse(route.request.url).query)
+        filters = {key: query[key][0] for key in FILTER_KEYS}
+        requests.append(filters)
+        # Only this isolated synthetic response uses the new day. The main
+        # target fixture remains fixed on September 17 throughout its checks.
+        with patch.object(repository, "vietnam_today", return_value=date(2026, 9, 18)):
+            response = fixture(filters)
+        response["meta"].update(report_id=f"midnight-fixture-{len(requests)}")
+        route.fulfill(json=response)
+
+    page.route("**/api/dashboard?*", respond)
+    try:
+        page.goto(url)
+        expect(page.locator(".kpi-card")).to_have_count(3)
+        expect(period_controls(page).get_by_label("Loại kỳ", exact=True)).to_have_value("month")
+        expect(page.locator(".report-period-preview")).to_contain_text("01/09/2026 – 17/09/2026")
+        expect(page.locator(".report-context")).to_contain_text("01/09/2026 – 17/09/2026")
+        expect(page.get_by_role("button", name="Xuất báo cáo CSV", exact=True)).to_be_enabled()
+        before = len(requests)
+        page.clock.fast_forward(91000)
+        expect(page.locator(".report-period-preview")).to_contain_text("01/09/2026 – 18/09/2026")
+        expect(page.locator(".report-context")).to_contain_text("01/09/2026 – 17/09/2026")
+        expect(period_controls(page).locator(".draft-note")).to_be_visible()
+        expect(page.get_by_role("button", name="Xuất báo cáo CSV", exact=True)).to_be_disabled()
+        assert len(requests) == before, "midnight preview must not trigger a report read"
+        apply_report(page)
+        expect(page.locator(".report-context")).to_contain_text("01/09/2026 – 18/09/2026")
+        expect(page.get_by_role("button", name="Xuất báo cáo CSV", exact=True)).to_be_enabled()
+        expect(period_controls(page).locator(".draft-note")).to_have_count(0)
+        assert len(requests) > before and requests[-1]["end_date"] == "2026-09-18"
+        assert not errors, errors
+        assert not auth["unexpected"], auth["unexpected"]
+    finally:
+        page.close()
 
 
 def main():
@@ -128,15 +175,26 @@ def main():
         page.set_default_timeout(10000)
         page.clock.set_fixed_time(datetime(2026, 9, 17, 5, tzinfo=timezone.utc))
         auth = install_auth_fixture(page, role="admin")
+        page.add_init_script("""localStorage.setItem('port-report-filters-9001', JSON.stringify({
+            start_date: '2026-09-01', end_date: '2026-09-17', terminal: 'all', production_scope: 'unclassified'
+        }));""")
         page.on("pageerror", lambda error: (errors.append(str(error)), print("BROWSER_ERROR: " + str(error))))
         page.route("**/api/**", respond)
         page.goto(args.url)
         panel = page.locator(".throughput-progress")
         expect(panel).to_contain_text("Chưa có kế hoạch được duyệt")
+        expect(page.get_by_role("tab", name="Chưa xác định cầu", exact=True)).to_have_count(0)
+        assert state["filters"]["production_scope"] == "nghe_tinh"
+        assert not any(row["path"] == "/dashboard" and row["query"].get("production_scope") == "unclassified" for row in state["requests"])
+        assert page.evaluate("JSON.parse(localStorage.getItem('port-report-filters-9001')).production_scope") == "nghe_tinh"
+        checks.append("saved unclassified preference migrates to Nghệ Tĩnh before any report request")
 
         def wait_filters(start, end):
-            expect(page.locator("#start-date")).to_have_value(start)
-            expect(page.locator("#end-date")).to_have_value(end)
+            start_label = date.fromisoformat(start).strftime("%d/%m/%Y")
+            end_label = date.fromisoformat(end).strftime("%d/%m/%Y")
+            expect(page.locator(".report-context")).to_contain_text(f"{start_label} – {end_label}")
+            expect(page.locator(".report-period-preview")).to_contain_text(start_label)
+            expect(page.locator(".report-period-preview")).to_contain_text(end_label)
             expect(page.locator(".kpi-card")).to_have_count(3)
             expect(panel).not_to_contain_text("Đang đọc kế hoạch")
             assert state["filters"]["start_date"] == start and state["filters"]["end_date"] == end
@@ -150,31 +208,92 @@ def main():
             expect(panel).not_to_contain_text("Đang đọc kế hoạch")
             assert len(state["reports"]) > prior
 
-        quarters = page.get_by_role("group", name="Chọn quý báo cáo", exact=True)
+        controls = period_controls(page)
+        reports_before = len(state["reports"])
+        fields = {"day": {"Ngày"}, "week": {"Năm", "Tuần"}, "month": {"Năm", "Tháng"},
+                  "quarter": {"Năm", "Quý"}, "year": {"Năm"}, "custom": {"Từ ngày", "Đến ngày"}}
+        all_fields = set().union(*fields.values())
+        shortcuts = {"day": {"Hôm nay", "Hôm qua"}, "week": {"Tuần này", "Tuần trước"},
+                     "month": {"Tháng này", "Tháng trước"}, "year": {"Từ đầu năm"},
+                     "quarter": set(), "custom": set()}
+        all_shortcuts = set().union(*shortcuts.values())
+        for kind, visible in fields.items():
+            choose_period(page, kind)
+            for label in all_fields:
+                field = controls.get_by_label(label, exact=True)
+                if label in visible:
+                    expect(field).to_be_visible()
+                else:
+                    expect(field).to_have_count(0)
+            for label in all_shortcuts:
+                button = controls.get_by_role("button", name=label, exact=True)
+                if label in shortcuts[kind]:
+                    expect(button).to_be_visible()
+                else:
+                    expect(button).to_have_count(0)
+        expect(page.locator(".report-context")).to_contain_text("01/09/2026 – 17/09/2026")
+        assert len(state["reports"]) == reports_before, "changing period type must not fetch a report"
+        expect(controls.get_by_label("Từ ngày", exact=True)).to_have_attribute("max", TODAY.isoformat())
+        expect(controls.get_by_label("Đến ngày", exact=True)).to_have_attribute("max", TODAY.isoformat())
+        choose_period(page, "day")
+        expect(controls.get_by_label("Ngày", exact=True)).to_have_attribute("max", TODAY.isoformat())
+        controls.get_by_label("Ngày", exact=True).fill("2026-09-16")
+        assert len(state["reports"]) == reports_before
+        apply_report(page)
+        wait_filters("2026-09-16", "2026-09-16")
+        report_shortcut(page, "day", "Hôm nay")
+        wait_filters("2026-09-17", "2026-09-17")
+        checks.append("period types show only related controls and shortcuts; mode/date edits stay draft until Xem báo cáo")
+
         for quarter, start, end in [(1, "2026-01-01", "2026-03-31"), (2, "2026-04-01", "2026-06-30"),
                                     (3, "2026-07-01", "2026-09-17")]:
-            quarters.get_by_role("button", name=f"Quý {quarter}", exact=True).click()
+            quarter_period(page, 2026, quarter)
             wait_filters(start, end)
-        expect(quarters.get_by_role("button", name="Quý 4", exact=True)).to_be_disabled()
+        future_quarter = controls.get_by_label("Quý", exact=True).locator('option[value="4"]')
+        if future_quarter.count():
+            expect(future_quarter).to_be_disabled()
         assert not any(row["path"] == "/dashboard" and row["query"].get("start_date") == "2026-10-01" for row in state["requests"])
-        page.locator("#quarter-year").select_option("2025")
-        quarters.get_by_role("button", name="Quý 4", exact=True).click()
+        quarter_period(page, 2025, 4)
         wait_filters("2025-10-01", "2025-12-31")
-        page.locator("#quarter-year").select_option("2026")
-        page.get_by_role("button", name="Tháng này", exact=True).click()
+        report_shortcut(page, "month", "Tháng này")
         wait_filters("2026-09-01", "2026-09-17")
         checks.append("Q1/Q2 exact dates; current Q3 stops today; future Q4 disabled; historical Q4 selectable")
 
-        page.get_by_role('button', name='Tuần này', exact=True).click()
+        choose_period(page, "week")
+        reports_before = len(state["reports"])
+        controls.get_by_role('button', name='Tuần này', exact=True).click()
+        expect(page.locator(".report-period-preview")).to_contain_text("14/09/2026")
+        assert len(state["reports"]) == reports_before, "shortcut must only update the draft"
+        apply_report(page)
         wait_filters('2026-09-14', '2026-09-17')
-        page.get_by_role('button', name='Tuần trước', exact=True).click()
+        future_week = controls.get_by_label("Tuần", exact=True).locator('option[value="2026-W39"]')
+        if future_week.count():
+            expect(future_week).to_be_disabled()
+        report_shortcut(page, "week", "Tuần trước")
         wait_filters('2026-09-07', '2026-09-13')
-        page.get_by_label('Chọn tuần', exact=True).fill('2020-W53')
-        page.get_by_role('button', name='Xem tuần', exact=True).click()
+        controls.get_by_label("Năm", exact=True).select_option("2020")
+        controls.get_by_label("Tuần", exact=True).select_option("2020-W53")
+        apply_report(page)
         wait_filters('2020-12-28', '2021-01-03')
-        page.get_by_role('button', name='Tháng này', exact=True).click()
+        reports_before = len(state["reports"])
+        controls.get_by_label("Năm", exact=True).select_option("2021")
+        expect(controls.get_by_label("Tuần", exact=True)).to_have_value("")
+        expect(controls.get_by_label("Năm", exact=True)).to_have_value("2021")
+        choose_period(page, "year")
+        expect(controls.get_by_label("Năm", exact=True)).to_have_value("2021")
+        expect(page.locator(".report-period-preview")).to_contain_text("01/01/2021 – 31/12/2021")
+        expect(page.locator(".report-context")).to_contain_text("28/12/2020 – 03/01/2021")
+        assert len(state["reports"]) == reports_before, "invalid week to year must preserve the draft year without a read"
+        checks.append("moving week 53 to a year without it clears the week and preserves 2021 when switching to annual draft")
+        quarter_period(page, 2026, 3)
+        wait_filters("2026-07-01", "2026-09-17")
+        expect(controls.get_by_role("button", name="Tuần trước", exact=True)).to_have_count(0)
+        report_shortcut(page, "month", "Tháng này")
         wait_filters('2026-09-01', '2026-09-17')
-        checks.append('weekly report presets and ISO week 53 request the correct Monday/Sunday bounds')
+        future_month = controls.get_by_label("Tháng", exact=True).locator('option[value="10"]')
+        if future_month.count():
+            expect(future_month).to_be_disabled()
+        checks.append('weekly drafts, ISO week 53 and quarter transitions request correct dates without stale controls; current periods clamp at today')
 
         # An older approved target exists only in this intercepted fixture. It
         # must remain visible in All even while the report shows this month.
@@ -316,14 +435,13 @@ def main():
         expect(panel.get_by_role("progressbar")).to_have_attribute("aria-valuenow", "75.003125")
         expect(panel).to_contain_text("Tháng 9/2026")
         expect(panel).to_contain_text("30/09/2026")
-        quarters.get_by_role("button", name="Quý 3", exact=True).click()
+        quarter_period(page, 2026, 3)
         expect(panel).to_contain_text("Quý 3/2026")
-        page.get_by_role("button", name="Từ đầu năm", exact=True).click()
+        report_shortcut(page, "year", "Từ đầu năm")
         expect(panel).to_contain_text("Năm 2026")
         expect(panel).to_contain_text("31/12/2026")
-        page.locator("#start-date").fill("2026-09-05")
-        page.locator("#end-date").fill("2026-09-17")
-        page.get_by_role("button", name="Áp dụng", exact=True).click()
+        custom_period(page, "2026-09-05", "2026-09-17")
+        apply_report(page)
         expect(panel).to_contain_text("Kỳ tùy chọn")
         expect(panel).to_contain_text("25/09/2026")
         checks.append("approved target keeps its full bounds while actual follows the displayed report snapshot")
@@ -380,14 +498,13 @@ def main():
             except Error:
                 pass  # The old request may already have been aborted by React.
         expect(panel.get_by_role("progressbar")).to_have_count(0)
-        quarters.get_by_role("button", name="Quý 2", exact=True).click()
+        quarter_period(page, 2026, 2)
         wait_filters("2026-04-01", "2026-06-30")
         assert state["filters"]["production_scope"] == "vietsun" and state["filters"]["terminal"] == "all"
         expect(panel.get_by_role("progressbar")).to_have_count(0)
-        page.get_by_role("tab", name="Chưa xác định cầu", exact=True).click()
-        expect(panel).to_contain_text("Chỉ đối chiếu kế hoạch Nghệ Tĩnh")
         expect(panel.get_by_role("link", name="Nhập kế hoạch", exact=True)).to_have_count(0)
-        checks.append("scope mismatch is rejected; late Nghệ Tĩnh response cannot populate Vietsun/unclassified")
+        expect(page.get_by_role("tab", name="Chưa xác định cầu", exact=True)).to_have_count(0)
+        checks.append("scope mismatch is rejected; late Nghệ Tĩnh response cannot populate Vietsun")
 
         page.get_by_role("tab", name="Cảng Nghệ Tĩnh", exact=True).click()
         expect(panel.get_by_role("progressbar")).to_be_visible()
@@ -395,11 +512,20 @@ def main():
         page.set_viewport_size({"width": 375, "height": 900})
         expect(panel.get_by_role("progressbar")).to_be_visible()
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "mobile horizontal overflow"
+        for kind in ("week", "quarter", "custom"):
+            choose_period(page, kind)
+            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), f"{kind} mobile horizontal overflow"
+            for control in controls.locator("input, select, button").all():
+                if control.is_visible():
+                    assert control.evaluate("element => { const box = element.getBoundingClientRect(); return box.left >= 0 && box.right <= innerWidth; }"), kind
         panel.screenshot(path=str(output / "browser-targets-mobile.png"))
-        checks.append("375px progress and quarter controls stay within viewport")
+        checks.append("375px progress and weekly/quarterly/custom controls stay within viewport")
+        assert not any(row["path"] == "/dashboard" and row["query"].get("production_scope") == "unclassified" for row in state["requests"])
         assert not errors, errors
         assert not auth["unexpected"], auth["unexpected"]
         assert all(row["status"] == "approved" for row in state["plans"])
+        check_midnight_draft(browser, args.url)
+        checks.append("Vietnam midnight extends only the monthly draft preview; old snapshot and disabled CSV remain until explicit submission")
         print(json.dumps({"passed": len(checks), "checks": checks, "page_errors": errors,
                           "unexpected_api": auth["unexpected"], "synthetic_approved_plans": len(state["plans"])}, ensure_ascii=False))
         browser.close()

@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BERTH_RULE_VERSION, berthAssignmentLabel, initialBerthLabel, productionScopeDescription, productionScopeLabel } from './production-scope.js';
+import { BERTH_RULE_VERSION, PRODUCTION_SCOPES, REPORT_PRODUCTION_SCOPES, berthAssignmentLabel, initialBerthLabel, isProductionScope, isReportProductionScope, productionScopeDescription, productionScopeLabel } from './production-scope.js';
 import { sameClosedReportScope } from './management-data.js';
+
+test('report scope choices hide unclassified while the source and history contract keeps it', () => {
+  assert.deepEqual(REPORT_PRODUCTION_SCOPES, { nghe_tinh: 'Cảng Nghệ Tĩnh', vietsun: 'Cầu 5' });
+  assert.deepEqual(Object.keys(PRODUCTION_SCOPES), ['nghe_tinh', 'vietsun', 'unclassified']);
+  for (const scope of ['nghe_tinh', 'vietsun']) assert.equal(isReportProductionScope(scope), true);
+  assert.equal(isProductionScope('unclassified'), true);
+  for (const scope of ['unclassified', null, undefined, 'toString', 'all']) assert.equal(isReportProductionScope(scope), false);
+  assert.equal(productionScopeLabel('unclassified'), 'Chưa xác định cầu');
+});
 
 test('missing berth and legacy scope are explicit rather than relabelled as Nghệ Tĩnh', () => {
   assert.equal(initialBerthLabel({ initial_berth_id: null, initial_berth_code: null }), 'Chưa xác định');
@@ -30,4 +39,6 @@ test('closed-report comparison requires identical period, terminal, scope and be
     { berth_rule_version: null }, { berth_rule_version: 'other' }, { terminal: 'cua_lo' }, { end_date: '2026-09-12' },
   ]) assert.equal(sameClosedReportScope({ ...item, ...changed }, report), false);
   assert.equal(sameClosedReportScope(item, { meta: { filters } }), false);
+  const unclassified = { ...filters, production_scope: 'unclassified' };
+  assert.equal(sameClosedReportScope({ ...unclassified, berth_rule_version: BERTH_RULE_VERSION }, { meta: { filters: unclassified, berth_rule_version: BERTH_RULE_VERSION } }), true);
 });
