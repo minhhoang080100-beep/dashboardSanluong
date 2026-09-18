@@ -11,7 +11,46 @@ export function todayInVietnam(now = new Date()) {
   return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
+function calendarDay(day) {
+  if (typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day) || day < '1900-01-01') return null;
+  const date = new Date(`${day}T00:00:00Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === day ? date : null;
+}
+
+export function isoWeekValue(day) {
+  const thursday = calendarDay(day);
+  if (!thursday) return '';
+  // Calendar days already use Vietnam's date. UTC arithmetic avoids the
+  // device timezone and DST changing the Monday/Sunday boundaries.
+  thursday.setUTCDate(thursday.getUTCDate() + 4 - (thursday.getUTCDay() || 7));
+  const year = thursday.getUTCFullYear();
+  if (year < 1900 || year > 9999) return '';
+  const week = Math.ceil(((thursday - Date.UTC(year, 0, 1)) / 86400000 + 1) / 7);
+  return `${year}-W${String(week).padStart(2, '0')}`;
+}
+
+export function weekDates(value, today = todayInVietnam()) {
+  const currentDay = calendarDay(today);
+  const match = typeof value === 'string' && /^(\d{4})-W(0[1-9]|[1-4]\d|5[0-3])$/.exec(value);
+  if (!currentDay || !match || Number(match[1]) < 1900) return null;
+  // January 4 always belongs to ISO week 1. Validate the resulting week again
+  // because only some years have a week 53.
+  const monday = new Date(Date.UTC(Number(match[1]), 0, 4));
+  monday.setUTCDate(monday.getUTCDate() - (monday.getUTCDay() + 6) % 7 + (Number(match[2]) - 1) * 7);
+  const start_date = monday.toISOString().slice(0, 10);
+  if (isoWeekValue(start_date) !== value || start_date > today) return null;
+  const sunday = new Date(monday);
+  sunday.setUTCDate(sunday.getUTCDate() + 6);
+  return { start_date, end_date: sunday > currentDay ? today : sunday.toISOString().slice(0, 10) };
+}
+
 export function presetDates(preset, today = todayInVietnam(), year = Number(today.slice(0, 4))) {
+  if (preset === 'week' || preset === 'previous-week') {
+    const day = calendarDay(today);
+    if (!day) return null;
+    if (preset === 'previous-week') day.setUTCDate(day.getUTCDate() - 7);
+    return weekDates(isoWeekValue(day.toISOString().slice(0, 10)), today);
+  }
   if (preset.startsWith('quarter-')) {
     const quarter = Number(preset.slice(8));
     const selectedYear = Number(year);

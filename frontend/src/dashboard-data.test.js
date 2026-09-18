@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { csvCell, dashboardCsv, dashboardRequestTimeout, dashboardResourceView, fetchDashboard, formatNumber, formatTimestamp, isCurrentDayPeriod, presetDates, ratioAvailability, todayInVietnam, validateDashboard, validateFilters } from './dashboard-data.js';
+import { csvCell, dashboardCsv, dashboardRequestTimeout, dashboardResourceView, fetchDashboard, formatNumber, formatTimestamp, isCurrentDayPeriod, isoWeekValue, presetDates, ratioAvailability, todayInVietnam, validateDashboard, validateFilters, weekDates } from './dashboard-data.js';
 
 const filters = { start_date: '2026-09-01', end_date: '2026-09-09', terminal: 'all', production_scope: 'nghe_tinh' };
 function fixture() {
@@ -38,6 +38,66 @@ test('previous month handles year boundary and leap February', () => {
   assert.deepEqual(presetDates('previous', '2026-01-09'), { start_date: '2025-12-01', end_date: '2025-12-31' });
   assert.deepEqual(presetDates('previous', '2024-03-05'), { start_date: '2024-02-01', end_date: '2024-02-29' });
   assert.deepEqual(presetDates('year', '2026-09-09'), { start_date: '2026-01-01', end_date: '2026-09-09' });
+});
+
+test('week presets start on Monday, clamp the current week and retain the complete previous week', () => {
+  for (const today of ['2026-09-14', '2026-09-18', '2026-09-20']) {
+    assert.deepEqual(presetDates('week', today), { start_date: '2026-09-14', end_date: today });
+    assert.deepEqual(presetDates('previous-week', today), { start_date: '2026-09-07', end_date: '2026-09-13' });
+  }
+  assert.deepEqual(presetDates('week', '2021-01-01'), { start_date: '2020-12-28', end_date: '2021-01-01' });
+  assert.deepEqual(presetDates('previous-week', '2021-01-01'), { start_date: '2020-12-21', end_date: '2020-12-27' });
+  assert.deepEqual(presetDates('previous-week', '2021-01-04'), { start_date: '2020-12-28', end_date: '2021-01-03' });
+  assert.equal(presetDates('week', 'invalid'), null);
+  assert.equal(presetDates('previous-week', '1900-01-01'), null);
+});
+
+test('ISO week values use the week year at December and January boundaries', () => {
+  for (const [day, expected] of [
+    ['2015-12-31', '2015-W53'], ['2016-01-01', '2015-W53'], ['2016-01-04', '2016-W01'],
+    ['2018-12-31', '2019-W01'], ['2021-01-03', '2020-W53'], ['2021-01-04', '2021-W01'],
+    ['2024-12-30', '2025-W01'], ['2026-12-31', '2026-W53'], ['2026-09-20', '2026-W38'],
+  ]) assert.equal(isoWeekValue(day), expected, day);
+  assert.deepEqual(weekDates('2025-W01', '2026-09-18'), { start_date: '2024-12-30', end_date: '2025-01-05' });
+  assert.deepEqual(weekDates('2020-W53', '2026-09-18'), { start_date: '2020-12-28', end_date: '2021-01-03' });
+  assert.deepEqual(weekDates('2026-W53', '2027-01-04'), { start_date: '2026-12-28', end_date: '2027-01-03' });
+});
+
+test('week selection handles leap days without borrowing a day from the device timezone', () => {
+  assert.deepEqual(weekDates('2024-W09', '2024-02-29'), { start_date: '2024-02-26', end_date: '2024-02-29' });
+  assert.deepEqual(weekDates('2024-W09', '2024-03-04'), { start_date: '2024-02-26', end_date: '2024-03-03' });
+  assert.deepEqual(weekDates('2023-W09', '2024-03-04'), { start_date: '2023-02-27', end_date: '2023-03-05' });
+  const sunday = todayInVietnam(new Date('2026-09-20T16:59:59Z'));
+  const monday = todayInVietnam(new Date('2026-09-20T17:00:00Z'));
+  assert.equal(isoWeekValue(sunday), '2026-W38');
+  assert.equal(isoWeekValue(monday), '2026-W39');
+  assert.deepEqual(presetDates('week', monday), { start_date: '2026-09-21', end_date: '2026-09-21' });
+  assert.deepEqual(presetDates('previous-week', monday), { start_date: '2026-09-14', end_date: '2026-09-20' });
+});
+
+test('week selection rejects invalid or future weeks, including nonexistent week 53', () => {
+  for (const value of [null, undefined, 202638, {}, '', '2026-W00', '2026-W54', '2026-W3', '2026-w38',
+    '2026-W38 ', '2021-W53', '2025-W53', '1899-W52', '10000-W01', '2026-W39', '2027-W01']) {
+    assert.equal(weekDates(value, '2026-09-18'), null, String(value));
+  }
+  for (const day of [null, 20260918, {}, '', '2023-02-29', '1900-02-29', '2026-09-31',
+    '2026-9-18', '2026-09-18T00:00:00Z', '1899-12-31', '10000-01-01']) {
+    assert.equal(isoWeekValue(day), '', String(day));
+    assert.equal(weekDates('2026-W38', day), null, String(day));
+  }
+  assert.equal(weekDates('2020-W53', '2020-12-27'), null);
+  assert.deepEqual(weekDates('2020-W53', '2020-12-28'), { start_date: '2020-12-28', end_date: '2020-12-28' });
+});
+
+test('week periods respect supported calendar bounds and existing scoped report validation', () => {
+  assert.equal(isoWeekValue('1900-01-01'), '1900-W01');
+  assert.deepEqual(weekDates('1900-W01', '2026-09-18'), { start_date: '1900-01-01', end_date: '1900-01-07' });
+  assert.deepEqual(weekDates('9999-W52', '9999-12-31'), { start_date: '9999-12-27', end_date: '9999-12-31' });
+  for (const production_scope of ['nghe_tinh', 'vietsun', 'unclassified']) {
+    const period = weekDates('2026-W38', '2026-09-18');
+    assert.deepEqual(Object.keys(period).sort(), ['end_date', 'start_date']);
+    assert.equal(validateFilters({ ...filters, ...period, terminal: 'cua_lo', production_scope }, '2026-09-18'), '');
+  }
 });
 
 test('invalid, reversed, future and overlong ranges are rejected before fetch', () => {

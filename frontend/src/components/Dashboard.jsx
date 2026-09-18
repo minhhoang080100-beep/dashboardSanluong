@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, ArrowDownRight, ArrowUpRight, ArrowUpRight as OpenArrow, BarChart3, Boxes, CalendarDays, Check, CircleAlert, Clock3, Database, Download, Info, MapPin, Package, RefreshCw, Ship, SlidersHorizontal, Users, Warehouse } from 'lucide-react';
-import { dashboardCsv, dashboardRequestTimeout, dashboardResourceView, fetchDashboard, formatDate, formatNumber, formatTimestamp, isNumber, presetDates, ratioAvailability, TERMINALS, todayInVietnam, validateFilters } from '../dashboard-data';
+import { dashboardCsv, dashboardRequestTimeout, dashboardResourceView, fetchDashboard, formatDate, formatNumber, formatTimestamp, isNumber, isoWeekValue, presetDates, ratioAvailability, TERMINALS, todayInVietnam, validateFilters, weekDates } from '../dashboard-data';
 import Voyages from './Voyages';
 import CargoBreakdown from './CargoBreakdown';
 import Management from './Management';
@@ -134,6 +134,7 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
   const [filters, setFilters] = useState(() => restoreFilters(user));
   const [draft, setDraft] = useState(filters);
   const [quarterYear, setQuarterYear] = useState(() => Math.max(2000, Number(filters.start_date.slice(0, 4))));
+  const [selectedWeek, setSelectedWeek] = useState(() => isoWeekValue(filters.start_date));
   const [preferredPeriodType, setPreferredPeriodType] = useState(null);
   const [preferredPeriodKey, setPreferredPeriodKey] = useState('');
   const [reportRequest, setReportRequest] = useState({ revision: 0, filterKey: '', forceRefresh: false });
@@ -157,7 +158,9 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
   const error = view.status === 'error' ? view.error : '';
   const hasDraft = JSON.stringify(draft) !== filterKey;
   const hasSignedInput = (data?.meta.data_quality?.negative_value_count || 0) > 0;
-  const currentPeriod = currentReportPeriod(filters, todayInVietnam(new Date(clock)));
+  const reportToday = todayInVietnam(new Date(clock));
+  const selectedWeekDates = weekDates(selectedWeek, reportToday);
+  const currentPeriod = currentReportPeriod(filters, reportToday);
   const incomplete = ['partial', 'unavailable'].includes(data?.overview.tonnage_status) || ['partial', 'unavailable'].includes(data?.overview.teu_status);
   const sourceTime = Date.parse(data?.meta.source_read_at || data?.meta.generated_at || '');
   const oldSource = currentPeriod && Number.isFinite(sourceTime) && clock - sourceTime > 180000;
@@ -252,6 +255,7 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
     if (validation) return;
     setExportMessage('');
     setQuarterYear(Number(draft.start_date.slice(0, 4)));
+    setSelectedWeek(isoWeekValue(draft.start_date));
     setPreferredPeriodType('custom');
     setPreferredPeriodKey('');
     setFilters({ ...draft });
@@ -262,11 +266,28 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
     if (!dates) return;
     const next = { ...draft, ...dates };
     setQuarterYear(Number(dates.start_date.slice(0, 4)));
+    setSelectedWeek(isoWeekValue(dates.start_date));
     setPreferredPeriodType(preset.startsWith('quarter-') ? 'quarter' : preset === 'year' ? 'year' : ['month', 'previous'].includes(preset) ? 'month' : 'custom');
     setPreferredPeriodKey('');
     setDraft(next);
     setFilters(next);
     setFormError('');
+    setExportMessage('');
+  }
+
+  function applyWeek(event) {
+    event.preventDefault();
+    const dates = weekDates(selectedWeek);
+    if (!dates) return;
+    const next = { ...draft, ...dates };
+    const validation = validateFilters(next);
+    setFormError(validation);
+    if (validation) return;
+    setQuarterYear(Math.max(2000, Number(dates.start_date.slice(0, 4))));
+    setPreferredPeriodType('custom');
+    setPreferredPeriodKey('');
+    setDraft(next);
+    setFilters(next);
     setExportMessage('');
   }
 
@@ -285,6 +306,7 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
       setPreferredPeriodType(next.periodType);
       setPreferredPeriodKey(next.periodKey);
       setQuarterYear(Number(next.filters.start_date.slice(0, 4)));
+      setSelectedWeek(isoWeekValue(next.filters.start_date));
       setDraft(next.filters);
       if (JSON.stringify(filters) === JSON.stringify(next.filters) && (!data || view.status === 'stale')) requestReport(view.status === 'stale');
       setFilters((current) => JSON.stringify(current) === JSON.stringify(next.filters) ? current : next.filters);
@@ -334,11 +356,16 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
     {usesReportContext && <>
     <section className="filter-panel" aria-label="Bộ lọc báo cáo">
       <div className="filter-top"><span><SlidersHorizontal size={16} aria-hidden="true" />Kỳ báo cáo</span><div className="preset-buttons" role="group" aria-label="Chọn nhanh kỳ báo cáo">
-        {[['today', 'Hôm nay'], ['yesterday', 'Hôm qua'], ['month', 'Tháng này'], ['previous', 'Tháng trước'], ['year', 'Từ đầu năm']].map(([key, label]) => {
-          const dates = presetDates(key);
-          return <button type="button" key={key} aria-pressed={filters.start_date === dates.start_date && filters.end_date === dates.end_date} onClick={() => applyPreset(key)}>{label}</button>;
+        {[['today', 'Hôm nay'], ['yesterday', 'Hôm qua'], ['week', 'Tuần này'], ['previous-week', 'Tuần trước'], ['month', 'Tháng này'], ['previous', 'Tháng trước'], ['year', 'Từ đầu năm']].map(([key, label]) => {
+          const dates = presetDates(key, reportToday);
+          return <button type="button" key={key} disabled={!dates} aria-pressed={Boolean(dates && filters.start_date === dates.start_date && filters.end_date === dates.end_date)} onClick={() => applyPreset(key)}>{label}</button>;
         })}
       </div></div>
+      <form className="week-filter" onSubmit={applyWeek}>
+        <label htmlFor="report-week">Chọn tuần<input id="report-week" type="week" min="1900-W01" max={isoWeekValue(reportToday)} pattern="[0-9]{4}-W[0-9]{2}" placeholder="2026-W38" required value={selectedWeek} aria-describedby="week-help" aria-invalid={Boolean(selectedWeek && !selectedWeekDates)} onChange={(event) => setSelectedWeek(event.target.value)} /></label>
+        <button type="submit" className="button" disabled={!selectedWeekDates}>Xem tuần</button>
+        <span id="week-help" aria-live="polite">{selectedWeekDates ? `${formatDate(selectedWeekDates.start_date)} – ${formatDate(selectedWeekDates.end_date)} · Tuần từ thứ Hai đến Chủ nhật; tuần hiện tại tính đến hôm nay.` : selectedWeek ? 'Tuần không hợp lệ hoặc chưa bắt đầu.' : 'Chọn tuần rồi bấm “Xem tuần” để cập nhật báo cáo.'}</span>
+      </form>
       <div className="quarter-filter">
         <label htmlFor="quarter-year">Năm xem quý<select id="quarter-year" value={quarterYear} onChange={(event) => setQuarterYear(Number(event.target.value))}>{Array.from({ length: Number(todayInVietnam().slice(0, 4)) - 1999 }, (_, index) => Number(todayInVietnam().slice(0, 4)) - index).map((year) => <option key={year} value={year}>{year}</option>)}</select></label>
         <div className="preset-buttons quarter-buttons" role="group" aria-label="Chọn quý báo cáo">{[1, 2, 3, 4].map((quarter) => {
