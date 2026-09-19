@@ -46,6 +46,13 @@
 .throughput-progress-provenance > span:first-child { min-width: 0; overflow-wrap: anywhere; }
 .throughput-progress-provenance > p { width: 100%; margin: 0; color: var(--warning-color); }
 .throughput-progress-test { flex-shrink: 0; padding: 2px 7px; border: 1px solid var(--border-color); border-radius: 5px; color: var(--warning-color); background: var(--warning-surface); font-weight: 600; }
+.throughput-pace { margin-top: 22px; padding: 16px; border: 1px solid var(--border-color); border-radius: 9px; background: var(--surface-muted); font-size: 13px; }
+.throughput-pace h3 { font-size: 14px; margin-bottom: 8px; }
+.throughput-pace p, .throughput-pace dt { color: var(--text-muted); line-height: 1.6; }
+.throughput-pace dl { display: flex; flex-wrap: wrap; gap: 12px 32px; margin: 14px 0; }
+.throughput-pace dd { margin: 4px 0 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+.pace-behind { color: var(--warning-color); }
+.pace-met { color: var(--primary-color); }
 @media (max-width: 900px) {
   .throughput-progress-summary { grid-template-columns: minmax(0, 1fr); gap: 20px; }
 }

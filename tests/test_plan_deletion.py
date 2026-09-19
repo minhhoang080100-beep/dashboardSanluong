@@ -34,7 +34,8 @@ def test_delete_preserves_content_events_and_readable_history_for_every_status(s
     assert deleted['revision'] == before['revision'] + 1
     assert deleted['deleted_by'] == actor['id'] == deleted['updated_by']
     assert deleted['deleted_at'] == deleted['updated_at']
-    metadata = {'revision', 'updated_at', 'updated_by', 'deleted_at', 'deleted_by', 'is_deleted', 'is_current'}
+    actor_metadata = {'can_approve', 'approval_block_reason', 'can_delete', 'delete_block_reason'}
+    metadata = {'revision', 'updated_at', 'updated_by', 'deleted_at', 'deleted_by', 'is_deleted', 'is_current'} | actor_metadata
     assert {key: value for key, value in before.items() if key not in metadata} == {
         key: value for key, value in deleted.items() if key not in metadata}
     assert store.list_plans(actor)['total'] == 0
@@ -42,7 +43,7 @@ def test_delete_preserves_content_events_and_readable_history_for_every_status(s
     detail = store.get_plan(actor, deleted['id'])
     assert detail['history'][:-1] == history
     assert detail['history'][-1]['action'] == 'deleted'
-    assert detail['history'][-1]['snapshot'] == deleted
+    assert detail['history'][-1]['snapshot'] == {key: value for key, value in deleted.items() if key not in actor_metadata}
     with sqlite3.connect(store.path) as db:
         for sql in ["UPDATE plans SET amount='0' WHERE id=?", 'UPDATE plans SET deleted_at=NULL WHERE id=?',
                     'UPDATE plans SET revision=revision+1 WHERE id=?', 'DELETE FROM plans WHERE id=?']:

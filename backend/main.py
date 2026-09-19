@@ -71,12 +71,14 @@ def filters(
     end_date: date | None = None,
     terminal: Literal["all", "cua_lo", "ben_thuy"] = "all",
     production_scope: Literal["nghe_tinh", "vietsun", "unclassified"] = "nghe_tinh",
+    comparison: Literal['previous_period', 'previous_year'] = 'previous_period',
 ):
     try:
         start, end = date_range(start_date, end_date, terminal)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
-    return {"start_date": start, "end_date": end, "terminal": terminal, "production_scope": production_scope}
+    return {"start_date": start, "end_date": end, "terminal": terminal, "production_scope": production_scope,
+            **({'comparison': comparison} if comparison != 'previous_period' else {})}
 
 
 @app.get("/")

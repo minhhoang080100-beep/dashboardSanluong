@@ -3,6 +3,14 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def legacy_plan_approval_policy(monkeypatch):
+    # Historical fixtures intentionally use one account to create/approve.
+    # Production defaults to separate people; policy tests explicitly clear
+    # this test-only override to exercise that default and its enforcement.
+    monkeypatch.setenv('DASHBOARD_PLAN_APPROVAL_POLICY', 'allow_self')
+
+
+@pytest.fixture(autouse=True)
 def legacy_api_auth(request):
     if request.path.name not in {'test_backend.py', 'test_database_diagnostics.py', 'test_voyage_daily_window.py', 'test_voyage_operations.py'}:
         yield

@@ -227,6 +227,13 @@ def report_workbook(report, operations, *, title='Báo cáo sản lượng', shi
     ]
     if scope['legacy_scope']:
         rows.append(['Phân loại theo cầu cập đầu tiên', 'Bản dữ liệu cũ chưa lưu phạm vi này; không tự áp dụng quy tắc hiện tại cho lịch sử.', None])
+    comparison = meta.get('previous_period')
+    if comparison:
+        rows.extend([
+            ['Cơ sở so sánh', comparison.get('label'), None],
+            ['Kỳ so sánh từ ngày', comparison.get('start_date'), None],
+            ['Kỳ so sánh đến ngày', comparison.get('end_date'), None],
+        ])
     planning = planning if planning is not None else report.get('planning')
     if planning is not None:
         rows.append(['Kế hoạch tại thời điểm chốt', 'Đã lưu' if planning.get('captured') else 'Chưa được lưu trong bản chốt này', None])
@@ -314,4 +321,19 @@ def report_workbook(report, operations, *, title='Báo cáo sản lượng', shi
             ], {2: 30, 7: 28, 8: 22, 10: 44, 12: 30, 13: 50})
         else:
             _table(sheet, ['Nội dung', 'Giá trị'], [['Trạng thái', throughput.get('reason')]], {1: 25, 2: 100})
+        milestone_items = [item for item in throughput.get('items', []) if item.get('pace')]
+        if milestone_items:
+            sheet = book.create_sheet('Tiến độ theo mốc')
+            # Export the captured result, including unknowns. Never recalculate a
+            # closed report against a newer plan or later operational data.
+            _table(sheet, ['Kỳ kế hoạch', 'Từ ngày', 'Ngày mốc', 'Chỉ tiêu lũy kế tấn',
+                           'Thực hiện đến mốc tấn', 'Chênh lệch tấn', '% so với mốc',
+                           'Trạng thái', 'ID / phiên bản kế hoạch'], [
+                [item['period_key'], item['start_date'], item['pace'].get('milestone_date'),
+                 item['pace'].get('target'), item['pace'].get('actual'), item['pace'].get('difference'),
+                 item['pace'].get('completion_percent'), item['pace'].get('reason') or
+                 ('Đủ dữ liệu đối chiếu' if item['pace'].get('status') == 'ready' else 'Chưa đủ dữ liệu đối chiếu'),
+                 '; '.join(f"{plan['id']} / v{plan['version']}" for plan in item['plans'])]
+                for item in milestone_items
+            ], {1: 30, 4: 25, 5: 28, 6: 24, 7: 24, 8: 55, 9: 30})
     return _save(book)

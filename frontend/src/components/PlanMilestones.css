@@ -1,0 +1,8 @@
+.plan-milestones { min-width: 0; border: 1px solid var(--border-color); border-radius: 10px; padding: 16px; }
+.plan-milestones legend { padding: 0 6px; font-size: 14px; font-weight: 600; }
+.plan-milestones > p { font-size: 12px; line-height: 1.6; color: var(--text-muted); margin-bottom: 14px; }
+.plan-milestone-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 12px; align-items: end; margin-bottom: 12px; }
+@media (max-width: 620px) {
+  .plan-milestone-row { grid-template-columns: minmax(0, 1fr); padding-bottom: 14px; border-bottom: 1px solid var(--border-color); }
+  .plan-milestone-row .button { justify-self: start; }
+}

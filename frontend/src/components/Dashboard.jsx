@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, ArrowDownRight, ArrowUpRight, ArrowUpRight as OpenArrow, BarChart3, Boxes, CalendarDays, CircleAlert, Clock3, Database, Download, Info, MapPin, Package, RefreshCw, Ship, Users, Warehouse } from 'lucide-react';
-import { dashboardCsv, dashboardRequestTimeout, dashboardResourceView, fetchDashboard, formatDate, formatNumber, formatTimestamp, isNumber, presetDates, ratioAvailability, TERMINALS, todayInVietnam, validateFilters } from '../dashboard-data';
+import { comparisonMode, dashboardCsv, dashboardRequestTimeout, dashboardResourceView, fetchDashboard, formatDate, formatNumber, formatTimestamp, isNumber, presetDates, ratioAvailability, TERMINALS, todayInVietnam, validateFilters, withComparison } from '../dashboard-data';
 import Voyages from './Voyages';
 import CargoBreakdown from './CargoBreakdown';
 import Management from './Management';
@@ -22,19 +22,20 @@ function EmptyPanel({ message = 'Không có phát sinh trong kỳ đã chọn.' 
   return <div className="empty-panel"><BarChart3 size={27} aria-hidden="true" /><p>{message}</p></div>;
 }
 
-function Trend({ value }) {
+function Trend({ value, comparison }) {
   if (!isNumber(value)) return null;
-  if (value === 0) return <span className="trend neutral">0% so với kỳ trước</span>;
+  const label = comparison === 'previous_year' ? 'so với cùng kỳ năm trước' : 'so với kỳ trước';
+  if (value === 0) return <span className="trend neutral">0% {label}</span>;
   const Icon = value > 0 ? ArrowUpRight : ArrowDownRight;
-  return <span className={`trend ${value > 0 ? 'up' : 'down'}`}><Icon size={14} aria-hidden="true" />{value > 0 ? 'Tăng' : 'Giảm'} {formatNumber(Math.abs(value), 1)}%<span>so với kỳ trước</span></span>;
+  return <span className={`trend ${value > 0 ? 'up' : 'down'}`}><Icon size={14} aria-hidden="true" />{value > 0 ? 'Tăng' : 'Giảm'} {formatNumber(Math.abs(value), 1)}%<span>{label}</span></span>;
 }
 
-function Kpi({ title, value, unit, trend, status, icon: Icon, accent, digits = 3, listLink, onInspect }) {
+function Kpi({ title, value, unit, trend, comparison, status, icon: Icon, accent, digits = 3, listLink, onInspect }) {
   return (
     <article className={`kpi-card ${accent ? 'kpi-primary' : ''}`}>
       <div className="kpi-top"><span>{title}</span><span className="kpi-icon"><Icon size={19} aria-hidden="true" /></span></div>
       <p className="kpi-value">{onInspect ? <button type="button" className="inspect-value" onClick={onInspect} aria-label={`Xem chi tiết ${title}`}>{formatNumber(value, digits)}</button> : formatNumber(value, digits)}<span>{unit}</span></p>
-      <div className="kpi-bottom"><Trend value={['partial', 'unavailable'].includes(status) ? null : trend} />
+      <div className="kpi-bottom"><Trend value={['partial', 'unavailable'].includes(status) ? null : trend} comparison={comparison} />
       {listLink && <a className="kpi-link" href={listLink}>Xem danh sách <OpenArrow size={13} aria-hidden="true" /></a>}</div>
     </article>
   );
@@ -297,6 +298,7 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
   function selectPlan(plan) {
     try {
       const next = reportSelectionForPlan(plan, filters.terminal, todayInVietnam());
+      next.filters = withComparison(next.filters, comparisonMode(filters));
       if (!allowedTerminals(user).includes(next.filters.terminal)) throw new Error('Kế hoạch nằm ngoài phạm vi xí nghiệp được cấp.');
       setPreferredPeriodType(next.periodType);
       setPreferredPeriodKey(next.periodKey);
@@ -328,7 +330,7 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `san-luong-${filters.production_scope}-${filters.terminal}-${filters.start_date}-${filters.end_date}.csv`;
+    link.download = `san-luong-${filters.production_scope}-${filters.terminal}-${filters.start_date}-${filters.end_date}${comparisonMode(filters) === 'previous_year' ? '-cung-ky-nam-truoc' : ''}.csv`;
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -351,6 +353,7 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
     <ReportFilters user={user} selection={periodSelection} draft={draft} today={reportToday} loading={loading} hasDraft={hasDraft} error={formError}
       onChange={changePeriod} onTypeChange={changePeriodType} onPreset={choosePreset} onSubmit={applyFilters}
       onTerminalChange={(terminal) => { setDraft((current) => ({ ...current, terminal })); setFormError(''); }}
+      onComparisonChange={(comparison) => { setDraft((current) => withComparison(current, comparison)); setFormError(''); }}
       onRefresh={() => { requestReport(true); setExportMessage(''); }} />
     <div className="report-toolbar">
       <div className="report-context"><span><CalendarDays size={15} aria-hidden="true" /><strong>{formatDate(filters.start_date)} – {formatDate(filters.end_date)}</strong><span className="context-divider" aria-hidden="true">·</span>{TERMINALS[filters.terminal]}<span className="context-divider" aria-hidden="true">·</span><strong>{productionScopeLabel(filters.production_scope)}</strong></span><span className="source-status">{data ? `Đọc nguồn: ${formatTimestamp(data.meta.source_read_at || data.meta.generated_at)}` : 'Giờ Việt Nam · UTC+7'}{incomplete && <a className="data-status-tag" href="#data-quality" onClick={() => { const details = document.getElementById('data-quality'); if (details) details.open = true; }}>Số liệu chưa đầy đủ</a>}{data && (view.status === 'stale' || oldSource) && <span className="data-status-tag">{view.status === 'stale' ? 'Chưa cập nhật được' : 'Dữ liệu hơn 3 phút trước'}</span>}</span></div>
@@ -367,9 +370,9 @@ function Dashboard({ user, activeView = 'reports', anchor = '#overview' }) {
     {isReportView && data && <>
       {data.meta.status === 'empty' && <div className="notice empty-notice" role="status"><Info size={19} aria-hidden="true" /><div><strong>Không có phát sinh trong kỳ đã chọn</strong><p>Hệ thống đã truy vấn thành công. Hãy chọn kỳ khác để xem dữ liệu sản xuất.</p></div></div>}
       <section className="kpi-grid" aria-label="Chỉ tiêu tổng quan">
-        <Kpi title="Sản lượng thông qua" value={data.overview.total_tonnage} unit="tấn" trend={data.overview.trend_tonnage} status={data.overview.tonnage_status} icon={Activity} accent onInspect={data.meta.report_id ? (event) => inspect({}, 'Sản lượng thông qua', event) : null} />
-        <Kpi title="Container qua tác nghiệp" value={data.overview.total_teu} unit="TEU" trend={data.overview.trend_teu} status={data.overview.teu_status} icon={Boxes} onInspect={data.meta.report_id ? (event) => inspect({ cargo: 'Hàng container' }, 'Container qua tác nghiệp', event) : null} />
-        <Kpi title="Chuyến tàu có phát sinh" value={data.overview.vessel_calls} unit="chuyến" trend={data.overview.trend_vessels} icon={Ship} digits={0} listLink="#voyages" />
+        <Kpi title="Sản lượng thông qua" value={data.overview.total_tonnage} unit="tấn" trend={data.overview.trend_tonnage} comparison={comparisonMode(data.meta.filters)} status={data.overview.tonnage_status} icon={Activity} accent onInspect={data.meta.report_id ? (event) => inspect({}, 'Sản lượng thông qua', event) : null} />
+        <Kpi title="Container qua tác nghiệp" value={data.overview.total_teu} unit="TEU" trend={data.overview.trend_teu} comparison={comparisonMode(data.meta.filters)} status={data.overview.teu_status} icon={Boxes} onInspect={data.meta.report_id ? (event) => inspect({ cargo: 'Hàng container' }, 'Container qua tác nghiệp', event) : null} />
+        <Kpi title="Chuyến tàu có phát sinh" value={data.overview.vessel_calls} unit="chuyến" trend={data.overview.trend_vessels} comparison={comparisonMode(data.meta.filters)} icon={Ship} digits={0} listLink="#voyages" />
       </section>
       <div className="comparison-note"><Info size={14} aria-hidden="true" /><span>So sánh với {formatDate(data.meta.previous_period?.start_date)} – {formatDate(data.meta.previous_period?.end_date)}. {data.meta.previous_period?.label}</span></div>
       <ThroughputProgress report={data} user={user} apiBase={API_BASE} preferredPeriodType={preferredPeriodType} preferredPeriodKey={preferredPeriodKey} onSelectPeriod={selectPlan} />

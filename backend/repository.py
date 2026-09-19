@@ -14,9 +14,11 @@ from time import perf_counter
 if __package__:
     from .database import DatabaseQueryError, DatabaseUnavailable, get_db_connection, log_database_failure
     from .berth_scope import BERTH_RULE_VERSION, PRODUCTION_SCOPES, initial_berth_query, validate_production_scope
+    from .report_comparison import comparison_period
 else:
     from database import DatabaseQueryError, DatabaseUnavailable, get_db_connection, log_database_failure
     from berth_scope import BERTH_RULE_VERSION, PRODUCTION_SCOPES, initial_berth_query, validate_production_scope
+    from report_comparison import comparison_period
 
 logger = logging.getLogger(__name__)
 MAX_QUERY_ROWS = 250_000
@@ -101,6 +103,10 @@ def date_range(start_date=None, end_date=None, terminal="all") -> tuple[date, da
 
 
 def _decimal(value: Any) -> Decimal:
+    # SQL decimal values are immutable already; avoid formatting and parsing
+    # every weight again for each dashboard aggregation.
+    if type(value) is Decimal:
+        return value
     return Decimal(str(value)) if value is not None else Decimal(0)
 
 
@@ -151,18 +157,28 @@ def _normalise_fact(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _aggregate(rows):
-    count = sum(int(row["record_count"]) for row in rows)
-    eligible = sum(row["eligible_tonne_count"] for row in rows)
-    known = sum(row["known_tonne_count"] for row in rows)
-    containers = sum(row["container_row_count"] for row in rows)
-    known_teu = sum(row["known_teu_count"] for row in rows)
+    count = eligible = known = containers = known_teu = 0
+    tonnage, teu = Decimal(0), Decimal(0)
+    vessels = set()
+    for row in rows:
+        count += int(row["record_count"])
+        eligible += row["eligible_tonne_count"]
+        known += row["known_tonne_count"]
+        containers += row["container_row_count"]
+        known_teu += row["known_teu_count"]
+        if row["tonnage"] is not None:
+            tonnage += _decimal(row["tonnage"])
+        if row["teu"] is not None:
+            teu += _decimal(row["teu"])
+        if row["vessel_id"] is not None:
+            vessels.add((row["terminal_id"], row["vessel_id"]))
     tonnage_status = "empty" if not count else "unavailable" if not known else "partial" if known < count else "ready"
     teu_status = "empty" if not count else "unavailable" if containers and not known_teu else "partial" if known_teu < containers else "ready"
-    tonnage = None if count and not known else sum((_decimal(row["tonnage"]) for row in rows), Decimal(0))
-    teu = None if containers and not known_teu else sum((_decimal(row["teu"]) for row in rows), Decimal(0))
+    tonnage = None if count and not known else tonnage
+    teu = None if containers and not known_teu else teu
     return {"tonnage": tonnage, "measured_tonnage": tonnage, "teu": teu,
             "record_count": count,
-            "vessel_calls": len({(row["terminal_id"], row["vessel_id"]) for row in rows if row["vessel_id"] is not None}),
+            "vessel_calls": len(vessels),
             "coverage": {
                 "tonnage": {"status": tonnage_status, "eligible_rows": eligible, "known_rows": known,
                             "missing_weight_rows": eligible - known, "excluded_native_rows": count - eligible},
@@ -436,24 +452,25 @@ class DashboardRepository:
         # actual parameters instead of reusing an unsuitable report plan.
         return "\nUNION ALL\n".join(parts) + "\nOPTION (RECOMPILE)", tuple(params)
 
-    def get_dashboard(self, start_date=None, end_date=None, terminal="all", *, voyage_id: int | None = None, production_scope="nghe_tinh") -> dict[str, Any]:
+    def get_dashboard(self, start_date=None, end_date=None, terminal="all", *, voyage_id: int | None = None, production_scope="nghe_tinh", comparison="previous_period") -> dict[str, Any]:
         start, end = date_range(start_date, end_date, terminal)
-        length = (end - start).days + 1
-        previous_start = start - timedelta(days=length)
-        previous_end = start - timedelta(days=1)
+        previous_start = comparison_period(start, end, comparison)['start_date']
         query, params = self._fact_query(previous_start, end + timedelta(days=1), terminal, voyage_id, production_scope=production_scope)
         fetched = self._execute_query(query, params)
-        return self._dashboard_from_rows(fetched, start, end, terminal, production_scope=production_scope)
+        return self._dashboard_from_rows(fetched, start, end, terminal, production_scope=production_scope, comparison=comparison)
 
-    def _report_query(self, start: date, end_exclusive: date, terminal: str, *, production_scope="nghe_tinh"):
+    def _report_query(self, start: date, end_exclusive: date, terminal: str, *, production_scope="nghe_tinh", current_start=None, previous_end=None):
         """Read facts and one-row voyage assignments without a correlated join.
 
         Materialize the small eligible-method catalogue once per source. The
-        following UNION still reads all raw facts and voyage assignments in one
-        statement, before scope attribution and report aggregation. Table
-        variables are request-local; no source table is modified.
+        Current rows remain raw for immutable drill-downs. When current_start
+        is supplied, prior rows are summarized by source voyage and conversion
+        only; initial-berth attribution still runs on the same identities.
+        Table variables are request-local; no source table is modified.
         """
         validate_production_scope(production_scope)
+        if (current_start is None) != (previous_end is None):
+            raise ValueError('Thiếu khoảng ngày so sánh.')
         parts, params, method_tables = [], [], []
         selected = TERMINALS if terminal == "all" else {terminal: TERMINALS[terminal]}
         for terminal_id, (schema, name) in selected.items():
@@ -506,19 +523,42 @@ class DashboardRepository:
             berth_select = ",\n".join(f"{berth_values.get(key, 'NULL')} AS {key}" for key in columns)
             throughput = f"""t.cargoDirectId IN (1, 2) AND EXISTS (
                 SELECT 1 FROM {method_table} em WHERE em.jobMethodId = j.jobMethodId)"""
+            prior_select = ''
+            params.extend((start, end_exclusive))
+            if current_start is not None:
+                params.append(current_start)
+                # These values are sufficient for prior totals, coverage and
+                # DISTINCT voyage counts. Raw current facts are never grouped.
+                prior = {key: 'NULL' for key in columns}
+                prior.update({key: columns[key] for key in ('kind', 'terminal_id', 'terminal_name',
+                    'source_voyage_id', 'vessel_id', 'tonne_factor', 'unit_code', 'unit_name')})
+                prior.update(kind="'comparison'", operation_day='MIN(CAST(t.shiftDate AS date))', latest_operation_at='MAX(t.shiftDate)',
+                             native_weight='SUM(t.weightNetSum)', teu=f'SUM(CAST({self.teu_logic} AS bigint))', record_count='COUNT_BIG(*)')
+                for key in ('known_weight_count', 'missing_weight_count', 'container_row_count', 'missing_quantity_count',
+                            'negative_value_count', 'empty_unweighed_count', 'unweighed_unknown_quantity_count', 'missing_weight_with_quantity_count'):
+                    prior[key] = f'SUM(CAST({columns[key]} AS bigint))'
+                prior_select = f"""UNION ALL SELECT {', '.join(f'{prior[key]} AS {key}' for key in columns)}
+                    {self._source_joins(schema, include_berth=False)}
+                    WHERE t.shiftDate >= ? AND t.shiftDate < ?
+                      AND {throughput} AND {self.row_active_filter}
+                    GROUP BY t.vesselVoyageId, v.vesselVoyageId, v.rowDeleted, v.isVirtualVesselVoyage,
+                        s.vesselId, s.rowDeleted, s.isVirtualVessel,
+                        u.baseUnitCode, u.baseUnitName, u.TONE, u.KG, mass_conversion.tonne_factor"""
+                params.extend((start, previous_end + timedelta(days=1)))
             parts.append(f"""SELECT {fact_select}
                 {self._source_joins(schema, include_berth=False)}
                 LEFT JOIN {schema}.BaseUnit qu ON t.quantityUnitId = qu.baseUnitId
                 LEFT JOIN {schema}.Shift sh ON t.shiftId = sh.shiftId
                 WHERE t.shiftDate >= ? AND t.shiftDate < ?
+                  {'AND t.shiftDate >= ?' if current_start is not None else ''}
                   AND {throughput} AND {self.row_active_filter}
+                {prior_select}
                 UNION ALL SELECT {source_select}
                 FROM {schema}.TallyShift t
                 JOIN {schema}.JobMethod j ON t.jobMethodId = j.jobMethodId
                 WHERE {throughput} AND {self.row_active_filter}
                 UNION ALL SELECT {berth_select}
                 FROM ({initial_berth_query(schema, terminal_id)}) berth_scope""")
-            params.extend((start, end_exclusive))
         query = "SET NOCOUNT ON;\n" + "\n".join(method_tables) + "\n" + "\nUNION ALL\n".join(parts)
         return query + "\nOPTION (RECOMPILE)", tuple(params)
 
@@ -543,29 +583,31 @@ class DashboardRepository:
         for row in fetched:
             if row["kind"] == "source":
                 selected.append(row)
-            elif row["kind"] == "fact":
+            elif row["kind"] in {"fact", "comparison"}:
                 evidence = assignments.get((row["terminal_id"], row.get("source_voyage_id")),
                                            _berth_evidence({}, "unclassified"))
                 if evidence["production_scope"] == production_scope:
                     selected.append({**row, **evidence})
         return selected
 
-    def read_report(self, start_date=None, end_date=None, terminal="all", *, production_scope="nghe_tinh"):
+    def read_report(self, start_date=None, end_date=None, terminal="all", *, production_scope="nghe_tinh", comparison="previous_period"):
         """Read current/prior facts once; preserve unassigned throughput rows."""
         start, end = date_range(start_date, end_date, terminal)
-        previous_start = start - timedelta(days=(end - start).days + 1)
-        query, params = self._report_query(previous_start, end + timedelta(days=1), terminal, production_scope=production_scope)
+        previous = comparison_period(start, end, comparison)
+        query, params = self._report_query(previous['start_date'], end + timedelta(days=1), terminal, production_scope=production_scope,
+                                           current_start=start, previous_end=previous['end_date'])
         fetched = self._scope_report_rows(self._execute_query(query, params), production_scope)
-        report = self._dashboard_from_rows(fetched, start, end, terminal, production_scope=production_scope)
+        report = self._dashboard_from_rows(fetched, start, end, terminal, production_scope=production_scope, comparison=comparison)
         current = [row for row in fetched if row["kind"] == "fact" and start <= row["operation_day"] <= end]
         return {"report": report, "rows": current}
 
-    def _dashboard_from_rows(self, fetched, start: date, end: date, terminal: str, *, production_scope="nghe_tinh"):
+    def _dashboard_from_rows(self, fetched, start: date, end: date, terminal: str, *, production_scope="nghe_tinh", comparison="previous_period", comparison_available=True):
         validate_production_scope(production_scope)
         length = (end - start).days + 1
-        previous_start = start - timedelta(days=length)
-        previous_end = start - timedelta(days=1)
+        previous_period = comparison_period(start, end, comparison)
+        previous_start, previous_end = previous_period['start_date'], previous_period['end_date']
         current, previous, sources = [], [], []
+        summarized_previous = any(row['kind'] == 'comparison' for row in fetched)
         for row in fetched:
             if row["kind"] == "source":
                 sources.append(row)
@@ -576,16 +618,19 @@ class DashboardRepository:
             elif isinstance(operation_day, str):
                 operation_day = date.fromisoformat(operation_day[:10])
             row["operation_day"] = operation_day
-            (current if operation_day >= start else previous).append(_normalise_fact(row))
+            if row['kind'] != 'comparison' and start <= operation_day <= end:
+                current.append(_normalise_fact(row))
+            if comparison_available and (row['kind'] == 'comparison' or not summarized_previous) and previous_start <= operation_day <= previous_end:
+                previous.append(_normalise_fact(row))
 
-        def totals(rows):
-            values = _aggregate(rows)
+        def totals(values):
             return {"total_tonnage": values["tonnage"], "total_measured_tonnage": values["tonnage"],
                     "total_teu": values["teu"], "vessel_calls": values["vessel_calls"], "record_count": values["record_count"]}
 
-        raw_overview, prev = totals(current), totals(previous)
-        metric_coverage = _aggregate(current)["coverage"]
-        previous_coverage = _aggregate(previous)["coverage"]
+        current_totals, previous_totals = _aggregate(current), _aggregate(previous)
+        raw_overview, prev = totals(current_totals), totals(previous_totals)
+        metric_coverage = current_totals['coverage']
+        previous_coverage = previous_totals['coverage']
         def comparable(metric):
             return all(coverage[metric]["status"] in {"ready", "empty"} for coverage in (metric_coverage, previous_coverage))
         overview = {key: (_number(value) if isinstance(value, Decimal) else value) for key, value in raw_overview.items()}
@@ -729,9 +774,10 @@ class DashboardRepository:
             "meta": {
                 "status": "ok" if current else "empty",
                 "generated_at": datetime.now(timezone.utc).isoformat(),
-                "filters": {"start_date": start.isoformat(), "end_date": end.isoformat(), "terminal": terminal, "timezone": "Asia/Ho_Chi_Minh", "production_scope": production_scope},
+                "filters": {"start_date": start.isoformat(), "end_date": end.isoformat(), "terminal": terminal, "timezone": "Asia/Ho_Chi_Minh", "production_scope": production_scope,
+                            **({'comparison': comparison} if comparison != 'previous_period' else {})},
                 "berth_rule_version": BERTH_RULE_VERSION,
-                "previous_period": {"start_date": previous_start.isoformat(), "end_date": previous_end.isoformat(), "label": f"{length} ngày liền trước", "record_count": prev["record_count"], "metric_coverage": previous_coverage},
+                "previous_period": {**previous_period, "start_date": previous_start.isoformat(), "end_date": previous_end.isoformat(), "record_count": prev["record_count"], "metric_coverage": previous_coverage},
                 "sources": source_meta,
                 "metric_coverage": metric_coverage,
                 "unassigned_voyage_totals": _panel_values(_aggregate([row for row in current if row["vessel_id"] is None])),
@@ -749,7 +795,9 @@ class DashboardRepository:
                     "history": "Tổng theo tháng nằm trong khoảng ngày đã chọn; tháng đầu/cuối có thể chưa đủ tháng.",
                     "daily_history": "Tổng từng ngày trong khoảng đã chọn từ cùng tập dòng; ngày không có dòng trả 0, không tự kết luận mất dữ liệu hay ngừng sản xuất.",
                     "sources": "latest_operation_at là shiftDate mới nhất của dòng thông qua tại toàn nguồn xí nghiệp, không giới hạn kỳ hoặc phạm vi Nghệ Tĩnh/Vietsun; không phải thời điểm đồng bộ hay sửa dữ liệu. latest_selected_operation_at và record_count chỉ phản ánh kỳ và phạm vi sản lượng đã chọn.",
-                    "comparison": "So sánh phần trăm với khoảng liền trước có cùng số ngày; không tính khi mẫu số bằng 0, không có dữ liệu, hoặc dữ liệu tấn/TEU của một trong hai kỳ chưa đầy đủ.",
+                    "comparison": ("So sánh phần trăm với khoảng liền trước có cùng số ngày" if comparison == 'previous_period' else
+                        "So sánh cùng ngày/tháng năm trước; mỗi mốc 29/02 quy về 28/02, không tự kéo dài tháng 2 năm nhuận") +
+                        "; không tính khi mẫu số bằng 0, không có dữ liệu, hoặc dữ liệu tấn/TEU của một trong hai kỳ chưa đầy đủ.",
                     "native_units": "Tổng weightNetSum theo weightUnitId ở từng xí nghiệp; giữ nguyên đơn vị nguồn. Không cộng chung giữa các đơn vị và không diễn giải là tấn.",
                     "consistency": "Các biểu đồ được tổng hợp từ cùng một tập dữ liệu của một câu lệnh SQL; chưa bật snapshot isolation trên nguồn.",
                 },

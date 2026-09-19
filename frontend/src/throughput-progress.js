@@ -1,5 +1,6 @@
 import { BERTH_RULE_VERSION } from './production-scope.js';
 import { isoWeekValue, weekDates } from './dashboard-data.js';
+import { validMilestonePace } from './plan-milestones.js';
 
 export const PROGRESS_BANDS = [
   { upper: 20, label: 'Dưới 20%', color: '#aa6c60', name: 'red' },
@@ -128,6 +129,7 @@ export function validateThroughputProgress(value, report, permittedTerminals = n
       || (endTime - Date.parse(item.start_date)) / 86400000 >= 366) fail();
     // The numerator must be from the displayed immutable report snapshot.
     if (item.actual !== report.overview.total_tonnage || item.actual_status !== report.overview.tonnage_status) fail();
+    if (!validMilestonePace(item.pace, item, report)) fail();
     keys.add(item.key);
   }
   if (!value.eligible && value.items.length) fail();

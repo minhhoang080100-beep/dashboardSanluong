@@ -3,8 +3,12 @@ import { Check, ClipboardList, Download, Eye, EyeOff, KeyRound, Plus, RefreshCw,
 import { apiRequest, downloadFile } from '../api-client.js';
 import { productionScopeLabel } from '../production-scope.js';
 import { reportSelectionForPlan } from '../throughput-progress.js';
-import { formatDate, formatNumber, formatTimestamp, todayInVietnam } from '../dashboard-data.js';
+import { COMPARISONS, formatDate, formatNumber, formatTimestamp, todayInVietnam } from '../dashboard-data.js';
 import { buildPlanUpdatePayload, buildUserPayload, canManage, sameClosedReportScope, ISSUE_LABELS, ISSUE_STATUS_LABELS, MANAGEMENT_ROLES, MANAGEMENT_TERMINALS, METRIC_LABELS, PLAN_PERIOD_LABELS, PLAN_STATUS_LABELS, PLAN_TERMINALS, planAmountInput, planDateDefaults, planDeletePayload, planEntryPeriod, planPeriodEligibility, planPeriodFields, planPeriodLabel, planTerminals, planWeekDates, parseVietnamesePlanAmount, queryPath, userTerminals, validatedItems, validatePlanEntry, validatedPlanPreview } from '../management-data.js';
+import PlanMilestones from './PlanMilestones.jsx';
+import BackupStatus from './BackupStatus.jsx';
+import { canCreatePlan, canApprovePlan, canDeletePlan } from '../plan-permissions.js';
+import { PlanPermissionsField, AdminAudit } from './AdminGovernance.jsx';
 import './Management.css';
 
 function useResource(path, apiBase, revision = 0) {
@@ -179,12 +183,13 @@ function PlanFields({ form, setForm, terminals, apiBase, disabled, errors = {} }
     <PlanField id={`${prefix}-amount`} label="Giá trị kế hoạch" error={errors.amount} help={<>Dấu chấm tách nghìn; dấu phẩy cho phần lẻ.{amountPreview && <strong> Sẽ lưu: {amountPreview} {form.metric === 'teu' ? 'TEU' : 'tấn'}.</strong>}</>}><input {...fieldProps('amount', true)} type="text" inputMode="decimal" autoComplete="off" maxLength={64} placeholder="Ví dụ: 150.000,5" value={form.amount} onChange={update('amount')} required disabled={disabled} /></PlanField>
     <PlanField id={`${prefix}-reference`} label="Số văn bản / nguồn phê duyệt" error={errors.reference} wide><input {...fieldProps('reference')} value={form.reference} onChange={update('reference')} maxLength={500} placeholder="Ví dụ: KH-2026 hoặc tên văn bản đã duyệt" required disabled={disabled} /></PlanField>
     <PlanField id={`${prefix}-note`} label="Ghi chú" error={errors.note} wide><textarea {...fieldProps('note')} value={form.note || ''} onChange={update('note')} maxLength={4000} rows={2} disabled={disabled} /></PlanField>
+    <PlanMilestones form={form} setForm={setForm} disabled={disabled} error={errors.milestones} />
     {form.period_type !== 'voyage' && <p className="management-caption management-wide plan-entry-help">Nhập chỉ tiêu cho toàn bộ kỳ được giao, kể cả phần thời gian chưa đến. Sau khi duyệt, chọn “Xem tiến độ” tại kế hoạch để mở báo cáo đúng kỳ.</p>}
   </>;
 }
 
 function PlanEditor({ plan, terminals, apiBase, onSaved, onCancel }) {
-  const [form, setForm] = useState(() => ({ ...planDateDefaults(plan.period_start || todayInVietnam(), plan.period_end || todayInVietnam()), ...Object.fromEntries(Object.entries(plan).filter(([, value]) => value != null)), voyage_id: String(plan.voyage_id || ''), amount: planAmountInput(plan.amount_decimal ?? plan.amount) }));
+  const [form, setForm] = useState(() => ({ ...planDateDefaults(plan.period_start || todayInVietnam(), plan.period_end || todayInVietnam()), ...Object.fromEntries(Object.entries(plan).filter(([, value]) => value != null)), voyage_id: String(plan.voyage_id || ''), amount: planAmountInput(plan.amount_decimal ?? plan.amount), milestones: (plan.milestones || []).map((row) => ({ ...row, amount: planAmountInput(row.amount) })) }));
   const [attempted, setAttempted] = useState(false);
   const task = useTask();
   const validation = validatePlanEntry(form, terminals);
@@ -271,6 +276,9 @@ function PlansPanel({ user, filters, apiBase, onSelectPlan, preferredPeriodType 
   const [listPeriod, setListPeriod] = useState(() => planDateDefaults(filters.start_date, filters.end_date));
   const [terminal, setTerminal] = useState('all');
   const [periodType, setPeriodType] = useState('all');
+  const [planState, setPlanState] = useState('all');
+  const [referenceQuery, setReferenceQuery] = useState('');
+  const [referenceDraft, setReferenceDraft] = useState('');
   const [page, setPage] = useState(1);
   const [revision, setRevision] = useState(0);
   const [form, setForm] = useState({ terminal: planTerminals(terminals).includes(filters.terminal) ? filters.terminal : terminals[0] || '', period_type: planEntryPeriod(filters, preferredPeriodType), ...planDateDefaults(filters.start_date, filters.end_date), metric: 'tonnage', amount: '', reference: '', note: '', voyage_id: '' });
@@ -298,12 +306,12 @@ function PlansPanel({ user, filters, apiBase, onSelectPlan, preferredPeriodType 
   let periodError = '';
   try { if (!['all', 'voyage'].includes(periodType)) periodQuery = planPeriodFields({ ...listPeriod, period_type: periodType }); }
   catch (error) { periodError = error.message; }
-  const result = itemsOrError(useResource(periodError ? null : queryPath('/plans', { ...periodQuery, period_type: periodType === 'all' ? undefined : periodType, terminal, page, page_size: 25, include_deleted: includeDeleted || undefined }), apiBase, revision));
+  const result = itemsOrError(useResource(periodError ? null : queryPath('/plans', { ...periodQuery, period_type: periodType === 'all' ? undefined : periodType, terminal, page, page_size: 25, include_deleted: includeDeleted || undefined, version_scope: ['current', 'previous'].includes(planState) ? planState : undefined, status: ['draft', 'approved', 'cancelled'].includes(planState) ? planState : undefined, q: referenceQuery || undefined }), apiBase, revision));
   const refresh = () => setRevision((value) => value + 1);
   const changePeriod = (key, value) => { setListPeriod((current) => ({ ...current, [key]: value })); setPage(1); };
-  const hasListFilters = periodType !== 'all' || terminal !== 'all' || includeDeleted;
+  const hasListFilters = periodType !== 'all' || terminal !== 'all' || includeDeleted || planState !== 'all' || Boolean(referenceQuery);
   function clearListFilters() {
-    setPeriodType('all'); setTerminal('all'); setIncludeDeleted(false); setPage(1);
+    setPeriodType('all'); setTerminal('all'); setIncludeDeleted(false); setPlanState('all'); setReferenceQuery(''); setReferenceDraft(''); setPage(1);
   }
   function changeCreateOpen(open) {
     setCreateOpen(open);
@@ -320,7 +328,7 @@ function PlansPanel({ user, filters, apiBase, onSelectPlan, preferredPeriodType 
   function openCreate(plan = null) {
     setEditing(null); setCancelling(null); setCreateOpen(true); setAttempted(false); task.clearError();
     if (plan) {
-      setForm({ ...planDateDefaults(plan.period_start || filters.start_date, plan.period_end || filters.end_date), ...Object.fromEntries(Object.entries(plan).filter(([, value]) => value != null)), voyage_id: String(plan.voyage_id || ''), amount: planAmountInput(plan.amount_decimal ?? plan.amount) });
+      setForm({ ...planDateDefaults(plan.period_start || filters.start_date, plan.period_end || filters.end_date), ...Object.fromEntries(Object.entries(plan).filter(([, value]) => value != null)), voyage_id: String(plan.voyage_id || ''), amount: planAmountInput(plan.amount_decimal ?? plan.amount), milestones: (plan.milestones || []).map((row) => ({ ...row, amount: planAmountInput(row.amount) })) });
       setCopiedPlan(plan); setLastCreated(null);
     } else if (!form.amount && !form.reference && !form.note) {
       const entryPeriod = periodType === 'all' ? planEntryPeriod(filters, preferredPeriodType) : periodType;
@@ -337,7 +345,8 @@ function PlansPanel({ user, filters, apiBase, onSelectPlan, preferredPeriodType 
     if (!entry.payload) { focusPlanError(event.currentTarget); return; }
     const outcome = await task.run((signal) => apiRequest('/plans', { method: 'POST', body: entry.payload, signal, baseUrl: apiBase }));
     if (outcome.ok) {
-      setLastCreated(outcome.result); setCopiedPlan(null); setAttempted(false); setForm((value) => ({ ...value, amount: '', note: '' }));
+      setLastCreated(outcome.result); setCopiedPlan(null); setAttempted(false); setForm((value) => ({ ...value, amount: '', note: '', milestones: [] }));
+      setPlanState('all'); setReferenceQuery(''); setReferenceDraft('');
       if (periodType !== 'all') {
         setPeriodType(form.period_type);
         setListPeriod({ week: form.week, month: form.month, quarter: form.quarter, year: form.year, start_date: form.start_date, end_date: form.end_date });
@@ -349,7 +358,7 @@ function PlansPanel({ user, filters, apiBase, onSelectPlan, preferredPeriodType 
   async function approve(plan) {
     setTaskTarget('approve');
     const outcome = await task.run((signal) => apiRequest(`/plans/${encodeURIComponent(plan.id)}/approve`, { method: 'POST', body: { expected_revision: plan.revision || 1 }, signal, baseUrl: apiBase }), 'Đã duyệt kế hoạch.');
-    if (outcome.ok) { setLastApproved(outcome.result); refresh(); }
+    if (outcome.ok) { setLastApproved(outcome.result); setPlanState('all'); setPage(1); refresh(); }
   }
   function deleted(plan) {
     setDeleting(null);
@@ -363,7 +372,7 @@ function PlansPanel({ user, filters, apiBase, onSelectPlan, preferredPeriodType 
     refresh();
   }
   return <div className="management-stack">
-    <section className="management-card plans-section"><div className="management-heading plan-list-heading"><div className="plan-list-title"><h3 ref={listHeading} tabIndex={-1}>Danh sách kế hoạch</h3><p className="plan-list-subtitle">Cảng Nghệ Tĩnh · Các kỳ và phiên bản</p></div><div className="management-actions plan-header-actions">{canManage(user) && <><button ref={createTrigger} className="button primary" type="button" aria-expanded={createOpen} aria-controls={`${panelId}-create`} disabled={task.busy || !terminals.length} onClick={() => openCreate()}><Plus size={15} aria-hidden="true" />Tạo kế hoạch</button><button ref={importTrigger} className="button" type="button" aria-expanded={importOpen} aria-controls={`${panelId}-import`} onClick={openImport}><Upload size={15} aria-hidden="true" />Nhập Excel</button></>}<button className="button" type="button" onClick={refresh} disabled={result.resource.loading}><RefreshCw size={15} aria-hidden="true" />Tải lại</button></div></div>
+    <section className="management-card plans-section"><div className="management-heading plan-list-heading"><div className="plan-list-title"><h3 ref={listHeading} tabIndex={-1}>Danh sách kế hoạch</h3><p className="plan-list-subtitle">Cảng Nghệ Tĩnh · Các kỳ và phiên bản</p></div><div className="management-actions plan-header-actions">{canCreatePlan(user) && <><button ref={createTrigger} className="button primary" type="button" aria-expanded={createOpen} aria-controls={`${panelId}-create`} disabled={task.busy || !terminals.length} onClick={() => openCreate()}><Plus size={15} aria-hidden="true" />Tạo kế hoạch</button><button ref={importTrigger} className="button" type="button" aria-expanded={importOpen} aria-controls={`${panelId}-import`} onClick={openImport}><Upload size={15} aria-hidden="true" />Nhập Excel</button></>}<button className="button" type="button" onClick={refresh} disabled={result.resource.loading}><RefreshCw size={15} aria-hidden="true" />Tải lại</button></div></div>
       <div className="plan-filter-panel">
       <div className="management-filters plan-list-filters" data-period={periodType}><label className="plan-kind-filter">Danh sách kế hoạch<select value={periodType} onChange={(event) => { setPeriodType(event.target.value); setPage(1); }}><option value="all">Tất cả kế hoạch</option>{Object.entries(PLAN_PERIOD_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         {!['all', 'voyage'].includes(periodType) && <div className="plan-period-filter" data-paired={['quarter', 'custom'].includes(periodType)}>
@@ -374,13 +383,17 @@ function PlansPanel({ user, filters, apiBase, onSelectPlan, preferredPeriodType 
         {periodType === 'custom' && <><label>Từ ngày lọc kế hoạch<input type="date" min="2000-01-01" max="2099-12-31" value={listPeriod.start_date} onChange={(event) => changePeriod('start_date', event.target.value)} /></label><label>Đến ngày lọc kế hoạch<input type="date" min={listPeriod.start_date || '2000-01-01'} max="2099-12-31" value={listPeriod.end_date} onChange={(event) => changePeriod('end_date', event.target.value)} /></label></>}
         </div>}
         <label className="plan-terminal-filter">Xí nghiệp<select value={terminal} onChange={(event) => { setTerminal(event.target.value); setPage(1); }}><option value="all">Trong phạm vi được cấp</option>{terminals.map((item) => <option value={item} key={item}>{MANAGEMENT_TERMINALS[item]}</option>)}</select></label></div>
+      <form className="plan-list-secondary-filters" onSubmit={(event) => { event.preventDefault(); setReferenceQuery(referenceDraft.trim()); setPage(1); }}>
+        <label>Trạng thái kế hoạch<select value={planState} onChange={(event) => { setPlanState(event.target.value); setPage(1); }}><option value="all">Tất cả trạng thái</option><option value="current">Đang áp dụng</option><option value="draft">Bản nháp</option><option value="approved">Đã duyệt — mọi phiên bản</option><option value="previous">Phiên bản trước</option><option value="cancelled">Đã hủy</option></select></label>
+        <div className="plan-reference-search"><label htmlFor={`${panelId}-search`}>Tìm theo văn bản</label><div><input id={`${panelId}-search`} type="search" maxLength={200} placeholder="Nhập số hoặc tên văn bản" value={referenceDraft} onChange={(event) => setReferenceDraft(event.target.value)} /><button type="submit" className="button">Tìm</button>{hasListFilters && result.items.length > 0 && <button type="button" className="button" onClick={clearListFilters}>Bỏ bộ lọc</button>}</div></div>
+      </form>
       <div className="plan-filter-footer"><span className="plan-list-count" role="status">{periodError ? 'Kiểm tra kỳ đã chọn' : result.resource.loading ? 'Đang tải danh sách…' : result.resource.error ? 'Chưa tải được danh sách' : Number.isInteger(result.resource.data?.total) ? `${formatNumber(result.resource.data.total, 0)} phiên bản kế hoạch` : 'Danh sách kế hoạch'}</span><label className="plan-deleted-toggle"><input type="checkbox" checked={includeDeleted} onChange={(event) => { setIncludeDeleted(event.target.checked); setPage(1); }} />Hiện kế hoạch đã xóa</label></div>
       {periodError && <p className="management-error" role="alert">{periodError}</p>}
       </div>
       {editing && <PlanEditor key={`${editing.id}/${editing.revision}`} plan={editing} terminals={terminals} apiBase={apiBase} onSaved={() => { setEditing(null); refresh(); }} onCancel={() => setEditing(null)} />}
       {cancelling && <PlanCancel key={cancelling.id} plan={cancelling} apiBase={apiBase} onSaved={() => { setCancelling(null); refresh(); }} onCancel={() => setCancelling(null)} />}
       {historyId && <PlanHistory key={historyId} id={historyId} apiBase={apiBase} onClose={() => setHistoryId(null)} />}
-      {canManage(user) && <><details id={`${panelId}-create`} ref={createEditor} className="management-editor plan-entry-editor" hidden={!createOpen} open={createOpen} onToggle={(event) => changeCreateOpen(event.currentTarget.open)}><summary onClick={(event) => { if (task.busy) event.preventDefault(); }}><span>Tạo phiên bản kế hoạch</span><small>Bấm để thu gọn</small></summary>{copiedPlan && <p className="management-caption">Tạo bản mới từ phiên bản {copiedPlan.version} · {copiedPlan.reference}. Phiên bản đã duyệt được giữ nguyên; bản mới cần được duyệt trước khi áp dụng.</p>}<form className="management-form" noValidate onSubmit={createPlan}>
+      {canCreatePlan(user) && <><details id={`${panelId}-create`} ref={createEditor} className="management-editor plan-entry-editor" hidden={!createOpen} open={createOpen} onToggle={(event) => changeCreateOpen(event.currentTarget.open)}><summary onClick={(event) => { if (task.busy) event.preventDefault(); }}><span>Tạo phiên bản kế hoạch</span><small>Bấm để thu gọn</small></summary>{copiedPlan && <p className="management-caption">Tạo bản mới từ phiên bản {copiedPlan.version} · {copiedPlan.reference}. Phiên bản đã duyệt được giữ nguyên; bản mới cần được duyệt trước khi áp dụng.</p>}<form className="management-form" noValidate onSubmit={createPlan}>
         <PlanFields form={form} setForm={(value) => { setForm(value); task.clearError(); }} terminals={terminals} apiBase={apiBase} disabled={task.busy} errors={{ ...(taskTarget === 'create' ? task.fieldErrors : {}), ...(attempted ? entry.errors : {}) }} />
         {attempted && !entry.payload && <p className="plan-field-error management-wide" role="alert">Chưa lưu. Vui lòng kiểm tra các mục được đánh dấu.</p>}
         {taskTarget === 'create' && <div className="management-wide"><TaskState task={task} /></div>}
@@ -404,13 +417,14 @@ function PlansPanel({ user, filters, apiBase, onSelectPlan, preferredPeriodType 
           <td role="cell" className="plan-reference-cell"><span className="plan-cell-label" aria-hidden="true">Văn bản</span>{plan.reference}</td>
           <td role="cell" className="plan-actions-cell"><span className="plan-cell-label" aria-hidden="true">Thao tác</span><div className="management-row-actions">
             {!plan.is_deleted && <>
-              {canManage(user) && plan.status === 'draft' && <><button className="button" type="button" disabled={task.busy || Boolean(editing || cancelling)} onClick={() => approve(plan)}><Check size={14} />Duyệt</button><button className="button" type="button" disabled={task.busy} onClick={() => { setCancelling(null); setEditing(plan); }}>Sửa nháp</button><button className="button" type="button" disabled={task.busy} onClick={() => { setEditing(null); setCancelling(plan); }}>Hủy nháp</button></>}
-              {canManage(user) && plan.status === 'approved' && <button className="button" type="button" disabled={task.busy || Boolean(editing || cancelling)} onClick={() => openCreate(plan)}>Tạo phiên bản mới</button>}
+              {canApprovePlan(user) && plan.status === 'draft' && <button className="button" type="button" disabled={task.busy || Boolean(editing || cancelling) || plan.can_approve === false} title={plan.approval_block_reason || undefined} onClick={() => approve(plan)}><Check size={14} />Duyệt</button>}
+              {canCreatePlan(user) && plan.status === 'draft' && <><button className="button" type="button" disabled={task.busy} onClick={() => { setCancelling(null); setEditing(plan); }}>Sửa nháp</button><button className="button" type="button" disabled={task.busy} onClick={() => { setEditing(null); setCancelling(plan); }}>Hủy nháp</button></>}
+              {canCreatePlan(user) && plan.status === 'approved' && <button className="button" type="button" disabled={task.busy || Boolean(editing || cancelling)} onClick={() => openCreate(plan)}>Tạo phiên bản mới</button>}
               {plan.status === 'approved' && plan.is_current === true && plan.metric === 'tonnage' && plan.period_type !== 'voyage' && onSelectPlan && <PlanProgressButton plan={plan} onSelectPlan={onSelectPlan} />}
             </>}
             <button className="button" type="button" onClick={() => setHistoryId(plan.id)}>Lịch sử</button>
-            {!plan.is_deleted && canManage(user) && <button className="button plan-delete-button" type="button" disabled={task.busy} onClick={(event) => { setDeletedMessage(''); setDeleting({ plan, trigger: event.currentTarget }); }}><Trash2 size={14} aria-hidden="true" />Xóa</button>}
-          </div></td>
+            {canDeletePlan(user, plan) && <button className="button plan-delete-button" type="button" disabled={task.busy} title={plan.delete_block_reason || undefined} onClick={(event) => { setDeletedMessage(''); setDeleting({ plan, trigger: event.currentTarget }); }}><Trash2 size={14} aria-hidden="true" />Xóa</button>}
+          </div>{plan.status === 'draft' && plan.approval_block_reason && <small>{plan.approval_block_reason}</small>}</td>
         </tr>)}</tbody>
       </table></div><Pager page={page} total={result.resource.data.total || 0} onChange={setPage} /></> : <div className="plan-list-empty"><span className="plan-empty-icon"><ClipboardList size={25} aria-hidden="true" /></span><h4>{hasListFilters ? 'Không có kế hoạch phù hợp' : 'Chưa có kế hoạch'}</h4><p>Chưa có kế hoạch trong kỳ và phạm vi đã chọn.</p>{hasListFilters && <button className="button" type="button" onClick={clearListFilters}>Bỏ bộ lọc</button>}</div>)}
       </div>
@@ -483,8 +497,8 @@ function UserEditor({ item, user, apiBase, onSaved, onCancel }) {
   async function save(event) {
     event.preventDefault();
     const outcome = await task.run((signal) => {
-      const { display_name, role, terminals } = buildUserPayload(form);
-      return apiRequest(`/users/${encodeURIComponent(item.id)}`, { method: 'PATCH', body: { display_name, role, terminals }, signal, baseUrl: apiBase });
+      const { display_name, role, terminals, plan_permissions } = buildUserPayload(form);
+      return apiRequest(`/users/${encodeURIComponent(item.id)}`, { method: 'PATCH', body: { display_name, role, terminals, ...(plan_permissions !== undefined ? { plan_permissions } : {}) }, signal, baseUrl: apiBase });
     });
     if (outcome.ok) onSaved();
   }
@@ -492,6 +506,7 @@ function UserEditor({ item, user, apiBase, onSaved, onCancel }) {
     <label>Tên hiển thị<input value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} maxLength={160} required autoFocus /></label>
     <label>Quyền tài khoản<select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}>{Object.entries(MANAGEMENT_ROLES).map(([role, label]) => <option key={role} value={role}>{label}</option>)}</select></label>
     <fieldset className="management-scope management-wide"><legend>Xí nghiệp được cấp</legend>{userTerminals(user).map((terminal) => <label key={terminal}><input type="checkbox" checked={form.terminals.includes(terminal)} onChange={(event) => setForm({ ...form, terminals: event.target.checked ? [...form.terminals, terminal] : form.terminals.filter((value) => value !== terminal) })} />{MANAGEMENT_TERMINALS[terminal]}</label>)}</fieldset>
+    <PlanPermissionsField role={form.role} value={form.plan_permissions ?? (form.role === 'viewer' ? [] : ['create', 'approve'])} onChange={(plan_permissions) => setForm({ ...form, plan_permissions })} disabled={task.busy} />
     <p className="management-caption management-wide">Thay đổi quyền sẽ kết thúc các phiên đăng nhập hiện tại của tài khoản.</p>
     <div className="management-actions management-wide"><button className="button primary" type="submit" disabled={task.busy}>Lưu tài khoản</button><button className="button" type="button" onClick={onCancel} disabled={task.busy}>Hủy</button></div>
   </form><TaskState task={task} /></section>;
@@ -528,9 +543,11 @@ function UsersPanel({ user, apiBase }) {
       <label>Tên đăng nhập<input value={form.username} onChange={update('username')} minLength={3} maxLength={80} pattern="[A-Za-z0-9][A-Za-z0-9._-]+" autoComplete="off" required /></label><label>Tên người dùng<input value={form.display_name} onChange={update('display_name')} maxLength={160} required /></label>
       <label>Quyền<select value={form.role} onChange={update('role')}>{Object.entries(MANAGEMENT_ROLES).map(([role, label]) => <option key={role} value={role}>{label}</option>)}</select></label>
       <fieldset className="management-scope"><legend>Phạm vi xí nghiệp</legend>{userTerminals(user).map((terminal) => <label key={terminal}><input type="checkbox" checked={form.terminals.includes(terminal)} onChange={(event) => setForm((value) => ({ ...value, terminals: event.target.checked ? [...value.terminals, terminal] : value.terminals.filter((item) => item !== terminal) }))} />{MANAGEMENT_TERMINALS[terminal]}</label>)}</fieldset>
+      <PlanPermissionsField role={form.role} value={form.plan_permissions ?? (form.role === 'viewer' ? [] : ['create', 'approve'])} onChange={(plan_permissions) => setForm({ ...form, plan_permissions })} disabled={task.busy} />
       <div className="management-actions management-wide"><button className="button primary" type="submit" disabled={task.busy}><Plus size={15} />Tạo tài khoản</button></div>
     </form></details><TaskState task={task} /><ResourceState resource={result.resource} onRetry={refresh} />
     {result.resource.data && (result.items.length ? <div className="table-scroll" tabIndex={0} role="region" aria-label="Bảng tài khoản nội bộ"><table><thead><tr><th>Người dùng</th><th>Quyền</th><th>Xí nghiệp</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>{result.items.map((item) => <tr key={item.id}><th scope="row">{item.display_name}<small>{item.username}</small></th><td>{MANAGEMENT_ROLES[item.role] || item.role}</td><td>{userTerminals(item).map((terminal) => MANAGEMENT_TERMINALS[terminal]).join(', ')}</td><td>{item.is_active ? 'Đang hoạt động' : 'Đã khóa'}{item.must_change_password && <small>Cần đổi mật khẩu</small>}</td><td><div className="management-row-actions"><button className="button" type="button" onClick={() => { setPassword(null); setEditing(item); }} disabled={task.busy || !item.terminals.every((terminal) => user.terminals.includes(terminal))}>Sửa quyền</button><button className="button" type="button" onClick={() => resetPassword(item)} disabled={task.busy || !item.is_active || !item.terminals.every((terminal) => user.terminals.includes(terminal))}><KeyRound size={14} />Cấp mật khẩu mới</button>{item.id !== user.id && <button className="button" type="button" onClick={() => toggleActive(item)} disabled={task.busy || !item.terminals.every((terminal) => user.terminals.includes(terminal))}>{item.is_active ? 'Khóa' : 'Mở khóa'}</button>}</div></td></tr>)}</tbody></table></div> : <p className="management-empty">Chưa có tài khoản.</p>)}
+    <AdminAudit apiBase={apiBase} user={user} />
   </section>;
 }
 
@@ -583,7 +600,7 @@ function ClosedReportsPanel({ user, filters, report, apiBase, onReportChange }) 
     </section>}
     {result.resource.data && (result.items.length ? <><div className="table-scroll" tabIndex={0} role="region" aria-label="Danh sách báo cáo đã chốt"><table><thead><tr><th>Báo cáo / kỳ</th><th>Phạm vi</th><th>Phiên bản</th><th>Ngày chốt</th><th>Số dòng nguồn</th><th>Thao tác</th></tr></thead><tbody>{result.items.map((item) => {
       const sameScope = reportId && sameClosedReportScope(item, report);
-      return <tr key={item.id}><th scope="row">{item.title || 'Báo cáo sản lượng'}<small>{formatDate(item.start_date)} – {formatDate(item.end_date)}</small></th><td>{MANAGEMENT_TERMINALS[item.terminal] || 'Toàn công ty'}<small>{productionScopeLabel(item.production_scope)}</small></td><td>{item.version}</td><td>{formatTimestamp(item.created_at)}</td><td>{formatNumber(item.source_fact_count, 0)}</td><td><div className="management-row-actions"><button className="button" type="button" disabled={task.busy} onClick={() => task.run((signal) => downloadFile(`/closed-reports/${encodeURIComponent(item.id)}/export.xlsx`, `bao-cao-da-chot-${item.production_scope || 'legacy'}-${item.id}-v${item.version}.xlsx`, { signal, baseUrl: apiBase }))}><Download size={14} />Excel</button><button className="button" type="button" onClick={() => setPlanningItem(item)}>Kế hoạch đã chốt</button><button className="button" type="button" disabled={task.busy || !sameScope} title={sameScope ? 'So sánh với báo cáo đang xem' : 'Chọn cùng kỳ, xí nghiệp, phạm vi sản lượng và quy tắc cầu để so sánh'} onClick={() => compare(item)}>So sánh</button></div></td></tr>;
+      return <tr key={item.id}><th scope="row">{item.title || 'Báo cáo sản lượng'}<small>{formatDate(item.start_date)} – {formatDate(item.end_date)}</small><small>Cơ sở so sánh: {COMPARISONS[item.comparison || 'previous_period'] || 'Chưa xác định'}</small></th><td>{MANAGEMENT_TERMINALS[item.terminal] || 'Toàn công ty'}<small>{productionScopeLabel(item.production_scope)}</small></td><td>{item.version}</td><td>{formatTimestamp(item.created_at)}</td><td>{formatNumber(item.source_fact_count, 0)}</td><td><div className="management-row-actions"><button className="button" type="button" disabled={task.busy} onClick={() => task.run((signal) => downloadFile(`/closed-reports/${encodeURIComponent(item.id)}/export.xlsx`, `bao-cao-da-chot-${item.production_scope || 'legacy'}-${item.id}-v${item.version}.xlsx`, { signal, baseUrl: apiBase }))}><Download size={14} />Excel</button><button className="button" type="button" onClick={() => setPlanningItem(item)}>Kế hoạch đã chốt</button><button className="button" type="button" disabled={task.busy || !sameScope} title={sameScope ? 'So sánh với báo cáo đang xem' : 'Chọn cùng kỳ báo cáo, cơ sở so sánh, xí nghiệp, phạm vi sản lượng và quy tắc cầu để so sánh'} onClick={() => compare(item)}>So sánh</button></div></td></tr>;
     })}</tbody></table></div><Pager page={page} total={result.resource.data.total || 0} onChange={setPage} /></> : <p className="management-empty">Chưa có báo cáo đã chốt trong phạm vi được cấp.</p>)}
   </section>;
 }
@@ -598,6 +615,7 @@ function OperationsPanel({ apiBase }) {
   return <section className="management-card"><div className="management-heading"><h3>Vận hành hệ thống</h3><button className="button" type="button" disabled={resource.loading} onClick={() => setRevision((number) => number + 1)}><RefreshCw size={15} />Cập nhật</button></div><ResourceState resource={resource} />
     {valid ? <><div className="management-metrics">{[['Báo cáo trong RAM', data.cache.snapshots], ['Dòng nguồn trong RAM', data.cache.stored_rows], ['Yêu cầu đang xử lý', data.cache.inflight], ['Lượt dùng bộ nhớ đệm', data.cache.hits]].map(([label, value]) => <article key={label}><span>{label}</span><strong>{formatNumber(value, 0)}</strong></article>)}</div>
       {data.storage && <><h4>Bản báo cáo lưu trên ổ đĩa</h4><div className="management-metrics">{[['Báo cáo lưu', data.storage.snapshots], ['Dòng nguồn lưu', data.storage.stored_rows], ['Dung lượng nén (MiB)', (data.storage.compressed_bytes || 0) / 1048576]].map(([label, value]) => <article key={label}><span>{label}</span><strong>{formatNumber(value, label.includes('MiB') ? 2 : 0)}</strong></article>)}</div><p className="management-caption">Giới hạn: {formatNumber(data.storage.max_snapshots, 0)} báo cáo · {formatNumber(data.storage.max_rows, 0)} dòng · {formatNumber(data.storage.max_bytes / 1048576, 0)} MiB. Bản lưu ổ đĩa giúp tra cứu khi bản trong RAM đã được thay thế.</p></>}
+      <BackupStatus value={data.backup} />
       <div className="table-scroll" tabIndex={0} role="region" aria-label="Bảng tình trạng truy vấn"><table><thead><tr><th>Tác vụ</th><th>Yêu cầu</th><th>Thành công</th><th>Lỗi</th><th>Trung bình (ms)</th><th>Chậm nhất (ms)</th></tr></thead><tbody>{Object.entries(data.operations).map(([name, values]) => <tr key={name}><th>{operationLabels[name] || name}</th><td>{formatNumber(values.request_count, 0)}</td><td>{formatNumber(values.success_count, 0)}</td><td>{formatNumber(values.failure_count, 0)}</td><td>{formatNumber(values.latency_ms_mean, 1)}</td><td>{formatNumber(values.latency_ms_max, 1)}</td></tr>)}</tbody></table></div>
       <dl className="management-config"><div><dt>Thời gian dùng lại báo cáo</dt><dd>{formatNumber(data.cache.ttl_seconds, 0)} giây</dd></div><div><dt>Thời gian lưu báo cáo để tra cứu</dt><dd>{formatNumber(data.cache.snapshot_ttl_seconds, 0)} giây</dd></div><div><dt>Số báo cáo tối đa trong RAM</dt><dd>{formatNumber(data.cache.max_snapshots, 0)}</dd></div><div><dt>Số dòng nguồn tối đa trong RAM</dt><dd>{formatNumber(data.cache.max_snapshot_rows, 0)}</dd></div></dl>
     </> : data && <p className="management-error" role="alert">Số liệu vận hành chưa đúng cấu trúc. Vui lòng cập nhật lại.</p>}

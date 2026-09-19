@@ -461,7 +461,8 @@ def test_query_bounds_include_previous_period_without_dropping_nonphysical_throu
     repo = StubRepository([fact(1, voyage=None, source_voyage="999")])
     data = repo.read_report("2026-09-12", "2026-09-12", "all")
     query, params = repo.calls[0]
-    assert params == (date(2026, 9, 11), date(2026, 9, 13)) * 2
+    assert params == (date(2026, 9, 11), date(2026, 9, 13), date(2026, 9, 12),
+                      date(2026, 9, 11), date(2026, 9, 12)) * 2
     assert "AS source_voyage_id" in query
     assert "CASE WHEN " + repo.physical_voyage_filter in query
     assert "AND " + repo.physical_voyage_filter not in query

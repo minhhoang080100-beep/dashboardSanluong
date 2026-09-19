@@ -1,5 +1,5 @@
 import { CalendarDays, Check, RefreshCw, SlidersHorizontal } from 'lucide-react';
-import { formatDate, isoWeekValue, presetDates, TERMINALS } from '../dashboard-data';
+import { comparisonMode, COMPARISONS, formatDate, isoWeekValue, presetDates, TERMINALS } from '../dashboard-data';
 import { allowedTerminals } from '../filter-preferences';
 import { REPORT_PERIOD_TYPES, reportPeriodDates, reportWeekOptions } from '../report-period';
 import './ReportFilters.css';
@@ -15,7 +15,7 @@ function FilterField({ id, label, className = '', children }) {
   return <div className={`report-field ${className}`}><label htmlFor={id}>{label}</label>{children}</div>;
 }
 
-export default function ReportFilters({ user, selection, draft, today, loading, hasDraft, error, onChange, onTypeChange, onTerminalChange, onPreset, onSubmit, onRefresh }) {
+export default function ReportFilters({ user, selection, draft, today, loading, hasDraft, error, onChange, onTypeChange, onTerminalChange, onComparisonChange, onPreset, onSubmit, onRefresh }) {
   const { type } = selection;
   const dates = reportPeriodDates(selection, today);
   const maxYear = type === 'week' ? Math.max(Number(today.slice(0, 4)), Number(isoWeekValue(today).slice(0, 4))) : Number(today.slice(0, 4));
@@ -49,6 +49,7 @@ export default function ReportFilters({ user, selection, draft, today, loading, 
         </>}
       </div>
       <FilterField className="report-terminal-field" id="terminal" label="Phạm vi xí nghiệp"><select id="terminal" value={draft.terminal} onChange={(event) => onTerminalChange(event.target.value)}>{allowedTerminals(user).map((key) => <option key={key} value={key}>{TERMINALS[key]}</option>)}</select></FilterField>
+      <FilterField className="report-comparison-field" id="report-comparison" label="So sánh"><select id="report-comparison" value={comparisonMode(draft)} onChange={(event) => onComparisonChange(event.target.value)}>{Object.entries(COMPARISONS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></FilterField>
       <div className="filter-actions"><button className="button primary" type="submit"><Check size={16} aria-hidden="true" />Xem báo cáo</button><button className="button icon-button" type="button" aria-label="Tải lại báo cáo đang chọn" title="Tải lại báo cáo đang chọn" disabled={loading} onClick={onRefresh}><RefreshCw size={17} aria-hidden="true" /></button></div>
       <div className="report-period-preview" aria-live="polite"><CalendarDays size={18} aria-hidden="true" /><div><span>Khoảng thời gian sẽ xem</span><strong>{dates ? `${formatDate(dates.start_date)} – ${formatDate(dates.end_date)}` : 'Chọn thời gian hợp lệ để xem báo cáo.'}</strong>{type === 'week' && <small>Tuần từ thứ Hai đến Chủ nhật.{dates?.end_date === today ? ' Tuần hiện tại lấy đến hôm nay.' : ''}</small>}{['month', 'quarter', 'year'].includes(type) && dates?.end_date === today && <small>Kỳ hiện tại lấy đến hôm nay.</small>}</div>
         {shortcuts.length > 0 && <div className="report-period-shortcuts" role="group" aria-label="Chọn nhanh kỳ báo cáo">{shortcuts.map(([key, label]) => {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { csvCell, dashboardCsv, dashboardRequestTimeout, dashboardResourceView, fetchDashboard, formatNumber, formatTimestamp, isCurrentDayPeriod, isoWeekValue, presetDates, ratioAvailability, todayInVietnam, validateDashboard, validateFilters, weekDates } from './dashboard-data.js';
+import { comparisonDates, comparisonMode, csvCell, dashboardCsv, dashboardRequestTimeout, dashboardResourceView, fetchDashboard, formatNumber, formatTimestamp, isCurrentDayPeriod, isoWeekValue, presetDates, ratioAvailability, todayInVietnam, validateDashboard, validateFilters, weekDates, withComparison } from './dashboard-data.js';
 
 const filters = { start_date: '2026-09-01', end_date: '2026-09-09', terminal: 'all', production_scope: 'nghe_tinh' };
 function fixture() {
@@ -187,6 +187,59 @@ test('reject a wrong filter response instead of displaying mismatched report', (
   const wrong = fixture();
   wrong.meta.filters.terminal = 'ben_thuy';
   assert.throws(() => validateDashboard(wrong, filters), /cấu trúc/);
+});
+
+test('comparison windows map calendar endpoints including leap day without pulling gap dates', () => {
+  assert.deepEqual(comparisonDates(filters), { start_date: '2026-08-23', end_date: '2026-08-31' });
+  for (const [start_date, end_date, expected] of [
+    ['2026-09-01', '2026-09-09', ['2025-09-01', '2025-09-09']],
+    ['2024-02-01', '2024-02-29', ['2023-02-01', '2023-02-28']],
+    ['2024-02-29', '2024-02-29', ['2023-02-28', '2023-02-28']],
+    ['2025-02-01', '2025-02-28', ['2024-02-01', '2024-02-28']],
+    ['2025-12-29', '2026-01-04', ['2024-12-29', '2025-01-04']],
+    ['1900-01-01', '1900-01-01', ['1899-01-01', '1899-01-01']],
+  ]) assert.deepEqual(comparisonDates({ start_date, end_date, comparison: 'previous_year' }), { start_date: expected[0], end_date: expected[1] });
+  for (const comparison of ['invalid', '', null, true, {}]) assert.ok(validateFilters({ ...filters, comparison }, '2026-09-09'));
+  assert.equal(comparisonDates({ ...filters, start_date: '2026-02-30' }), null);
+  assert.equal(comparisonDates({ ...filters, comparison: 'invalid' }), null);
+  assert.equal(comparisonMode(filters), 'previous_period');
+  const annual = withComparison(filters, 'previous_year');
+  assert.equal(annual.comparison, 'previous_year');
+  assert.deepEqual(withComparison(annual, 'previous_period'), filters);
+  assert.equal(Object.hasOwn(filters, 'comparison'), false);
+});
+
+test('prior year responses must echo the selected mode and exact comparison window; stale other modes stay hidden', () => {
+  const selected = { ...filters, comparison: 'previous_year' };
+  const data = fixture();
+  assert.throws(() => validateDashboard(data, selected), /cấu trúc/);
+  data.meta.filters = selected;
+  assert.throws(() => validateDashboard(data, selected), /cấu trúc/);
+  data.meta.previous_period = { ...comparisonDates(selected), mode: 'previous_year', label: 'Cùng ngày/tháng năm trước' };
+  assert.equal(validateDashboard(data, selected), data);
+  assert.throws(() => validateDashboard(data, filters), /cấu trúc/);
+  for (const changes of [{ mode: 'previous_period' }, { mode: undefined }, { start_date: '2025-08-31' }, { end_date: '2025-09-10' }]) {
+    assert.throws(() => validateDashboard({ ...data, meta: { ...data.meta, previous_period: { ...data.meta.previous_period, ...changes } } }, selected), /cấu trúc/);
+  }
+  assert.equal(dashboardResourceView({ status: 'stale', data: fixture(), key: JSON.stringify(selected) }, selected).status, 'recovering');
+  const csv = dashboardCsv(data);
+  assert.ok(csv.includes('"Kỳ so sánh","Cùng kỳ năm trước","Từ ngày","2025-09-01","Đến ngày","2025-09-09"'));
+  assert.ok(csv.includes('Cùng ngày/tháng năm trước'));
+  assert.equal(validateDashboard(fixture(), { ...filters, comparison: 'previous_period' }).overview.total_tonnage, 100);
+});
+
+test('dashboard request sends the selected comparison to the backend', async () => {
+  const selected = withComparison(filters, 'previous_year');
+  const data = fixture();
+  data.meta.filters = selected;
+  data.meta.previous_period = { ...comparisonDates(selected), mode: 'previous_year', label: 'Cùng ngày/tháng năm trước' };
+  let requestUrl;
+  const result = await fetchDashboard(selected, { fetcher: async (url) => {
+    requestUrl = new URL(url, 'https://example.test');
+    return { ok: true, json: async () => data };
+  } });
+  assert.equal(result, data);
+  assert.equal(requestUrl.searchParams.get('comparison'), 'previous_year');
 });
 
 test('dashboard timeout stays 45 seconds for 92 days and allows 90 seconds for valid 93–366 day periods', () => {

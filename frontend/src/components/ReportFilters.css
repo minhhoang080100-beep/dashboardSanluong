@@ -2,7 +2,7 @@
 .filter-top { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 20px; margin-bottom: 20px; }
 .filter-top h2 { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; }
 .filter-top p { color: var(--text-muted); font-size: 12px; }
-.filter-form { display: grid; grid-template-columns: minmax(120px, .7fr) minmax(260px, 2fr) minmax(180px, 1.2fr) auto; align-items: end; gap: 16px; }
+.filter-form { display: grid; grid-template-columns: minmax(110px, .65fr) minmax(260px, 1.8fr) minmax(175px, 1.1fr) minmax(170px, 1fr) auto; align-items: end; gap: 16px; }
 .report-field { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
 .filter-form label { color: var(--text-muted); font-size: 12px; }
 .filter-form input, .filter-form select { color: var(--text-main); background: var(--surface-muted); border: 1px solid var(--border-color); border-radius: 7px; min-height: 44px; padding: 0 12px; font-size: 14px; width: 100%; min-width: 0; }
@@ -22,8 +22,12 @@
 .report-period-shortcuts button:hover { background: var(--surface-hover); color: var(--text-main); }
 .report-period-shortcuts button[aria-pressed="true"] { border-color: #9daf9f; color: var(--primary-hover); background: var(--surface-selected); }
 .filter-form > .form-error, .filter-form > .draft-note { grid-column: 1 / -1; margin: 0; }
-@media (max-width: 1150px) {
+@media (max-width: 1300px) {
   .filter-form { grid-template-columns: minmax(120px, .7fr) minmax(0, 2fr); }
+  .filter-actions { grid-column: 1 / -1; justify-content: flex-end; }
+  .filter-actions .primary { flex: 0 1 auto; }
+}
+@media (max-width: 850px) {
   .filter-actions .primary { flex: 1; }
 }
 @media (max-width: 650px) {

@@ -1,4 +1,4 @@
-import { presetDates, validateFilters } from './dashboard-data.js';
+import { comparisonMode, presetDates, validateFilters, withComparison } from './dashboard-data.js';
 import { isReportProductionScope } from './production-scope.js';
 
 export function allowedTerminals(user) {
@@ -12,7 +12,8 @@ export function restoreFilters(user) {
   try {
     const saved = JSON.parse(localStorage.getItem(`port-report-filters-${user.id}`));
     if (!saved || !scopes.includes(saved.terminal) || validateFilters(saved)) return defaults;
-    return isReportProductionScope(saved.production_scope) ? saved : { ...saved, production_scope: 'nghe_tinh' };
+    const selected = withComparison(saved, comparisonMode(saved));
+    return isReportProductionScope(selected.production_scope) ? selected : { ...selected, production_scope: 'nghe_tinh' };
   } catch { return defaults; }
 }
 

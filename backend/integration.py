@@ -9,13 +9,15 @@ from starlette.concurrency import run_in_threadpool
 
 if __package__:
     from .control_api import get_repository, get_store, require_user, validate_plan_voyages
-    from .control_store import ControlStore, plan_progress_rows, production_scope_context, require_admin, require_editor, require_scope
+    from .control_store import ControlStore, plan_progress_rows, production_scope_context, require_admin, require_editor, require_scope, require_plan_permission
+    from .backup_health import backup_health
     from .reporting import reporting_service
     from .repository import TERMINALS, date_range
     from .workbook_io import MAX_UPLOAD_BYTES, parse_plan_workbook, plan_template, report_workbook
 else:
     from control_api import get_repository, get_store, require_user, validate_plan_voyages
-    from control_store import ControlStore, plan_progress_rows, production_scope_context, require_admin, require_editor, require_scope
+    from control_store import ControlStore, plan_progress_rows, production_scope_context, require_admin, require_editor, require_scope, require_plan_permission
+    from backup_health import backup_health
     from reporting import reporting_service
     from repository import TERMINALS, date_range
     from workbook_io import MAX_UPLOAD_BYTES, parse_plan_workbook, plan_template, report_workbook
@@ -90,13 +92,13 @@ def export_report(report_id: str, chosen: dict = Depends(selection), user: dict 
 
 @router.get('/plans/template.xlsx')
 def template(user: dict = Depends(require_user)):
-    require_editor(user)
+    require_plan_permission(user, 'create')
     return workbook_response(plan_template(), 'mau-ke-hoach.xlsx')
 
 
 @router.post('/plans/import/preview')
 async def preview_import(file: UploadFile = File(...), user: dict = Depends(require_user), store: ControlStore = Depends(get_store), repo=Depends(get_repository)):
-    require_editor(user)
+    require_plan_permission(user, 'create')
     try:
         if not (file.filename or '').lower().endswith('.xlsx'):
             raise HTTPException(422, 'Chỉ nhận tệp .xlsx theo mẫu kế hoạch.')
@@ -231,8 +233,9 @@ def compare_closed(closed_id: int, body: CompareBody, user: dict = Depends(requi
     closed = store.get_closed_report(user, closed_id)
     report = report_scope(service, user, body.report_id)
     filters = report['meta']['filters']
-    if any(str(filters.get(key)) != str(closed[key]) for key in ['terminal', 'start_date', 'end_date']):
-        raise HTTPException(422, 'Chọn đúng kỳ và xí nghiệp của báo cáo đã chốt để so sánh.')
+    if (filters.get('comparison', 'previous_period') != closed.get('comparison', 'previous_period')
+            or any(str(filters.get(key)) != str(closed[key]) for key in ['terminal', 'start_date', 'end_date'])):
+        raise HTTPException(422, 'Chọn đúng kỳ, xí nghiệp và cơ sở so sánh của báo cáo đã chốt.')
     current_scope = production_scope_context(report)
     if closed['legacy_scope'] or current_scope['legacy_scope'] or any(
             closed[key] != current_scope[key] for key in ['production_scope', 'berth_rule_version']):
@@ -243,6 +246,6 @@ def compare_closed(closed_id: int, body: CompareBody, user: dict = Depends(requi
 
 
 @router.get('/admin/metrics')
-def metrics(user: dict = Depends(require_user), service=Depends(get_reporting)):
+def metrics(user: dict = Depends(require_user), service=Depends(get_reporting), store: ControlStore = Depends(get_store)):
     require_admin(user)
-    return service.get_metrics()
+    return {**service.get_metrics(), 'backup': backup_health(store.path)}

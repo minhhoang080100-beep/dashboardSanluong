@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ArrowUpRight, Check, RefreshCw, Target } from 'lucide-react';
 import { apiRequest } from '../api-client.js';
 import { formatDate, formatNumber, TERMINALS, todayInVietnam } from '../dashboard-data.js';
-import { canManage } from '../management-data.js';
+import { canCreatePlan } from '../plan-permissions.js';
 import { allowedTerminals } from '../filter-preferences.js';
 import { PROGRESS_BANDS, completionView, planProvenance, progressPeriodLabel, progressPeriodOptions, selectProgressItem, validateThroughputProgress } from '../throughput-progress.js';
 import './ThroughputProgress.css';
@@ -41,7 +41,7 @@ export default function ThroughputProgress({ report, user, apiBase, preferredPer
   const differenceLabel = progress.percent !== null && progress.percent > 100
     ? (progress.provisional ? 'Vượt (tạm tính)' : 'Vượt kế hoạch')
     : (progress.provisional ? 'Còn lại (tạm tính)' : 'Còn lại');
-  const manageLink = canManage(user) && report?.meta?.filters.production_scope === 'nghe_tinh';
+  const manageLink = canCreatePlan(user) && report?.meta?.filters.production_scope === 'nghe_tinh';
   const percentage = progress.percent === null ? '—' : `${formatNumber(Math.floor((progress.percent + 1e-9) * 10) / 10, 1)}%`;
   return <section className="panel throughput-progress" aria-labelledby="throughput-progress-title">
     <div className="throughput-progress-heading"><div><h2 id="throughput-progress-title"><Target size={19} aria-hidden="true" />Tiến độ kế hoạch sản lượng</h2><p>Tấn thông qua thực tế / kế hoạch</p></div>
@@ -88,6 +88,13 @@ export default function ThroughputProgress({ report, user, apiBase, preferredPer
           <div className="throughput-progress-scale" aria-hidden="true"><span>0%</span><span>20%</span><span>40%</span><span>60%</span><span>80%</span><span>100%</span></div>
           <div className="throughput-progress-legend" aria-label="Năm mức hoàn thành kế hoạch">{PROGRESS_BANDS.map((band) => <span key={band.name} className={progress.band?.name === band.name ? 'current-band' : ''}><i style={{ backgroundColor: band.color }} aria-hidden="true" />{band.label}</span>)}</div>
         </> : <p className="throughput-progress-empty">{item.reason || (item.target === 0 ? 'Kế hoạch bằng 0 nên chưa tính tỷ lệ hoàn thành.' : item.actual < 0 ? 'Sản lượng đang âm; cần đối soát trước khi tính tiến độ.' : 'Chưa đủ kế hoạch hoặc số liệu để tính tiến độ.')}</p>}
+        {item.pace && <div className="throughput-pace" aria-label="Tiến độ theo mốc kế hoạch">
+          <h3>Tiến độ theo mốc kế hoạch</h3>
+          {item.pace.status === 'ready' ? <><p>Đối chiếu từ đầu kỳ đến <strong>{formatDate(item.pace.milestone_date)}</strong></p>
+            <dl><div><dt>Kế hoạch lũy kế tại mốc</dt><dd>{formatNumber(item.pace.target)} tấn</dd></div><div><dt>Thực tế đến mốc</dt><dd>{formatNumber(item.pace.actual)} tấn</dd></div></dl>
+            <strong className={item.pace.difference < 0 ? 'pace-behind' : 'pace-met'}>{item.pace.difference < 0 ? `Thiếu ${formatNumber(-item.pace.difference)} tấn so với mốc` : item.pace.difference > 0 ? `Vượt mốc ${formatNumber(item.pace.difference)} tấn` : 'Đạt mốc kế hoạch'}</strong>
+          </> : <p>{item.pace.reason}</p>}
+        </div>}
         {provenance.references.length > 0 && <div className="throughput-progress-provenance"><span>Căn cứ: {provenance.references.join('; ')}</span>{provenance.isTest && <><span className="throughput-progress-test" title="Nhận diện theo mã tham chiếu bắt đầu bằng TEST.">Kế hoạch thử</span><p>Dữ liệu kế hoạch dùng để kiểm thử, không phải chỉ tiêu chính thức.</p></>}</div>}
         {progress.provisional && <p className="throughput-progress-provisional">Số liệu nguồn chưa đầy đủ; tỷ lệ này chưa dùng để xác nhận đạt kế hoạch.</p>}
         </>}

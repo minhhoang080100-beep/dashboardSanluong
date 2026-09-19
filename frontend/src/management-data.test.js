@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { sameClosedReportScope } from './management-data.js';
 import { buildPlanPayload, buildPlanUpdatePayload, buildUserPayload, canManage, parseVietnamesePlanAmount, planAmountInput, planDateDefaults, planDeletePayload, planEntryPeriod, planPeriodEligibility, planPeriodFields, planPeriodLabel, planTerminals, planWeekDates, queryPath, userTerminals, validatedItems, validatePlanEntry, validatedPlanPreview } from './management-data.js';
 
 test('deleting a plan requires its actual revision and never guesses a missing version', () => {
@@ -16,6 +17,24 @@ test('management scope follows assigned terminals and roles', () => {
   assert.deepEqual(userTerminals({ terminals: ['unknown'] }), []);
   assert.equal(canManage({ role: 'viewer' }), false);
   assert.equal(canManage({ role: 'manager' }), true);
+});
+
+test('closed reports compare only within the saved comparison mode and keep legacy defaults compatible', () => {
+  const filters = { start_date: '2026-09-01', end_date: '2026-09-18', terminal: 'cua_lo', production_scope: 'nghe_tinh' };
+  const report = { meta: { filters, berth_rule_version: 'initial-berth-v1' } };
+  const legacy = { ...filters, berth_rule_version: 'initial-berth-v1' };
+  const previous = { ...legacy, comparison: 'previous_period' };
+  const annual = { ...legacy, comparison: 'previous_year' };
+  const annualReport = { meta: { ...report.meta, filters: { ...filters, comparison: 'previous_year' } } };
+  assert.equal(sameClosedReportScope(legacy, report), true);
+  assert.equal(sameClosedReportScope(previous, report), true);
+  assert.equal(sameClosedReportScope(annual, report), false);
+  assert.equal(sameClosedReportScope(legacy, annualReport), false);
+  assert.equal(sameClosedReportScope(previous, annualReport), false);
+  assert.equal(sameClosedReportScope(annual, annualReport), true);
+  for (const change of [{ terminal: 'ben_thuy' }, { production_scope: 'vietsun' }, { berth_rule_version: 'old' }, { start_date: '2026-08-01' }, { end_date: '2026-09-17' }]) {
+    assert.equal(sameClosedReportScope({ ...annual, ...change }, annualReport), false);
+  }
 });
 
 test('monthly plan comparison accepts any valid end date in a period beginning on the first day', () => {

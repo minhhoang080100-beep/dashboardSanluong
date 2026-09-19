@@ -144,6 +144,11 @@
 .plans-section .plan-list-filters :is(input, select) { width: 100%; }
 .plans-section .plan-list-filters .plan-field-help { margin-top: 7px; font-weight: 400; }
 .plans-section .plan-filter-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 20px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border-color); }
+.plan-list-secondary-filters { display: grid; grid-template-columns: minmax(180px, 240px) minmax(0, 1fr); gap: 18px; margin-top: 18px; }
+.plan-reference-search { min-width: 0; }
+.plan-reference-search > div { display: flex; gap: 8px; margin-top: 8px; }
+.plan-reference-search input { flex: 1; width: 100%; }
+.plan-reference-search .button { flex-shrink: 0; }
 .plans-section .plan-list-count { margin: 0; color: var(--text-muted); font-size: 12px; font-weight: 500; line-height: 1.6; }
 .plans-section .plan-filter-footer .plan-deleted-toggle { margin: 0; min-height: 28px; font-size: 12px; font-weight: 400; }
 .plans-section .plan-results { margin-top: 20px; min-width: 0; }
@@ -220,6 +225,9 @@
   .plans-section .plan-list-filters:is([data-period="all"], [data-period="voyage"]) { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-areas: "kind terminal"; }
 }
 @container plans (max-width: 600px) {
+  .plan-list-secondary-filters { grid-template-columns: minmax(0, 1fr); }
+  .plan-reference-search > div { flex-wrap: wrap; }
+  .plan-reference-search input { flex-basis: 100%; }
   .plans-section .plan-list-heading { gap: 16px; margin-bottom: 18px; }
   .plans-section .plan-list-title { flex-basis: 100%; }
   .plans-section .plan-header-actions { width: 100%; }

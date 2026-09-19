@@ -347,3 +347,40 @@ def test_weekly_progress_export_preserves_full_target_week_and_partial_actual():
     ]
     assert sheet['L2'].value == '17 / v2' and sheet['M2'].value == 'KH-TUAN-38'
     book.close()
+
+
+@pytest.mark.parametrize('complete', [True, False])
+def test_export_preserves_captured_milestone_actuals_and_comparison_without_recalculation(complete):
+    from copy import deepcopy
+    snapshot = report([])
+    snapshot['meta']['previous_period'] = {
+        'mode': 'previous_year', 'label': 'Cùng ngày/tháng năm trước',
+        'start_date': '2025-09-01', 'end_date': '2025-09-09',
+    }
+    snapshot['throughput_progress'] = {'items': [{
+        'period_type': 'month', 'period_key': '2026-09', 'start_date': '2026-09-01', 'end_date': '2026-09-30',
+        'target': 2000, 'actual': 1000, 'completion_percent': 50, 'provisional_completion_percent': None,
+        'achieved': False, 'provisional': False, 'status': 'ready', 'target_source': 'company',
+        'plans': [{'id': 17, 'version': 2, 'reference': 'KH-09'}],
+        'pace': {'status': 'ready' if complete else 'unknown', 'milestone_date': '2026-09-05',
+                 'target': 500, 'actual': 200 if complete else None,
+                 'difference': -300 if complete else None, 'completion_percent': 40 if complete else None,
+                 'reason': None if complete else 'Thiếu dữ liệu đến ngày mốc.'},
+    }]}
+    original = deepcopy(snapshot)
+    book = load_workbook(BytesIO(workbook_io.report_workbook(snapshot, [])))
+    summary = {row[0].value: row[1].value for row in book['Tổng hợp'].iter_rows(min_row=2)}
+    assert summary['Cơ sở so sánh'] == 'Cùng ngày/tháng năm trước'
+    assert summary['Kỳ so sánh từ ngày'] == '2025-09-01'
+    assert summary['Kỳ so sánh đến ngày'] == '2025-09-09'
+    assert book['Mục tiêu thông qua']['F2'].value == 1000
+    pace = book['Tiến độ theo mốc']
+    assert [pace.cell(2, column).value for column in range(1, 5)] == [
+        '2026-09', '2026-09-01', '2026-09-05', 500,
+    ]
+    assert [pace.cell(2, column).value for column in range(5, 8)] == ([200, -300, 40] if complete else [None] * 3)
+    assert pace['I2'].value == '17 / v2'
+    if not complete:
+        assert pace['H2'].value == 'Thiếu dữ liệu đến ngày mốc.'
+    assert snapshot == original
+    book.close()

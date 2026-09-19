@@ -203,7 +203,8 @@ def test_report_data_is_scoped_but_source_watermark_remains_global(monkeypatch):
     assert value["report"]["meta"]["filters"]["production_scope"] == "vietsun"
     assert value["report"]["meta"]["berth_rule_version"] == BERTH_RULE_VERSION
     assert value["rows"] == []
-    assert calls[0][1] == (date(2026, 8, 17), date(2026, 9, 16)) * 2
+    assert calls[0][1] == (date(2026, 8, 17), date(2026, 9, 16), date(2026, 9, 1),
+                         date(2026, 8, 17), date(2026, 9, 1)) * 2
     assert calls[0][0].count("?") == len(calls[0][1])
     assert "latest_selected_operation_at" in value["report"]["meta"]["definitions"]["sources"]
 

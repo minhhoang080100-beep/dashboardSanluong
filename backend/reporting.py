@@ -16,6 +16,7 @@ if __package__:
     from .config import settings
     from .snapshot_store import SnapshotStore, SnapshotStorageError, SnapshotStorageCapacity
     from .database import DatabaseUnavailable, DatabaseQueryError
+    from .report_comparison import COMPARISON_MODES
     from .repository import (TERMINALS, PRODUCTION_SCOPES, BERTH_RULE_VERSION, DashboardRepository, VoyageNotFound, _aggregate,
                              _decimal, _number, _panel_values, _timestamp, _voyage_daily_history,
                              dashboard_repo, date_range)
@@ -23,6 +24,7 @@ else:
     from config import settings
     from snapshot_store import SnapshotStore, SnapshotStorageError, SnapshotStorageCapacity
     from database import DatabaseUnavailable, DatabaseQueryError
+    from report_comparison import COMPARISON_MODES
     from repository import (TERMINALS, PRODUCTION_SCOPES, BERTH_RULE_VERSION, DashboardRepository, VoyageNotFound, _aggregate,
                             _decimal, _number, _panel_values, _timestamp, _voyage_daily_history,
                             dashboard_repo, date_range)
@@ -283,15 +285,18 @@ class ReportingService:
         return snapshot
 
     @staticmethod
-    def _storage_key(start, end, terminal, production_scope="nghe_tinh"):
-        return f"{BERTH_RULE_VERSION}:{production_scope}:{start.isoformat()}:{end.isoformat()}:{terminal}"
+    def _storage_key(start, end, terminal, production_scope="nghe_tinh", comparison="previous_period"):
+        base = f"{BERTH_RULE_VERSION}:{production_scope}:{start.isoformat()}:{end.isoformat()}:{terminal}"
+        return base if comparison == 'previous_period' else f'{base}:comparison:{comparison}'
 
     @staticmethod
-    def _current_scope(report, expected=None):
+    def _current_scope(report, expected=None, comparison=None):
         meta = report.get("meta", {})
         scope = meta.get("filters", {}).get("production_scope")
+        actual_comparison = meta.get('filters', {}).get('comparison', 'previous_period')
         return (meta.get("berth_rule_version") == BERTH_RULE_VERSION and isinstance(scope, str) and scope in PRODUCTION_SCOPES
-                and (expected is None or scope == expected))
+                and (expected is None or scope == expected) and isinstance(actual_comparison, str)
+                and actual_comparison in COMPARISON_MODES and (comparison is None or actual_comparison == comparison))
 
     @staticmethod
     def _storage_call(function, *args, **kwargs):
@@ -362,14 +367,17 @@ class ReportingService:
                 self._flights.pop(key, None)
                 flight.done.set()
 
-    def get_report(self, start_date=None, end_date=None, terminal="all", refresh=False, production_scope="nghe_tinh"):
-        return self._measure("get_report", lambda: self._get_report(start_date, end_date, terminal, refresh, production_scope))
+    def get_report(self, start_date=None, end_date=None, terminal="all", refresh=False, production_scope="nghe_tinh", comparison="previous_period"):
+        return self._measure("get_report", lambda: self._get_report(start_date, end_date, terminal, refresh, production_scope, comparison))
 
-    def _get_report(self, start_date, end_date, terminal, refresh, production_scope):
+    def _get_report(self, start_date, end_date, terminal, refresh, production_scope, comparison):
         if not isinstance(production_scope, str) or production_scope not in PRODUCTION_SCOPES:
             raise ValueError("Phạm vi sản lượng không hợp lệ.")
+        if not isinstance(comparison, str) or comparison not in COMPARISON_MODES:
+            raise ValueError('Kỳ so sánh không hợp lệ.')
         start, end = date_range(start_date, end_date, terminal)
-        key = ("report", start, end, terminal, production_scope, BERTH_RULE_VERSION)
+        key = ("report", start, end, terminal, production_scope, BERTH_RULE_VERSION, comparison)
+        comparison_options = {'comparison': comparison} if comparison != 'previous_period' else {}
         with self._lock:
             self._prune(self._clock())
             observed_id = self._cache.get(key, (None, None))[0]
@@ -391,22 +399,22 @@ class ReportingService:
                 if current_id is not None and (not refresh or current_id != observed_id):
                     return self._snapshot(current_id)
             if not refresh and self.snapshot_store is not None:
-                stored = self._storage_call(self.snapshot_store.get_fresh, self._storage_key(start, end, terminal, production_scope))
-                if stored is not None and self._current_scope(stored["report"], production_scope):
+                stored = self._storage_call(self.snapshot_store.get_fresh, self._storage_key(start, end, terminal, production_scope, comparison))
+                if stored is not None and self._current_scope(stored["report"], production_scope, comparison):
                     snapshot = self._restore(stored)
                     with self._lock:
                         self._remember(snapshot)
                         remaining = max(0, stored["fresh_until"] - self.snapshot_store.clock())
                         self._cache[key] = (snapshot.report_id, self._clock() + remaining)
                     return snapshot
-            data = self._measure("source_read", lambda: self.repo.read_report(start, end, terminal, production_scope=production_scope))
+            data = self._measure("source_read", lambda: self.repo.read_report(start, end, terminal, production_scope=production_scope, **comparison_options))
             rows = data["rows"]
             if len(rows) > self.max_snapshot_rows:
                 raise ReportCapacityError()
             if any(row.get("production_scope") != production_scope for row in rows):
                 raise DatabaseQueryError()
             report = _enrich_report(deepcopy(data["report"]))
-            if not self._current_scope(report, production_scope):
+            if not self._current_scope(report, production_scope, comparison):
                 raise DatabaseQueryError()
             report_id = uuid4().hex
             report["meta"].update(report_id=report_id, source_read_at=datetime.now(timezone.utc).isoformat(),
@@ -415,7 +423,7 @@ class ReportingService:
             snapshot = _Snapshot(report_id, report, tuple(_copy_fact_rows(sorted(rows, key=_sort_row, reverse=True))),
                                  created, created + self.snapshot_ttl)
             if self.snapshot_store is not None:
-                self._storage_call(self.snapshot_store.put, report_id, self._storage_key(start, end, terminal, production_scope), report,
+                self._storage_call(self.snapshot_store.put, report_id, self._storage_key(start, end, terminal, production_scope, comparison), report,
                                    snapshot.rows, ttl=self.snapshot_ttl, fresh_ttl=self.cache_ttl)
             with self._lock:
                 self._prune(created)
@@ -501,8 +509,10 @@ class ReportingService:
     def _aggregate_scope(self, snapshot, rows, terminal=None):
         filters = snapshot.report["meta"]["filters"]
         start, end = date.fromisoformat(filters["start_date"]), date.fromisoformat(filters["end_date"])
+        comparison = filters.get('comparison', 'previous_period')
         report = self.repo._dashboard_from_rows(_copy_fact_rows(rows), start, end, terminal or filters["terminal"],
-                                               production_scope=filters["production_scope"])
+                                               production_scope=filters["production_scope"],
+                                               **({'comparison': comparison, 'comparison_available': False} if comparison != 'previous_period' else {}))
         return _enrich_report(report)
 
     def drilldown(self, report_id, *, day=None, terminal=None, cargo=None, customer_id=None,

@@ -66,6 +66,20 @@ test('today and yesterday presets follow Vietnam midnight across the year bounda
   assert.deepEqual(presetDates('yesterday', '2028-03-01'), { start_date: '2028-02-29', end_date: '2028-02-29' });
 });
 
+test('comparison preference survives reload and normalizes the default without accepting unsupported modes', (t) => {
+  environment(t);
+  const user = { id: 15, terminals: ['cua_lo'] };
+  const selected = { start_date: '2026-08-01', end_date: '2026-08-31', terminal: 'cua_lo', production_scope: 'nghe_tinh' };
+  rememberFilters(user, { ...selected, comparison: 'previous_year' });
+  assert.equal(restoreFilters(user).comparison, 'previous_year');
+  rememberFilters(user, { ...selected, comparison: 'previous_period' });
+  assert.deepEqual(restoreFilters(user), selected);
+  rememberFilters(user, { ...selected, comparison: 'previous_month' });
+  const restored = restoreFilters(user);
+  assert.equal(restored.start_date, '2026-09-01');
+  assert.equal(Object.hasOwn(restored, 'comparison'), false);
+});
+
 test('scope preference persists per user while legacy or invalid scope resets to a fresh Nghệ Tĩnh selection', (t) => {
   environment(t);
   const user = { id: 31, terminals: ['cua_lo', 'ben_thuy'] };

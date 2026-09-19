@@ -5,7 +5,7 @@ Only SHA-256 digests of independently random bearer tokens are persisted.
 """
 from contextlib import contextmanager
 from calendar import monthrange
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import hashlib
 import hmac
@@ -21,6 +21,7 @@ from fastapi import HTTPException
 
 TERMINALS = frozenset({"cua_lo", "ben_thuy"})
 ROLES = frozenset({"admin", "manager", "viewer"})
+PLAN_PERMISSIONS = frozenset({'create', 'approve'})
 PRODUCTION_SCOPE_LABELS = {'nghe_tinh': 'Cảng Nghệ Tĩnh', 'vietsun': 'Cầu 5', 'unclassified': 'Chưa xác định cầu'}
 PLAN_PERIOD_TYPES = frozenset({'week', 'month', 'quarter', 'year', 'custom', 'voyage'})
 PLAN_PERIOD_FIELDS = ('week', 'month', 'quarter', 'year', 'start_date', 'end_date', 'voyage_id')
@@ -133,6 +134,23 @@ def require_admin(user: dict):
     return user
 
 
+def plan_permissions(role, value=None):
+    if value is None:
+        return ['approve', 'create'] if role in {'admin', 'manager'} else []
+    if (not isinstance(value, (list, tuple)) or any(not isinstance(item, str) for item in value)
+            or not set(value) <= PLAN_PERMISSIONS or len(value) != len(set(value))
+            or (role == 'viewer' and value)):
+        raise ControlError(422, 'INVALID_PLAN_PERMISSIONS', 'Quyền kế hoạch không hợp lệ.')
+    return sorted(value)
+
+
+def require_plan_permission(user, permission):
+    require_editor(user)
+    if permission not in plan_permissions(user.get('role'), user.get('plan_permissions')):
+        raise ControlError(403, 'PLAN_PERMISSION_REQUIRED', 'Tài khoản chưa được cấp quyền thực hiện thao tác kế hoạch này.')
+    return user
+
+
 def _json(value):
     def encode(item):
         if isinstance(item, Decimal):
@@ -197,6 +215,48 @@ def throughput_progress_item(period, plans, actual, actual_status, target_source
             'target_source': target_source, 'plans': plans}
 
 
+def milestone_pace(report, period, plans, *, complete_target=True):
+    """Compare cumulative actuals at an approved milestone, never interpolate."""
+    result = {'status': 'unknown', 'reason': None, 'milestone_date': None, 'target': None,
+              'actual': None, 'difference': None, 'completion_percent': None}
+    if not complete_target:
+        return {**result, 'reason': 'Chưa đủ kế hoạch đã duyệt của các xí nghiệp.'}
+    dates = None
+    by_plan = []
+    report_end = report.get('meta', {}).get('filters', {}).get('end_date', '')
+    for plan in plans:
+        milestones = {row['date']: Decimal(row['amount']) for row in plan.get('milestones', []) if row['date'] <= report_end}
+        dates = set(milestones) if dates is None else dates & set(milestones)
+        by_plan.append(milestones)
+    if not dates:
+        return {**result, 'reason': 'Chưa có mốc lũy kế đã duyệt đến ngày báo cáo; không tự phân bổ chỉ tiêu theo thời gian.'}
+    selected = max(dates)
+    target = sum((rows[selected] for rows in by_plan), Decimal(0))
+    result.update(milestone_date=selected, target=float(target))
+    start, end = date.fromisoformat(period['period_start']), date.fromisoformat(selected)
+    expected = {(start + timedelta(days=offset)).isoformat() for offset in range((end - start).days + 1)}
+    daily = report.get('daily_history')
+    if not isinstance(daily, list):
+        return {**result, 'reason': 'Chưa có đầy đủ sản lượng theo ngày để đối chiếu mốc.'}
+    actual, seen = Decimal(0), set()
+    try:
+        for row in daily:
+            day = row.get('date')
+            if day not in expected:
+                continue
+            value = Decimal(str(row.get('tonnage')))
+            if day in seen or row.get('tonnage_status') not in {'ready', 'empty'} or not value.is_finite() or value < 0:
+                raise ValueError()
+            actual += value
+            seen.add(day)
+        if seen != expected:
+            raise ValueError()
+    except (ValueError, InvalidOperation, AttributeError):
+        return {**result, 'reason': 'Sản lượng đến mốc còn thiếu hoặc cần đối soát; chưa đánh giá tiến độ.'}
+    return {**result, 'status': 'ready', 'reason': None, 'actual': float(actual),
+            'difference': float(actual - target), 'completion_percent': float(actual / target * 100) if target else None}
+
+
 def _facts_json(rows):
     # A SELECT may return the same records in a different order. Preserve
     # duplicates, while making the digest independent of retrieval order.
@@ -230,10 +290,13 @@ def verify_password(password: str, stored: str):
 
 
 class ControlStore:
-    def __init__(self, path=None, *, clock=time.time, session_ttl_seconds=28800):
+    def __init__(self, path=None, *, clock=time.time, session_ttl_seconds=28800, plan_approval_policy=None):
         self.path = Path(path or os.environ.get("DASHBOARD_STATE_PATH") or Path(__file__).parent / ".data" / "control.sqlite3").resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.clock = clock
+        self.plan_approval_policy = plan_approval_policy or os.environ.get('DASHBOARD_PLAN_APPROVAL_POLICY', 'separate_approver')
+        if self.plan_approval_policy not in {'allow_self', 'separate_approver'}:
+            raise ValueError('Invalid plan approval policy')
         if not 1 <= session_ttl_seconds <= 86400:
             raise ValueError("Session lifetime must be between 1 and 86400 seconds")
         self.session_ttl_seconds = session_ttl_seconds
@@ -252,6 +315,16 @@ class ControlStore:
                     created_at REAL NOT NULL, expires_at REAL NOT NULL, revoked_at REAL
                 );
                 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
+                CREATE TABLE IF NOT EXISTS admin_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL,
+                    actor_id INTEGER NOT NULL REFERENCES users(id), user_id INTEGER NOT NULL REFERENCES users(id),
+                    before_json TEXT, after_json TEXT NOT NULL, scope_json TEXT NOT NULL, created_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS admin_events_user ON admin_events(user_id,id);
+                CREATE TRIGGER IF NOT EXISTS admin_events_no_update BEFORE UPDATE ON admin_events
+                    BEGIN SELECT RAISE(ABORT, 'Admin history is append only'); END;
+                CREATE TRIGGER IF NOT EXISTS admin_events_no_delete BEFORE DELETE ON admin_events
+                    BEGIN SELECT RAISE(ABORT, 'Admin history is append only'); END;
                 CREATE TABLE IF NOT EXISTS login_attempts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL, client_key TEXT NOT NULL,
                     created_at REAL NOT NULL
@@ -310,10 +383,15 @@ class ControlStore:
             # Additive, idempotent migration: never rewrite approved rows.
             # Serialize schema inspection/additions across concurrent workers.
             db.execute('BEGIN IMMEDIATE')
+            user_columns = {row['name'] for row in db.execute('PRAGMA table_info(users)')}
+            if 'plan_permissions' not in user_columns:
+                db.execute('ALTER TABLE users ADD COLUMN plan_permissions TEXT')
+            # NULL preserves legacy role defaults without changing sessions or passwords.
             existing_columns = {row['name'] for row in db.execute('PRAGMA table_info(plans)')}
             for name, declaration in {'revision': 'INTEGER NOT NULL DEFAULT 1', 'updated_by': 'INTEGER REFERENCES users(id)',
                                       'updated_at': 'REAL', 'cancelled_by': 'INTEGER REFERENCES users(id)', 'cancelled_at': 'REAL',
-                                      'deleted_by': 'INTEGER REFERENCES users(id)', 'deleted_at': 'REAL'}.items():
+                                      'deleted_by': 'INTEGER REFERENCES users(id)', 'deleted_at': 'REAL',
+                                      'milestones_json': "TEXT NOT NULL DEFAULT '[]'"}.items():
                 if name not in existing_columns:
                     db.execute(f'ALTER TABLE plans ADD COLUMN {name} {declaration}')
             self._plan_deletion_triggers(db)
@@ -352,6 +430,7 @@ class ControlStore:
     def _db(self, write=False):
         db = sqlite3.connect(self.path, timeout=10)
         db.row_factory = sqlite3.Row
+        db.create_function('unicode_casefold', 1, lambda value: value.casefold() if isinstance(value, str) else '', deterministic=True)
         db.execute("PRAGMA foreign_keys=ON")
         try:
             if write:
@@ -368,9 +447,10 @@ class ControlStore:
     def _public(row):
         return {"id": row["id"], "username": row["username"], "display_name": row["display_name"],
                 "role": row["role"], "terminals": json.loads(row["terminals"]),
+                "plan_permissions": plan_permissions(row['role'], json.loads(row['plan_permissions']) if row['plan_permissions'] is not None else None),
                 "is_active": bool(row["is_active"]), "must_change_password": bool(row["must_change_password"])}
 
-    def _actor(self, db, actor, *, editor=False, admin=False):
+    def _actor(self, db, actor, *, editor=False, admin=False, plan_permission=None):
         row = db.execute("SELECT * FROM users WHERE id=?", (actor.get("id"),)).fetchone()
         if row is None or not row["is_active"]:
             raise ControlError(401, "SESSION_INVALID", "Phiên đăng nhập không còn hiệu lực.")
@@ -381,6 +461,8 @@ class ControlStore:
             require_editor(user)
         if admin:
             require_admin(user)
+        if plan_permission:
+            require_plan_permission(user, plan_permission)
         return user
 
     @staticmethod
@@ -404,16 +486,16 @@ class ControlStore:
             user = self._insert_user(db, *values, encoded)
         return {"user": user, "temporary_password": temporary}
 
-    def _insert_user(self, db, username, display_name, role, terminals, encoded):
+    def _insert_user(self, db, username, display_name, role, terminals, encoded, permissions=None):
         now = self.clock()
         try:
-            cursor = db.execute("INSERT INTO users(username,display_name,role,terminals,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
-                                (username, display_name, role, _json(terminals), encoded, now, now))
+            cursor = db.execute("INSERT INTO users(username,display_name,role,terminals,password_hash,created_at,updated_at,plan_permissions) VALUES(?,?,?,?,?,?,?,?)",
+                                (username, display_name, role, _json(terminals), encoded, now, now, _json(plan_permissions(role, permissions))))
         except sqlite3.IntegrityError:
             raise ControlError(409, "USERNAME_EXISTS", "Tên đăng nhập đã tồn tại.") from None
         return self._public(db.execute("SELECT * FROM users WHERE id=?", (cursor.lastrowid,)).fetchone())
 
-    def create_user(self, actor, *, username, display_name, role, terminals, password=None):
+    def create_user(self, actor, *, username, display_name, role, terminals, password=None, plan_permissions=None):
         require_admin(actor)
         values = self._user_values(username, display_name, role, terminals)
         temporary = password if password is not None else secrets.token_urlsafe(24)
@@ -422,7 +504,8 @@ class ControlStore:
             actor = self._actor(db, actor, admin=True)
             if not set(values[3]) <= set(actor["terminals"]):
                 raise ControlError(403, "TERMINAL_FORBIDDEN", "Không được cấp phạm vi cảng ngoài quyền của mình.")
-            user = self._insert_user(db, *values, encoded)
+            user = self._insert_user(db, *values, encoded, plan_permissions)
+            self._admin_event(db, actor, 'user_created', None, user)
         return {"user": user, "temporary_password": temporary}
 
     def list_users(self, actor):
@@ -431,8 +514,10 @@ class ControlStore:
             return {"items": [self._public(row) for row in db.execute("SELECT * FROM users ORDER BY username")]}
 
     def update_user(self, actor, user_id, **changes):
-        if not changes or not set(changes) <= {"display_name", "role", "terminals", "is_active"}:
+        if not changes or not set(changes) <= {"display_name", "role", "terminals", "is_active", "plan_permissions"}:
             raise ControlError(422, "INVALID_USER_UPDATE", "Thông tin cập nhật không hợp lệ.")
+        if 'plan_permissions' in changes and changes['plan_permissions'] is None:
+            raise ControlError(422, 'INVALID_PLAN_PERMISSIONS', 'Quyền kế hoạch phải là danh sách, có thể để rỗng.')
         with self._db(write=True) as db:
             actor = self._actor(db, actor, admin=True)
             old = db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
@@ -443,6 +528,7 @@ class ControlStore:
                 raise ControlError(403, "TERMINAL_FORBIDDEN", "Tài khoản nằm ngoài phạm vi quản trị.")
             new = {**old_user, **changes}
             _, name, role, terminals = self._user_values(old["username"], new["display_name"], new["role"], new["terminals"])
+            permissions = plan_permissions(role, changes.get('plan_permissions', [] if role == 'viewer' else old_user['plan_permissions']))
             if not set(terminals) <= set(actor["terminals"]):
                 raise ControlError(403, "TERMINAL_FORBIDDEN", "Không được cấp phạm vi cảng ngoài quyền của mình.")
             if old["role"] == "admin" and old["is_active"] and (role != "admin" or not new["is_active"]):
@@ -457,11 +543,13 @@ class ControlStore:
                     remaining_scope.update(json.loads(other["terminals"]))
                 if not removed_scope <= remaining_scope:
                     raise ControlError(409, "LAST_TERMINAL_ADMIN", "Mỗi cảng phải còn ít nhất một quản trị viên đang hoạt động có quyền quản lý cảng đó.")
-            db.execute("UPDATE users SET display_name=?,role=?,terminals=?,is_active=?,updated_at=? WHERE id=?",
-                       (name, role, _json(terminals), int(bool(new["is_active"])), self.clock(), user_id))
-            if any(key in changes for key in ("role", "terminals", "is_active")):
+            db.execute("UPDATE users SET display_name=?,role=?,terminals=?,is_active=?,updated_at=?,plan_permissions=? WHERE id=?",
+                       (name, role, _json(terminals), int(bool(new["is_active"])), self.clock(), _json(permissions), user_id))
+            if any(key in changes for key in ("role", "terminals", "is_active", "plan_permissions")):
                 db.execute("UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", (self.clock(), user_id))
-            return self._public(db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone())
+            updated = self._public(db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone())
+            self._admin_event(db, actor, 'user_updated', old_user, updated)
+            return updated
 
     def reset_password(self, actor, user_id):
         require_admin(actor)
@@ -478,7 +566,52 @@ class ControlStore:
             db.execute("UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", (self.clock(), user_id))
             db.execute("DELETE FROM login_attempts WHERE username=?", (row["username"],))
             user = self._public(db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone())
+            self._admin_event(db, actor, 'password_reset', self._public(row), user)
         return {"user": user, "temporary_password": temporary}
+
+    def _admin_event(self, db, actor, action, before, after):
+        # Only public, allowlisted account properties are recorded. Never copy
+        # input bodies, generated passwords, password hashes or bearer tokens.
+        fields = {'id', 'username', 'display_name', 'role', 'terminals', 'plan_permissions', 'is_active', 'must_change_password'}
+        cleaned = lambda value: {key: value[key] for key in fields if key in value}
+        before, after = cleaned(before) if before else None, cleaned(after)
+        scope = sorted(set((before or {}).get('terminals', [])) | set(after['terminals']))
+        db.execute('INSERT INTO admin_events(action,actor_id,user_id,before_json,after_json,scope_json,created_at) VALUES(?,?,?,?,?,?,?)',
+                   (action, actor['id'], after['id'], _json(before) if before else None, _json(after), _json(scope), self.clock()))
+
+    def list_admin_events(self, actor, terminal=None, user_id=None, action=None, page=1, page_size=50):
+        self._pagination(page, page_size)
+        actions = {'user_created', 'user_updated', 'password_reset'}
+        if action is not None and action not in actions:
+            raise ControlError(422, 'INVALID_ADMIN_EVENT_FILTER', 'Loại sự kiện quản trị không hợp lệ.')
+        with self._db() as db:
+            actor = self._actor(db, actor, admin=True)
+            if terminal is not None:
+                require_scope(actor, terminal)
+            scopes = [[item] for item in sorted(actor['terminals'])]
+            if set(actor['terminals']) == TERMINALS:
+                scopes.append(sorted(TERMINALS))
+            terms = ['scope_json IN (' + ','.join('?' for _ in scopes) + ')']
+            params = [_json(scope) for scope in scopes]
+            if terminal in TERMINALS:
+                terms.append('scope_json IN (?,?)')
+                params.extend((_json([terminal]), _json(sorted(TERMINALS))))
+            if user_id is not None:
+                if isinstance(user_id, bool) or not isinstance(user_id, int) or user_id < 1:
+                    raise ControlError(422, 'INVALID_ADMIN_EVENT_FILTER', 'Tài khoản lọc không hợp lệ.')
+                terms.append('user_id=?')
+                params.append(user_id)
+            if action is not None:
+                terms.append('action=?')
+                params.append(action)
+            where = ' AND '.join(terms)
+            total = db.execute(f'SELECT COUNT(*) FROM admin_events WHERE {where}', params).fetchone()[0]
+            rows = db.execute(f'SELECT * FROM admin_events WHERE {where} ORDER BY id DESC LIMIT ? OFFSET ?',
+                              (*params, page_size, (page - 1) * page_size)).fetchall()
+            return {'items': [{'id': row['id'], 'action': row['action'], 'actor_id': row['actor_id'], 'user_id': row['user_id'],
+                               'before': json.loads(row['before_json']) if row['before_json'] else None,
+                               'after': json.loads(row['after_json']), 'created_at': _iso(row['created_at'])} for row in rows],
+                    'total': total, 'page': page, 'page_size': page_size}
 
     def _rate_limit(self, db, username, client):
         cutoff = self.clock() - 900
@@ -558,14 +691,14 @@ class ControlStore:
     @staticmethod
     def validate_plan(value):
         value = dict(value)
-        if set(value) - {"terminal", "period_type", *PLAN_PERIOD_FIELDS, "metric", "amount", "reference", "note"}:
+        if set(value) - {"terminal", "period_type", *PLAN_PERIOD_FIELDS, "metric", "amount", "reference", "note", "milestones"}:
             raise ControlError(422, "INVALID_PLAN", "Kế hoạch chứa trường không được hỗ trợ.")
         terminal, period_type = value.get("terminal"), value.get("period_type", "month")
         if terminal not in TERMINALS | {'all'} or period_type not in PLAN_PERIOD_TYPES or value.get("metric") not in {"tonnage", "teu"}:
             raise ControlError(422, "INVALID_PLAN", "Cảng, loại kỳ hoặc chỉ tiêu không hợp lệ.")
         if period_type == 'voyage' and terminal == 'all':
             raise ControlError(422, 'INVALID_PLAN_PERIOD', 'Kế hoạch chuyến phải thuộc một cảng cụ thể.')
-        key, _, _ = plan_period(value)
+        key, period_start, period_end = plan_period(value)
         try:
             amount = Decimal(str(value.get("amount")))
             if not amount.is_finite() or amount < 0 or amount > Decimal("1000000000000"):
@@ -584,19 +717,71 @@ class ControlStore:
         reference, note = value.get("reference", ""), value.get("note", "")
         if not isinstance(reference, str) or len(reference) > 500 or not isinstance(note, str) or len(note) > 4000:
             raise ControlError(422, "INVALID_PLAN_REFERENCE", "Tham chiếu hoặc ghi chú quá dài.")
+        milestones = value.get('milestones', [])
+        if not isinstance(milestones, list) or len(milestones) > 366 or (period_type == 'voyage' and milestones):
+            raise ControlError(422, 'INVALID_PLAN_MILESTONES', 'Mốc lũy kế chỉ áp dụng cho kế hoạch theo kỳ, tối đa 366 mốc.')
+        saved, previous_date, previous_amount = [], None, Decimal(0)
+        try:
+            for milestone in milestones:
+                if not isinstance(milestone, dict) or set(milestone) != {'date', 'amount'}:
+                    raise ValueError()
+                day = milestone['date']
+                if isinstance(day, datetime) or not isinstance(day, (str, date)):
+                    raise ValueError()
+                day = date.fromisoformat(str(day))
+                cumulative = Decimal(str(milestone['amount']))
+                if (not cumulative.is_finite() or cumulative < previous_amount or cumulative > amount
+                        or cumulative.normalize().as_tuple().exponent < -6 or not period_start <= day <= period_end
+                        or (previous_date is not None and day <= previous_date)):
+                    raise ValueError()
+                saved.append({'date': day.isoformat(), 'amount': format(cumulative, 'f')})
+                previous_date, previous_amount = day, cumulative
+        except (ValueError, TypeError, InvalidOperation):
+            raise ControlError(422, 'INVALID_PLAN_MILESTONES', 'Mốc phải tăng theo ngày trong kỳ; chỉ tiêu lũy kế không giảm, không vượt kế hoạch và có tối đa 6 chữ số thập phân.') from None
         return {"terminal": terminal, "period_type": period_type, "period_key": key, "metric": value["metric"],
-                "amount": format(amount, 'f'), "reference": reference.strip(), "note": note.strip()}
+                "amount": format(amount, 'f'), "reference": reference.strip(), "note": note.strip(), 'milestones_json': _json(saved)}
 
-    def _plan(self, db, row):
+    def _plan(self, db, row, actor=None):
         highest = db.execute("SELECT MAX(version) FROM plans WHERE terminal=? AND period_type=? AND period_key=? AND metric=? AND status='approved'",
                              (row["terminal"], row["period_type"], row["period_key"], row["metric"])).fetchone()[0]
-        return self._plan_view(row, highest)
+        result = self._plan_view(row, highest)
+        if actor is not None:
+            reason = self._approval_block_reason(db, actor, row, highest)
+            result.update(can_approve=reason is None, approval_block_reason=reason)
+            delete_reason = self._deletion_block_reason(actor, row)
+            result.update(can_delete=delete_reason is None, delete_block_reason=delete_reason)
+        return result
+
+    @staticmethod
+    def _deletion_block_reason(actor, row):
+        if row['deleted_at'] is not None:
+            return 'Kế hoạch đã được xóa; lịch sử được giữ lại.'
+        permission = 'approve' if row['status'] == 'approved' else 'create'
+        if actor['role'] not in {'admin', 'manager'} or permission not in actor['plan_permissions']:
+            return ('Cần quyền duyệt để xóa kế hoạch đã duyệt.' if permission == 'approve'
+                    else 'Cần quyền nhập để xóa bản nháp hoặc kế hoạch đã hủy.')
+        return None
+
+    def _approval_block_reason(self, db, actor, row, highest=None):
+        if row['status'] != 'draft' or row['deleted_at'] is not None:
+            return 'Chỉ duyệt bản nháp còn hiệu lực.'
+        if actor['role'] not in {'admin', 'manager'} or 'approve' not in actor['plan_permissions']:
+            return 'Tài khoản chưa có quyền duyệt kế hoạch.'
+        if highest is not None and row['version'] <= highest:
+            return 'Đã có phiên bản mới hơn được duyệt.'
+        if self.plan_approval_policy == 'separate_approver' and (
+                row['created_by'] == actor['id'] or row['updated_by'] == actor['id']
+                or db.execute("SELECT 1 FROM plan_events WHERE plan_id=? AND actor_id=? AND action IN ('created','updated') LIMIT 1",
+                              (row['id'], actor['id'])).fetchone()):
+            return 'Người tạo hoặc từng sửa kế hoạch không được tự duyệt.'
+        return None
 
     @staticmethod
     def _plan_view(row, highest):
         return {"id": row["id"], "terminal": row["terminal"], "period_type": row["period_type"],
                 **saved_plan_period(row['period_type'], row['period_key']),
                 "metric": row["metric"], "amount": float(Decimal(row["amount"])), "amount_decimal": row["amount"],
+                'milestones': json.loads(row['milestones_json']),
                 "reference": row["reference"], "note": row["note"], "version": row["version"], "status": row["status"],
                 "created_by": row["created_by"], "created_at": _iso(row["created_at"]),
                 "approved_by": row["approved_by"], "approved_at": _iso(row["approved_at"]) if row["approved_at"] is not None else None,
@@ -619,7 +804,7 @@ class ControlStore:
                 raise ControlError(404, 'PLAN_NOT_FOUND', 'Không tìm thấy kế hoạch.')
             require_scope(actor, row['terminal'])
             events = db.execute('SELECT * FROM plan_events WHERE plan_id=? ORDER BY id', (plan_id,)).fetchall()
-            return {**self._plan(db, row), 'history': [
+            return {**self._plan(db, row, actor), 'history': [
                 {'id': event['id'], 'action': event['action'], 'snapshot': json.loads(event['snapshot_json']),
                  'note': event['note'], 'actor_id': event['actor_id'], 'created_at': _iso(event['created_at'])}
                 for event in events]}
@@ -639,13 +824,13 @@ class ControlStore:
         if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 1:
             raise ControlError(422, 'INVALID_PLAN_REVISION', 'Cần phiên bản chỉnh sửa của bản nháp.')
         with self._db(write=True) as db:
-            actor = self._actor(db, actor, editor=True)
+            actor = self._actor(db, actor, plan_permission='create')
             row = db.execute('SELECT * FROM plans WHERE id=?', (plan_id,)).fetchone()
             if row is not None:
                 require_scope(actor, row['terminal'])
             self._draft(row, expected_revision)
             current = self._plan(db, row)
-            fields = ('terminal', 'period_type', *PLAN_PERIOD_FIELDS, 'metric', 'amount', 'reference', 'note')
+            fields = ('terminal', 'period_type', *PLAN_PERIOD_FIELDS, 'metric', 'amount', 'reference', 'note', 'milestones')
             value = self.validate_plan({**{key: current[key] for key in fields}, 'amount': row['amount'], **changes})
             require_scope(actor, value['terminal'])
             identity = ('terminal', 'period_type', 'period_key', 'metric')
@@ -655,11 +840,11 @@ class ControlStore:
                                      tuple(value[key] for key in identity)).fetchone()[0]
             if not db.execute('SELECT 1 FROM plan_events WHERE plan_id=? LIMIT 1', (plan_id,)).fetchone():
                 self._plan_event(db, actor, row, 'legacy_baseline')
-            db.execute('UPDATE plans SET terminal=?,period_type=?,period_key=?,metric=?,amount=?,reference=?,note=?,version=?,revision=revision+1,updated_by=?,updated_at=? WHERE id=?',
-                       (*[value[key] for key in (*identity, 'amount', 'reference', 'note')], version, actor['id'], self.clock(), plan_id))
+            db.execute('UPDATE plans SET terminal=?,period_type=?,period_key=?,metric=?,amount=?,reference=?,note=?,milestones_json=?,version=?,revision=revision+1,updated_by=?,updated_at=? WHERE id=?',
+                       (*[value[key] for key in (*identity, 'amount', 'reference', 'note', 'milestones_json')], version, actor['id'], self.clock(), plan_id))
             updated = db.execute('SELECT * FROM plans WHERE id=?', (plan_id,)).fetchone()
             self._plan_event(db, actor, updated, 'updated')
-            return self._plan(db, updated)
+            return self._plan(db, updated, actor)
 
     def cancel_plan(self, actor, plan_id, expected_revision, note):
         if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 1:
@@ -667,7 +852,7 @@ class ControlStore:
         if not isinstance(note, str) or not 1 <= len(note.strip()) <= 4000:
             raise ControlError(422, 'PLAN_CANCEL_REASON_REQUIRED', 'Cần ghi lý do hủy bản nháp.')
         with self._db(write=True) as db:
-            actor = self._actor(db, actor, editor=True)
+            actor = self._actor(db, actor, plan_permission='create')
             row = db.execute('SELECT * FROM plans WHERE id=?', (plan_id,)).fetchone()
             if row is not None:
                 require_scope(actor, row['terminal'])
@@ -679,7 +864,7 @@ class ControlStore:
                        (actor['id'], timestamp, actor['id'], timestamp, plan_id))
             cancelled = db.execute('SELECT * FROM plans WHERE id=?', (plan_id,)).fetchone()
             self._plan_event(db, actor, cancelled, 'cancelled', note.strip())
-            return self._plan(db, cancelled)
+            return self._plan(db, cancelled, actor)
 
     def create_plans(self, actor, rows):
         if not isinstance(rows, list) or not 1 <= len(rows) <= 500:
@@ -687,17 +872,17 @@ class ControlStore:
         validated = [self.validate_plan(row) for row in rows]
         result = []
         with self._db(write=True) as db:
-            actor = self._actor(db, actor, editor=True)
+            actor = self._actor(db, actor, plan_permission='create')
             for value in validated:
                 require_scope(actor, value["terminal"])
             for value in validated:
                 version = db.execute("SELECT COALESCE(MAX(version),0)+1 FROM plans WHERE terminal=? AND period_type=? AND period_key=? AND metric=?",
                                      (value["terminal"], value["period_type"], value["period_key"], value["metric"])).fetchone()[0]
-                cursor = db.execute("INSERT INTO plans(terminal,period_type,period_key,metric,amount,reference,note,version,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                                    (*[value[key] for key in ("terminal", "period_type", "period_key", "metric", "amount", "reference", "note")], version, actor["id"], self.clock()))
+                cursor = db.execute("INSERT INTO plans(terminal,period_type,period_key,metric,amount,reference,note,milestones_json,version,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                                    (*[value[key] for key in ("terminal", "period_type", "period_key", "metric", "amount", "reference", "note", 'milestones_json')], version, actor["id"], self.clock()))
                 created = db.execute("SELECT * FROM plans WHERE id=?", (cursor.lastrowid,)).fetchone()
                 self._plan_event(db, actor, created, 'created')
-                result.append(self._plan(db, created))
+                result.append(self._plan(db, created, actor))
         return result
 
     def delete_plan(self, actor, plan_id, revision):
@@ -709,6 +894,7 @@ class ControlStore:
             if row is None:
                 raise ControlError(404, 'PLAN_NOT_FOUND', 'Không tìm thấy kế hoạch.')
             require_scope(actor, row['terminal'])
+            require_plan_permission(actor, 'approve' if row['status'] == 'approved' else 'create')
             if row['revision'] != revision:
                 raise ControlError(409, 'PLAN_CONFLICT', 'Kế hoạch đã thay đổi. Hãy tải lại để kiểm tra trước khi xóa.')
             if row['deleted_at'] is not None:
@@ -723,21 +909,34 @@ class ControlStore:
                 raise ControlError(409, 'PLAN_CONFLICT', 'Kế hoạch đã thay đổi. Hãy tải lại để kiểm tra trước khi xóa.')
             deleted = db.execute('SELECT * FROM plans WHERE id=?', (plan_id,)).fetchone()
             self._plan_event(db, actor, deleted, 'deleted')
-            return self._plan(db, deleted)
+            return self._plan(db, deleted, actor)
 
     def create_plan(self, actor, **value):
         return self.create_plans(actor, [value])[0]
 
     def list_plans(self, actor, terminal=None, month=None, voyage_id=None, status=None, page=1, page_size=50, *, period_type=None,
-                   week=None, quarter=None, year=None, start_date=None, end_date=None, include_deleted=False):
+                   week=None, quarter=None, year=None, start_date=None, end_date=None, include_deleted=False, version_scope='all', q=''):
         self._pagination(page, page_size)
         if not isinstance(include_deleted, bool):
             raise ControlError(422, 'INVALID_PLAN_FILTER', 'Bộ lọc kế hoạch đã xóa không hợp lệ.')
+        if not isinstance(version_scope, str) or version_scope not in {'all', 'current', 'previous'} or not isinstance(q, str) or len(q) > 200:
+            raise ControlError(422, 'INVALID_PLAN_FILTER', 'Bộ lọc phiên bản hoặc văn bản không hợp lệ.')
         with self._db() as db:
             actor = self._actor(db, actor)
             terms, params = self._scope_filter(actor, terminal)
             if not include_deleted:
                 terms += ' AND deleted_at IS NULL'
+            highest = """(SELECT MAX(newer.version) FROM plans newer WHERE newer.terminal=selected.terminal
+                AND newer.period_type=selected.period_type AND newer.period_key=selected.period_key
+                AND newer.metric=selected.metric AND newer.status='approved')"""
+            if version_scope == 'current':
+                terms += f" AND status='approved' AND deleted_at IS NULL AND version={highest}"
+            elif version_scope == 'previous':
+                terms += f" AND status='approved' AND version<{highest}"
+            if q.strip():
+                # Literal substring matching: %, _ and backslash are not wildcards.
+                terms += " AND instr(unicode_casefold(reference),unicode_casefold(?))>0"
+                params.append(q.strip())
             if period_type is not None:
                 if period_type not in PLAN_PERIOD_TYPES:
                     raise ControlError(422, "INVALID_PLAN_PERIOD", "Loại kỳ kế hoạch không hợp lệ.")
@@ -763,9 +962,9 @@ class ControlStore:
                     raise ControlError(422, "INVALID_PLAN_STATUS", "Trạng thái kế hoạch không hợp lệ.")
                 terms += " AND status=?"
                 params.append(status)
-            total = db.execute(f"SELECT COUNT(*) FROM plans WHERE {terms}", params).fetchone()[0]
-            rows = db.execute(f"SELECT * FROM plans WHERE {terms} ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?", (*params, page_size, (page - 1) * page_size)).fetchall()
-            return {"items": [self._plan(db, row) for row in rows], "total": total, "page": page, "page_size": page_size}
+            total = db.execute(f"SELECT COUNT(*) FROM plans selected WHERE {terms}", params).fetchone()[0]
+            rows = db.execute(f"SELECT * FROM plans selected WHERE {terms} ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?", (*params, page_size, (page - 1) * page_size)).fetchall()
+            return {"items": [self._plan(db, row, actor) for row in rows], "total": total, "page": page, "page_size": page_size}
 
     def effective_plans(self, actor, terminal, month=None, voyage_id=None):
         with self._db() as db:
@@ -792,12 +991,15 @@ class ControlStore:
 
     def approve_plan(self, actor, plan_id, expected_revision=None):
         with self._db(write=True) as db:
-            actor = self._actor(db, actor, editor=True)
+            actor = self._actor(db, actor, plan_permission='approve')
             row = db.execute("SELECT * FROM plans WHERE id=?", (plan_id,)).fetchone()
             if row is None:
                 raise ControlError(404, "PLAN_NOT_FOUND", "Không tìm thấy kế hoạch.")
             require_scope(actor, row["terminal"])
             self._draft(row, expected_revision)
+            blocked = self._approval_block_reason(db, actor, row)
+            if blocked:
+                raise ControlError(403, 'PLAN_SELF_APPROVAL_FORBIDDEN', blocked)
             if not row["reference"]:
                 raise ControlError(422, "PLAN_REFERENCE_REQUIRED", "Cần ghi rõ tệp hoặc văn bản làm căn cứ trước khi duyệt.")
             newest = db.execute("SELECT MAX(version) FROM plans WHERE terminal=? AND period_type=? AND period_key=? AND metric=? AND status='approved'",
@@ -811,7 +1013,7 @@ class ControlStore:
                        (actor["id"], timestamp, actor['id'], timestamp, plan_id))
             approved = db.execute("SELECT * FROM plans WHERE id=?", (plan_id,)).fetchone()
             self._plan_event(db, actor, approved, 'approved')
-            return self._plan(db, approved)
+            return self._plan(db, approved, actor)
 
     def _throughput_progress(self, db, actor, report):
         filters = report.get('meta', {}).get('filters', {})
@@ -867,8 +1069,10 @@ class ControlStore:
                 'status': 'ready' if complete else 'missing_plan',
                 'reason': None if complete else 'Chưa đủ kế hoạch đã duyệt của cả hai cảng cho cùng kỳ.'})
             if period['period_start'] == start and end <= period['period_end']:
-                result['items'].append(throughput_progress_item(period, plans, overview.get('total_tonnage'),
-                                      overview.get('tonnage_status', 'unavailable'), source, complete_target=complete))
+                item = throughput_progress_item(period, plans, overview.get('total_tonnage'),
+                                                overview.get('tonnage_status', 'unavailable'), source, complete_target=complete)
+                item['pace'] = milestone_pace(report, period, plans, complete_target=complete)
+                result['items'].append(item)
         if not result['items']:
             # Offer navigation to an explicitly different authorized scope;
             # never compare that target with this report's numerator. Keep
@@ -920,8 +1124,10 @@ class ControlStore:
 
     @staticmethod
     def _closed_header(row, report=None):
+        report = report if report is not None else json.loads(row['report_json'])
         return {key: row[key] for key in ("id", "terminal", "start_date", "end_date", "version", "title", "note", "digest", "source_digest", "source_fact_count", "created_by")} | {
-            "created_at": _iso(row["created_at"]), **production_scope_context(report if report is not None else json.loads(row['report_json']))}
+            "created_at": _iso(row["created_at"]), **production_scope_context(report),
+            'comparison': report.get('meta', {}).get('filters', {}).get('comparison') or 'previous_period'}
 
     def close_report(self, actor, terminal, start_date, end_date, report, source_facts, title="", note="", *, planning_actuals=None):
         require_scope(actor, terminal)

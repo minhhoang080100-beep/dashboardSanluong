@@ -1,5 +1,6 @@
 import { BERTH_RULE_VERSION, isProductionScope } from './production-scope.js';
 import { isoWeekValue, weekDates } from './dashboard-data.js';
+import { validateMilestones } from './plan-milestones.js';
 
 export const MANAGEMENT_TERMINALS = { cua_lo: 'Cửa Lò', ben_thuy: 'Bến Thủy' };
 export const PLAN_TERMINALS = { all: 'Toàn công ty', ...MANAGEMENT_TERMINALS };
@@ -74,7 +75,12 @@ export function validatePlanEntry(form, allowedTerminals) {
   else if (reference.length > 500) errors.reference = 'Nguồn phê duyệt tối đa 500 ký tự.';
   const note = String(form.note || '').trim();
   if (note.length > 4000) errors.note = 'Ghi chú tối đa 4.000 ký tự.';
-  return { errors, payload: Object.keys(errors).length ? null : { terminal: form.terminal, period_type: form.period_type, metric: form.metric, amount, reference, note, ...period } };
+  let milestones;
+  if (form.milestones !== undefined) {
+    try { milestones = validateMilestones(form.milestones, form, amount || '0', parseVietnamesePlanAmount); }
+    catch (error) { errors.milestones = error.message; }
+  }
+  return { errors, payload: Object.keys(errors).length ? null : { terminal: form.terminal, period_type: form.period_type, metric: form.metric, amount, reference, note, ...period, ...(milestones !== undefined ? { milestones } : {}) } };
 }
 
 function validPlanDate(value) {
@@ -134,6 +140,7 @@ export function planPeriodLabel(plan) {
 export function sameClosedReportScope(item, report) {
   const filters = report?.meta?.filters;
   return Boolean(filters && isProductionScope(filters.production_scope)
+    && (item.comparison || 'previous_period') === (filters.comparison || 'previous_period')
     && item.production_scope === filters.production_scope
     && item.berth_rule_version === BERTH_RULE_VERSION && report.meta.berth_rule_version === BERTH_RULE_VERSION
     && item.terminal === filters.terminal && item.start_date === filters.start_date && item.end_date === filters.end_date);
@@ -161,7 +168,12 @@ export function buildPlanPayload(form, allowedTerminals) {
   if (!reference) throw new Error('Nhập số văn bản hoặc nguồn phê duyệt kế hoạch.');
   if (reference.length > 500) throw new Error('Nguồn phê duyệt tối đa 500 ký tự.');
   const payload = { terminal: form.terminal, period_type: form.period_type, metric: form.metric, amount, reference, note: String(form.note || '').trim() };
-  return { ...payload, ...planPeriodFields(form) };
+  const milestones = form.milestones === undefined ? undefined : validateMilestones(form.milestones, form, value, (input) => {
+    const exact = String(input);
+    if (!/^\d+(?:\.\d{1,6})?$/.test(exact)) throw new Error('Chỉ tiêu mốc chưa đúng định dạng.');
+    return exact;
+  });
+  return { ...payload, ...planPeriodFields(form), ...(milestones !== undefined ? { milestones } : {}) };
 }
 
 export function buildPlanUpdatePayload(form, allowedTerminals) {
@@ -184,7 +196,9 @@ export function buildUserPayload(form) {
   if (!Object.hasOwn(MANAGEMENT_ROLES, form.role)) throw new Error('Chọn quyền tài khoản.');
   const terminals = Object.keys(MANAGEMENT_TERMINALS).filter((terminal) => form.terminals?.includes(terminal));
   if (!terminals.length) throw new Error('Chọn ít nhất một xí nghiệp.');
-  return { username, display_name: displayName, role: form.role, terminals };
+  if (form.plan_permissions !== undefined && (!Array.isArray(form.plan_permissions) || form.plan_permissions.some((permission) => !['create', 'approve'].includes(permission)))) throw new Error('Quyền kế hoạch không hợp lệ.');
+  return { username, display_name: displayName, role: form.role, terminals,
+    ...(form.plan_permissions !== undefined ? { plan_permissions: form.role === 'viewer' ? [] : [...new Set(form.plan_permissions)] } : {}) };
 }
 
 export function validatedItems(data) {

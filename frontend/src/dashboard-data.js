@@ -4,6 +4,32 @@ import { BERTH_RULE_VERSION, isProductionScope, productionScopeLabel } from './p
 
 export const TERMINALS = { all: 'Toàn công ty', cua_lo: 'Xí nghiệp Cửa Lò', ben_thuy: 'Xí nghiệp Bến Thủy' };
 export const TIMEZONE = 'Asia/Ho_Chi_Minh';
+export const COMPARISONS = { previous_period: 'Kỳ liền trước', previous_year: 'Cùng kỳ năm trước' };
+export const comparisonMode = (filters) => filters?.comparison === undefined ? 'previous_period' : filters.comparison;
+const validComparison = (value) => typeof value === 'string' && Object.hasOwn(COMPARISONS, value);
+
+export function withComparison(filters, comparison = 'previous_period') {
+  const next = { ...filters };
+  delete next.comparison;
+  if (comparison !== 'previous_period') next.comparison = comparison;
+  return next;
+}
+
+export function comparisonDates(filters) {
+  const start = calendarDay(filters?.start_date), end = calendarDay(filters?.end_date);
+  const mode = comparisonMode(filters);
+  if (!start || !end || start > end || !validComparison(mode)) return null;
+  if (mode === 'previous_period') {
+    const days = (end - start) / 86400000 + 1;
+    return { start_date: new Date(start.getTime() - days * 86400000).toISOString().slice(0, 10), end_date: new Date(start.getTime() - 86400000).toISOString().slice(0, 10) };
+  }
+  const previousYear = (day) => {
+    const year = day.getUTCFullYear() - 1, month = day.getUTCMonth();
+    const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+    return new Date(Date.UTC(year, month, Math.min(day.getUTCDate(), lastDay))).toISOString().slice(0, 10);
+  };
+  return { start_date: previousYear(start), end_date: previousYear(end) };
+}
 
 export function todayInVietnam(now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
@@ -86,6 +112,7 @@ export function validateFilters(filters, today = todayInVietnam()) {
   if ((Date.parse(filters.end_date) - Date.parse(filters.start_date)) / 86400000 + 1 > 366) return 'Vui lòng chọn khoảng thời gian tối đa 366 ngày.';
   if (!Object.hasOwn(TERMINALS, filters.terminal)) return 'Vui lòng chọn xí nghiệp hợp lệ.';
   if (!isProductionScope(filters.production_scope)) return 'Vui lòng chọn phạm vi sản lượng hợp lệ.';
+  if (!validComparison(comparisonMode(filters))) return 'Vui lòng chọn kỳ so sánh hợp lệ.';
   return '';
 }
 
@@ -139,6 +166,8 @@ export function validateDashboard(data, filters) {
   }
   if (!isProductionScope(filters.production_scope) || data.meta.berth_rule_version !== BERTH_RULE_VERSION) fail();
   for (const key of ['start_date', 'end_date', 'terminal', 'production_scope']) if (data.meta.filters?.[key] !== filters[key]) fail();
+  const comparison = comparisonMode(filters);
+  if (!validComparison(comparison) || comparisonMode(data.meta.filters) !== comparison) fail();
   if (!Array.isArray(data.meta.warnings) || data.meta.warnings.some((warning) => typeof warning !== 'string')) fail();
   if (data.meta.sources !== undefined && (!Array.isArray(data.meta.sources) || data.meta.sources.some((source) => !source || typeof source.name !== 'string'))) fail();
   for (const source of data.meta.sources || []) {
@@ -157,6 +186,12 @@ export function validateDashboard(data, filters) {
     const previous = data.meta.previous_period;
     if (!previous || typeof previous !== 'object') fail();
     for (const key of ['start_date', 'end_date', 'label']) if (previous[key] != null && typeof previous[key] !== 'string') fail();
+    if (previous.mode !== undefined && previous.mode !== comparison) fail();
+  }
+  if (comparison !== 'previous_period') {
+    const expected = comparisonDates(filters), previous = data.meta.previous_period;
+    if (!expected || !previous || previous.mode !== comparison
+      || previous.start_date !== expected.start_date || previous.end_date !== expected.end_date) fail();
   }
   for (const key of ['definitions', 'unavailable']) {
     if (data.meta[key] !== undefined && (!data.meta[key] || typeof data.meta[key] !== 'object' || Object.values(data.meta[key]).some((value) => typeof value !== 'string'))) fail();
@@ -207,6 +242,8 @@ export function dashboardCsv(data) {
     ['Phạm vi sản lượng', productionScopeLabel(meta.filters.production_scope), 'Mã phạm vi', meta.filters.production_scope],
     ['Quy tắc phân loại chuyến', meta.berth_rule_version, 'Cầu ban đầu quyết định phạm vi của toàn chuyến'],
     ['Tổng hợp lúc (giờ Việt Nam)', formatTimestamp(meta.generated_at)],
+    ['Kỳ so sánh', COMPARISONS[comparisonMode(meta.filters)], 'Từ ngày', meta.previous_period?.start_date, 'Đến ngày', meta.previous_period?.end_date],
+    ...(meta.previous_period?.label ? [['Cách xác định kỳ so sánh', meta.previous_period.label]] : []),
     ['Chỉ tiêu', 'Giá trị', 'Đơn vị'],
     ['Sản lượng thông qua', overview.total_tonnage, 'Tấn'],
     ['Container', overview.total_teu, 'TEU'],

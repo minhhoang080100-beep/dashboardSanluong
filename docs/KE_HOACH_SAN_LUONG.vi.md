@@ -8,17 +8,20 @@ Các nút **Tạo kế hoạch**, **Nhập Excel** và **Tải lại** nằm ở
 
 Mặc định danh sách chọn **Tất cả kế hoạch** và **Trong phạm vi được cấp**: hiển thị kế hoạch của mọi loại kỳ, mọi năm và các phiên bản được phép xem. Danh sách chia trang 25 dòng; dùng **Trước / Sau** khi có nhiều kết quả. Có thể lọc theo tuần, tháng, quý, năm, khoảng ngày hoặc chuyến tàu rồi chọn lại **Tất cả kế hoạch** để bỏ giới hạn kỳ. Kế hoạch đã xóa chỉ hiện khi bật **Hiện kế hoạch đã xóa**. Khi đang xem tất cả, biểu mẫu tạo mới vẫn yêu cầu một loại kỳ cụ thể; không có loại kế hoạch “tất cả”.
 
+Thêm bộ lọc **Trạng thái kế hoạch** để chọn **Đang áp dụng**, **Bản nháp**, **Đã duyệt — mọi phiên bản**, **Phiên bản trước** hoặc **Đã hủy**. **Đang áp dụng** chỉ lấy phiên bản đã duyệt còn hiệu lực; **Phiên bản trước** giúp tra cứu các bản đã duyệt được thay thế. Nhập một phần số hoặc tên văn bản vào **Tìm theo văn bản**, rồi bấm **Tìm**. Kết quả và số trang được lọc trên toàn bộ dữ liệu được phép xem, không chỉ 25 dòng đang hiển thị. Đổi bộ lọc sẽ quay về trang đầu; **Bỏ bộ lọc** trả về danh sách đầy đủ trong phạm vi được cấp.
+
 Hai tab **Đối soát** và **Báo cáo đã chốt** vẫn dùng bộ lọc kỳ báo cáo và phạm vi sản lượng để kiểm tra hoặc chốt đúng dữ liệu. Bảng **Kế hoạch tháng theo từng xí nghiệp (tấn, TEU)** nằm trong tab **Đối soát**; bấm mở khi cần xem.
 
 ## Nhập chỉ tiêu
 
-Tài khoản có quyền **Quản lý** hoặc **Quản trị** thực hiện:
+Tài khoản **Quản lý** hoặc **Quản trị** được cấp quyền **Nhập và sửa kế hoạch** thực hiện:
 
 1. Mở **Kế hoạch**, bấm **Tạo kế hoạch**; hoặc bấm **Nhập kế hoạch** trên thanh tiến độ của báo cáo.
 2. Chọn kỳ **tuần / tháng / quý / năm / tùy chọn**; nhập kỳ tương ứng. Khoảng ngày tùy chọn tối đa 366 ngày. Có thể lập kế hoạch cho kỳ tương lai.
 3. Chọn **Toàn công ty** hoặc xí nghiệp. Chọn **Sản lượng thông qua (tấn)**, nhập chỉ tiêu và văn bản hoặc nguồn giao kế hoạch. Nhập số theo cách viết Việt Nam: `150.000` là 150 nghìn tấn; `150.000,5` là 150 nghìn phẩy 5 tấn. Cũng có thể nhập `150000`. Kiểm tra giá trị diễn giải ngay dưới ô nhập; tối đa 6 chữ số thập phân.
-4. Lưu bản nháp, kiểm tra lại và bấm **Duyệt**. Bản nháp chưa dùng để tính tiến độ.
-5. Bấm **Xem tiến độ** sau khi duyệt hoặc tại dòng kế hoạch đã duyệt đang có hiệu lực. Dashboard tự mở đúng phạm vi, từ ngày đầu kỳ đến hôm nay hoặc ngày cuối kỳ nếu kỳ đã kết thúc. Kế hoạch tương lai vẫn lưu và duyệt được; chưa xem tiến độ trước ngày bắt đầu.
+4. Nếu cần đánh giá tiến độ theo thời gian, thêm các **Mốc tiến độ lũy kế** theo hướng dẫn bên dưới. Lưu bản nháp và kiểm tra lại.
+5. Người được cấp quyền **Duyệt kế hoạch**, chưa từng tạo hoặc sửa phiên bản này, kiểm tra và bấm **Duyệt**. Bản nháp chưa dùng để tính tiến độ. Người nhập không tự duyệt phiên bản của mình, kể cả khi có quyền quản trị.
+6. Bấm **Xem tiến độ** sau khi duyệt hoặc tại dòng kế hoạch đã duyệt đang có hiệu lực. Dashboard tự mở đúng phạm vi, từ ngày đầu kỳ đến hôm nay hoặc ngày cuối kỳ nếu kỳ đã kết thúc. Kế hoạch tương lai vẫn lưu và duyệt được; chưa xem tiến độ trước ngày bắt đầu.
 
 Trên thanh tiến độ, **Kế hoạch đối chiếu** liệt kê các kỳ đã duyệt trong phạm vi đang xem. Chọn kế hoạch năm khi đang xem tháng sẽ mở báo cáo từ đầu năm, không lấy sản lượng riêng của tháng chia cho chỉ tiêu cả năm. Kế hoạch chưa đủ hai xí nghiệp khi xem toàn công ty sẽ báo thiếu chỉ tiêu, không hiển thị tỷ lệ giả.
 
@@ -28,7 +31,7 @@ Nút **Tải lại tiến độ** đọc lại các kế hoạch đã duyệt, h
 
 Nếu lưu bị lỗi, đọc thông báo ngay cạnh ô cần sửa. Nếu mất kết nối khi lưu hoặc duyệt, tải lại danh sách để kiểm tra trạng thái trước khi thử lại, tránh nhập trùng. Số văn bản/nguồn phê duyệt là bắt buộc.
 
-Khi mở tiến độ cả năm hoặc khoảng ngày dài hơn 92 ngày, tổng hợp dữ liệu có thể cần khoảng một phút. Trang chờ tối đa 90 giây và hiển thị trạng thái đang tải. Nếu nguồn SQL báo lỗi, bấm thử lại; không cần nhập hoặc duyệt lại kế hoạch.
+Khi mở tiến độ cả năm hoặc khoảng ngày dài, lần đọc nguồn mới có thể lâu hơn lần mở lại báo cáo đã có cache. Trang hiển thị trạng thái đang tải. Nếu nguồn SQL báo lỗi, bấm thử lại; không cần nhập hoặc duyệt lại kế hoạch. Không có cam kết thời gian tải cố định cho mọi kỳ.
 
 Ví dụ: lập kế hoạch **Quý 3/2026 = 500.000 tấn**, chọn báo cáo **Quý 3/2026**. Ngày 17/09, thanh tiến độ lấy sản lượng từ 01/07 đến 17/09 chia cho 500.000 tấn của cả quý. Chỉ tiêu không tự chia nhỏ theo số ngày đã qua.
 
@@ -58,6 +61,31 @@ Từ 100% hiển thị **Đạt kế hoạch** khi dữ liệu đủ điều ki�
 
 Nếu nguồn còn thiếu số liệu, tỷ lệ được ghi **Tạm tính** và chưa xác nhận đạt kế hoạch. Thiếu chỉ tiêu, chỉ tiêu bằng 0, sản lượng âm hoặc chưa có giá trị thực tế sẽ hiện trạng thái tương ứng thay vì tỷ lệ giả.
 
+## Mốc tiến độ lũy kế
+
+Trong biểu mẫu tạo kế hoạch hoặc **Sửa nháp**, bấm **Thêm mốc tiến độ**. Mỗi mốc gồm ngày và số tấn cần đạt **từ đầu kỳ đến hết ngày đó**. Ngày mốc phải nằm trong kỳ, tăng dần và không trùng nhau. Chỉ tiêu lũy kế phải tăng hoặc giữ nguyên, không vượt chỉ tiêu cả kỳ. Có thể xóa một mốc khi kế hoạch còn là bản nháp.
+
+Các mốc là tùy chọn, chỉ áp dụng cho **Sản lượng thông qua (tấn)** theo tuần, tháng, quý, năm hoặc khoảng ngày. Hệ thống không tự chia đều chỉ tiêu theo ngày hoặc tuần. Nhập các mốc theo lịch tàu và yêu cầu đã được thống nhất; mốc được lưu và duyệt cùng phiên bản kế hoạch. Muốn đổi mốc của kế hoạch đã duyệt, tạo phiên bản mới.
+
+Phần **Tiến độ theo mốc kế hoạch** trên dashboard dùng mốc gần nhất đã đến trong kỳ báo cáo. Thực tế được cộng từ đầu kỳ đến đúng ngày mốc, không dùng toàn bộ sản lượng phát sinh sau mốc. Ví dụ: đến 18/09 thực hiện 1.000 tấn, nhưng từ 01/09 đến mốc 05/09 chỉ có 200 tấn; mốc giao 500 tấn thì kết quả là **Thiếu 300 tấn so với mốc**. Thanh 5 màu phía trên vẫn đối chiếu 1.000 tấn với chỉ tiêu toàn kỳ.
+
+Chưa có mốc đã đến hoặc dữ liệu đến mốc chưa đầy đủ thì hệ thống chưa kết luận nhanh/chậm. Khi toàn công ty dùng tổng kế hoạch riêng của hai xí nghiệp, chỉ đối chiếu tại ngày mốc chung đã được khai báo ở cả hai; không tự nội suy mốc còn thiếu.
+
+Nhập Excel hiện nhập các chỉ tiêu kế hoạch và căn cứ; mẫu Excel chưa có cột mốc lũy kế. Sau khi nhập thành bản nháp, mở **Sửa nháp** để thêm mốc trước khi chuyển người khác duyệt.
+
+## Quyền nhập và duyệt
+
+Trong **Quản trị → Tài khoản**, quản trị viên cấp riêng hai quyền **Nhập và sửa kế hoạch** và **Duyệt kế hoạch** cho tài khoản Quản lý/Quản trị. Quyền vẫn giới hạn theo xí nghiệp đã cấp. Tài khoản **Xem báo cáo** không có hai quyền này; vẫn xem được kế hoạch trong phạm vi được phép.
+
+| Quyền | Thao tác |
+|---|---|
+| Nhập và sửa kế hoạch | Tạo, nhập Excel, sửa/hủy bản nháp, tạo phiên bản mới; xóa bản nháp hoặc bản đã hủy |
+| Duyệt kế hoạch | Duyệt bản nháp hợp lệ của người khác; xóa bản đã duyệt |
+
+Mặc định hệ thống áp dụng **người nhập khác người duyệt**: người tạo và bất kỳ người nào từng sửa phiên bản đều không được duyệt phiên bản đó, kể cả quản trị viên. Được cấp cả hai quyền nghĩa là có thể nhập một kế hoạch và duyệt kế hoạch khác do người khác lập; không bỏ qua quy tắc này. Nút duyệt không khả dụng sẽ kèm lý do. Cần có ít nhất một người duyệt phù hợp trong phạm vi kế hoạch; không dùng tài khoản dùng chung để thay người duyệt.
+
+Thay đổi quyền kết thúc các phiên đăng nhập hiện tại của tài khoản. Mục **Nhật ký quản trị tài khoản** lưu việc tạo tài khoản, đổi quyền và đặt lại mật khẩu; có thể lọc theo xí nghiệp, ID tài khoản và thao tác. Nội dung nhật ký không hiển thị mật khẩu.
+
 ## Phạm vi và phiên bản
 
 - Kế hoạch công ty áp dụng cho phần **Cảng Nghệ Tĩnh**, đã tách các chuyến cập đầu tiên vào **Cầu 5** của Vietsun.
@@ -70,7 +98,7 @@ Nếu nguồn còn thiếu số liệu, tỷ lệ được ghi **Tạm tính** v
 
 ## Xóa kế hoạch
 
-Tài khoản **Quản lý** hoặc **Quản trị** được xóa kế hoạch trong phạm vi xí nghiệp được cấp, gồm bản nháp, bản đã duyệt và bản đã hủy. Kế hoạch **Toàn công ty** yêu cầu quyền với cả hai xí nghiệp. Tài khoản chỉ xem không được xóa.
+Tài khoản **Quản lý** hoặc **Quản trị** chỉ được xóa kế hoạch khi có quyền tương ứng: **Nhập và sửa kế hoạch** để xóa bản nháp/bản đã hủy; **Duyệt kế hoạch** để xóa bản đã duyệt. Có quyền nhập không đồng nghĩa được gỡ một chỉ tiêu đã duyệt. Kế hoạch **Toàn công ty** yêu cầu quyền với cả hai xí nghiệp. Tài khoản chỉ xem không được xóa.
 
 1. Trong danh sách kế hoạch, tìm đúng kỳ, xí nghiệp, chỉ tiêu và phiên bản cần bỏ.
 2. Bấm **Xóa**, kiểm tra lại thông tin trong hộp **Xóa kế hoạch?**, rồi chọn **Xóa kế hoạch** để xác nhận hoặc **Giữ kế hoạch** để bỏ qua. Kế hoạch được ẩn khỏi danh sách mặc định và không còn dùng cho tiến độ hoặc báo cáo mới.

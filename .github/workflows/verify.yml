@@ -61,6 +61,6 @@ jobs:
             sleep 1
           done
           curl --fail --silent http://127.0.0.1:5173/ > /dev/null
-          for test in smoke cargo voyages availability drilldown management navigation refresh_download targets; do
+          for test in smoke cargo voyages availability drilldown management navigation refresh_download targets governance; do
             python -B "tests/browser_${test}.py" --url http://127.0.0.1:5173
           done

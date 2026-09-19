@@ -8,10 +8,10 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from decimal import Decimal
 
 if __package__:
-    from .control_store import ControlError, ControlStore, require_admin, require_editor, require_scope
+    from .control_store import ControlError, ControlStore, require_admin, require_editor, require_scope, require_plan_permission
     from .repository import dashboard_repo
 else:
-    from control_store import ControlError, ControlStore, require_admin, require_editor, require_scope
+    from control_store import ControlError, ControlStore, require_admin, require_editor, require_scope, require_plan_permission
     from repository import dashboard_repo
 
 router = APIRouter(prefix="/api")
@@ -35,9 +35,9 @@ def get_repository(request: Request):
     return configured.repo if configured is not None else dashboard_repo
 
 
-def validate_plan_voyages(user, rows, repo):
+def validate_plan_voyages(user, rows, repo, *, permission='create'):
     """Check scope before source access; monthly-only requests never need SQL."""
-    require_editor(user)
+    require_plan_permission(user, permission)
     pairs = set()
     for row in rows:
         ControlStore.validate_plan(row)
@@ -90,6 +90,7 @@ class UserBody(InputModel):
     role: Literal["admin", "manager", "viewer"]
     terminals: list[Terminal] = Field(min_length=1, max_length=2)
     password: SecretStr | None = Field(default=None, min_length=12, max_length=1024)
+    plan_permissions: list[Literal['create', 'approve']] | None = Field(default=None, max_length=2)
 
 
 class UserUpdate(InputModel):
@@ -97,6 +98,12 @@ class UserUpdate(InputModel):
     role: Literal["admin", "manager", "viewer"] | None = None
     terminals: list[Terminal] | None = Field(default=None, min_length=1, max_length=2)
     is_active: bool | None = None
+    plan_permissions: list[Literal['create', 'approve']] | None = Field(default=None, max_length=2)
+
+
+class PlanMilestone(InputModel):
+    date: date
+    amount: Decimal = Field(ge=0, le=1000000000000, decimal_places=6)
 
 
 class PlanBody(InputModel):
@@ -113,6 +120,7 @@ class PlanBody(InputModel):
     amount: Decimal = Field(ge=0, le=1000000000000, decimal_places=6)
     reference: str = Field(default="", max_length=500)
     note: str = Field(default="", max_length=4000)
+    milestones: list[PlanMilestone] = Field(default_factory=list, max_length=366)
 
 
 class PlanImportBody(InputModel):
@@ -134,6 +142,7 @@ class PlanUpdate(InputModel):
     amount: Decimal | None = Field(default=None, ge=0, le=1000000000000, decimal_places=6)
     reference: str | None = Field(default=None, max_length=500)
     note: str | None = Field(default=None, max_length=4000)
+    milestones: list[PlanMilestone] | None = Field(default=None, max_length=366)
 
 
 class PlanRevision(InputModel):
@@ -219,9 +228,19 @@ def plans(terminal: Literal["all", "cua_lo", "ben_thuy"] | None = None,
           start_date: date | None = None, end_date: date | None = None,
           page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=100),
           include_deleted: bool = False,
+          version_scope: Literal['all', 'current', 'previous'] = 'all', q: str = Query(default='', max_length=200),
           user: dict = Depends(require_user), store: ControlStore = Depends(get_store)):
     return store.list_plans(user, terminal, month, voyage_id, status, page, page_size, period_type=period_type,
-                            week=week, quarter=quarter, year=year, start_date=start_date, end_date=end_date, include_deleted=include_deleted)
+                            week=week, quarter=quarter, year=year, start_date=start_date, end_date=end_date,
+                            include_deleted=include_deleted, version_scope=version_scope, q=q)
+
+
+@router.get('/admin/events')
+def admin_events(terminal: PlanTerminal | None = None, user_id: int | None = Query(default=None, ge=1),
+                 action: Literal['user_created', 'user_updated', 'password_reset'] | None = None,
+                 page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=100),
+                 user: dict = Depends(require_user), store: ControlStore = Depends(get_store)):
+    return store.list_admin_events(user, terminal, user_id, action, page, page_size)
 
 
 @router.post("/plans", status_code=201)
@@ -241,18 +260,18 @@ def import_plans(body: PlanImportBody, user: dict = Depends(require_user), store
 @router.post("/plans/{plan_id}/approve")
 def approve_plan(plan_id: int, body: PlanRevision, user: dict = Depends(require_user),
                  store: ControlStore = Depends(get_store), repo=Depends(get_repository)):
-    require_editor(user)
+    require_plan_permission(user, 'approve')
     current = store.get_plan(user, plan_id)
     expected = body.expected_revision
     store._draft(current, expected)
-    validate_plan_voyages(user, [{key: current[key] for key in PlanBody.model_fields}], repo)
+    validate_plan_voyages(user, [{**{key: current[key] for key in PlanBody.model_fields}, 'amount': current['amount_decimal']}], repo, permission='approve')
     return store.approve_plan(user, plan_id, expected)
 
 
 @router.get('/planning/voyages')
 def planning_voyages(terminal: Terminal, search: str = Query(default='', max_length=100),
                     limit: int = Query(default=30, ge=1, le=100), user: dict = Depends(require_user), repo=Depends(get_repository)):
-    require_editor(user)
+    require_plan_permission(user, 'create')
     require_scope(user, terminal)
     return {'items': repo.search_voyages(terminal, search, limit), 'limit': limit}
 
@@ -265,7 +284,7 @@ def get_plan(plan_id: int, user: dict = Depends(require_user), store: ControlSto
 @router.patch('/plans/{plan_id}')
 def update_plan(plan_id: int, body: PlanUpdate, user: dict = Depends(require_user),
                 store: ControlStore = Depends(get_store), repo=Depends(get_repository)):
-    require_editor(user)
+    require_plan_permission(user, 'create')
     current = store.get_plan(user, plan_id)
     store._draft(current, body.expected_revision)
     changes = body.model_dump(exclude_unset=True, exclude={'expected_revision'})
