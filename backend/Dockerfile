@@ -20,9 +20,10 @@ RUN pip install --no-cache-dir --upgrade pip==26.2.1 \
 
 # Keep diagnostics, snapshots, and business data out of the runtime image.
 COPY config.py database.py berth_scope.py report_comparison.py repository.py reporting.py snapshot_store.py state_backup.py backup_health.py control_store.py control_api.py manage_users.py workbook_io.py integration.py runtime_entrypoint.py main.py ./
+COPY corporate_api ./corporate_api
 RUN mkdir -p /app/.data && chown -R dashboard:dashboard /app/.data
 ENV DASHBOARD_STATE_PATH=/app/.data/control.sqlite3
 USER dashboard
 EXPOSE 8000
 ENTRYPOINT ["python", "runtime_entrypoint.py"]
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "corporate_api.service"]

@@ -1,0 +1,26 @@
+{
+  "approved": false,
+  "company_id": "CNT",
+  "date_basis": null,
+  "production_scope": null,
+  "terminals": ["cua_lo", "ben_thuy"],
+  "quay_method_ids": {},
+  "gate_method_ids": {},
+  "gate_selection": "vessel_type",
+  "cargo_kind_by_cargo": {},
+  "cargo_catalog_source": "native_groups",
+  "cargo_types": {},
+  "cargo_type_by_cargo": {},
+  "container_sizes_by_cargo": {},
+  "container_size_source": "native_domestic",
+  "container_size_ids_by_cargo": {},
+  "accepted_null_fields": {},
+  "operation_sources": {},
+  "operation_metadata_merge": {},
+  "operation_attribute_completion": {},
+  "operation_team_scope": {},
+  "source_columns": {
+    "shipDetails": {},
+    "customers": {}
+  }
+}

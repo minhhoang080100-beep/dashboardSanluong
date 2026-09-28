@@ -6,7 +6,7 @@ Tạo `frontend/.env.railway.local` với nội dung dưới đây. Tệp này �
 
 ```dotenv
 VITE_API_URL=/api
-DEV_API_PROXY_TARGET=https://dashboardsanluong-production.up.railway.app
+DEV_API_PROXY_TARGET=https://dashboardsanluong-production-1761.up.railway.app
 ```
 
 Trong cửa sổ đang chạy Vite, bấm `Ctrl+C`. Tại thư mục `frontend`, chạy:

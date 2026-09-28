@@ -1,27 +1,27 @@
-import { BarChart3, ClipboardList, Settings } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { BarChart3, ClipboardList, Settings, Braces } from 'lucide-react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import Dashboard from './components/Dashboard';
 import Auth from './components/Auth';
 import portLogo from './assets/nghetinh-port-logo.png';
+import { canInspectApis, permittedHash } from './app-navigation';
 import './App.css';
+
+const ApiInspector = lazy(() => import('./components/ApiInspector'));
 
 const sections = [
   { href: '#overview', view: 'reports', label: 'Báo cáo sản lượng', icon: BarChart3 },
   { href: '#management', view: 'management', label: 'Kế hoạch', icon: ClipboardList },
+  { href: '#api-inspector', view: 'api-inspector', label: 'Kiểm tra API', icon: Braces },
   { href: '#admin', view: 'admin', label: 'Quản trị', icon: Settings },
 ];
-
-function permittedHash(hash, user) {
-  if (hash === '#admin') return user.role === 'admin' ? hash : '#overview';
-  return ['#overview', '#production', '#voyages', '#customers', '#data-quality', '#management'].includes(hash) ? hash : '#overview';
-}
 
 function AppShell({ user, logout, changePassword }) {
   const shell = useRef(null);
   const header = useRef(null);
   const main = useRef(null);
   const [hash, setHash] = useState(() => permittedHash(window.location.hash, user));
-  const activeView = hash === '#management' ? 'management' : hash === '#admin' ? 'admin' : 'reports';
+  const activeView = hash === '#management' ? 'management' : hash === '#admin' ? 'admin'
+    : hash === '#api-inspector' ? 'api-inspector' : 'reports';
   useEffect(() => {
     const element = header.current;
     if (!element) return;
@@ -43,7 +43,7 @@ function AppShell({ user, logout, changePassword }) {
     return () => window.removeEventListener('hashchange', handleHash);
   }, [user]);
   useEffect(() => {
-    if (!['#overview', '#management', '#admin'].includes(hash)) return;
+    if (!['#overview', '#management', '#admin', '#api-inspector'].includes(hash)) return;
     const frame = requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'instant' }));
     return () => cancelAnimationFrame(frame);
   }, [hash]);
@@ -57,7 +57,8 @@ function AppShell({ user, logout, changePassword }) {
             <img className="brand-logo" src={portLogo} width="918" height="577" alt="NgheTinhPort – Cảng Nghệ Tĩnh" />
           </a>
           <nav className="top-nav" aria-label="Điều hướng chính">
-            {sections.filter((section) => section.view !== 'admin' || user.role === 'admin').map(({ href, view, label, icon: Icon }) => (
+            {sections.filter((section) => (section.view !== 'admin' || user.role === 'admin')
+              && (section.view !== 'api-inspector' || canInspectApis(user))).map(({ href, view, label, icon: Icon }) => (
               <a className="nav-item" href={href} key={href} aria-current={activeView === view ? 'page' : undefined} onClick={() => { if (window.location.hash === href) window.scrollTo({ top: 0, behavior: 'instant' }); }}><Icon size={17} aria-hidden="true" /><span>{label}</span></a>
             ))}
           </nav>
@@ -65,7 +66,9 @@ function AppShell({ user, logout, changePassword }) {
         </div>
       </header>
       <main ref={main} className="main-content" id="main-content" tabIndex={-1}>
-        <Dashboard user={user} activeView={activeView} anchor={hash} />
+        {activeView === 'api-inspector'
+          ? <Suspense fallback={<div className="view-loading" role="status">Đang tải mục kiểm tra API…</div>}><ApiInspector /></Suspense>
+          : <Dashboard user={user} activeView={activeView} anchor={hash} />}
       </main>
     </div>
   );

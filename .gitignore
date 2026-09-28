@@ -40,3 +40,6 @@ backend/.data/
 /backend/analyze_output.txt
 /backend/output.txt
 /backend/output_tables.txt
+
+# Internal API specifications are source documents, not application artifacts.
+/API Vận Hành/

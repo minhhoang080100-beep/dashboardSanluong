@@ -13,6 +13,7 @@
 .top-header .user-tools .button:hover { background: var(--surface-hover); }
 .main-content { min-width: 0; }
 .main-content:focus { outline: none; }
+.view-loading { max-width: 1504px; margin: 0 auto; padding: 32px; color: var(--text-muted); }
 .main-content section[id], .main-content article[id], .main-content details[id] { scroll-margin-top: var(--header-offset); }
 .skip-link { position: fixed; top: -80px; left: 20px; z-index: 100; padding: 14px 20px; background: var(--surface); border: 2px solid var(--primary-color); border-radius: 6px; }
 .skip-link:focus { top: 10px; }
@@ -38,7 +39,7 @@
   .header-content { padding-left: 14px; padding-right: 14px; gap: 4px 8px; }
   .brand, .brand-logo { width: 89px; }
   .brand-logo { height: 56px; }
-  .top-nav { gap: 4px; }
+  .top-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
   .nav-item { min-width: 0; min-height: 46px; padding: 6px; font-size: 12px; text-align: center; }
   .nav-item svg { display: none; }
   .top-header .user-tools { gap: 6px; }

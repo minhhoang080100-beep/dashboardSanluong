@@ -15,6 +15,8 @@ if __package__:
     from .control_store import require_scope, require_admin
     from .integration import router as integration_router, get_reporting, report_scope
     from .reporting import ReportSnapshotNotFound
+    from .corporate_api.router import router as corporate_router
+    from .corporate_api.inspector import router as corporate_inspector_router
 else:
     from config import settings
     from database import DatabaseUnavailable, get_db_connection, log_database_failure
@@ -23,6 +25,8 @@ else:
     from control_store import require_scope, require_admin
     from integration import router as integration_router, get_reporting, report_scope
     from reporting import ReportSnapshotNotFound
+    from corporate_api.router import router as corporate_router
+    from corporate_api.inspector import router as corporate_inspector_router
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +41,14 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Accept", "Content-Type", "Authorization"],
+    expose_headers=["X-Snapshot-Id", "X-Source-Read-At", "X-Corporate-Contract",
+                    "X-Page", "X-Limit", "X-Total-Count", "X-Total-Pages", "X-Has-Next", "X-Error-Code", "Retry-After"],
 )
 
 app.include_router(control_router)
 app.include_router(integration_router)
+app.include_router(corporate_router)
+app.include_router(corporate_inspector_router)
 
 
 @app.exception_handler(ReportSnapshotNotFound)

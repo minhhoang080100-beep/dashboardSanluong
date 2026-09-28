@@ -25,7 +25,9 @@ def main():
             os.chown(directory, account.pw_uid, account.pw_gid)
             os.chmod(directory, 0o700)
             for name in ['control.sqlite3', 'control.sqlite3-wal', 'control.sqlite3-shm',
-                         'report-cache.sqlite3', 'report-cache.sqlite3-wal', 'report-cache.sqlite3-shm']:
+                         'report-cache.sqlite3', 'report-cache.sqlite3-wal', 'report-cache.sqlite3-shm',
+                         'corporate.sqlite3', 'corporate.sqlite3-wal', 'corporate.sqlite3-shm',
+                         'corporate-exports.sqlite3', 'corporate-exports.sqlite3-wal', 'corporate-exports.sqlite3-shm']:
                 target = directory / name
                 if target.is_symlink():
                     raise SystemExit('A state file must not be a symbolic link.')
