@@ -32,6 +32,7 @@ danh mục rỗng của công ty. Không chuyển `approved` sang `true` chỉ �
 | Method | Path | Dữ liệu |
 |---|---|---|
 | POST | `/api/login` | Tài khoản máy, lấy Bearer token |
+| POST | `/api/logout` | Tiện ích kiểm tra API: thu hồi token máy hiện tại, không đổi phiên dashboard hoặc token khác |
 | GET | `/api/contQuayVolumesCB` | Tấn và TEU container qua cầu |
 | GET | `/api/contGateVolumesCB` | Tấn và TEU container tại cổng/kho bãi theo loại địa điểm hoặc phương án được cấu hình |
 | GET | `/api/bulkQuayVolumesCB` | Tấn các loại hàng thuộc phạm vi Bulk qua cầu |

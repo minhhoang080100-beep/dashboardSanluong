@@ -3,6 +3,19 @@
 .api-inspector-heading { margin-bottom: 18px; }
 .api-inspector-heading h1 { font-size: 24px; font-weight: 650; }
 .api-inspector-heading p { color: var(--text-muted); font-size: 13px; margin-top: 5px; }
+.api-inspector-modes { display: flex; flex-wrap: wrap; gap: 6px; padding: 5px; margin-bottom: 16px; width: fit-content; max-width: 100%; border: 1px solid var(--border-color); border-radius: 10px; background: var(--surface-muted); }
+.api-inspector-modes button { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 42px; padding: 10px 14px; border: 1px solid transparent; border-radius: 7px; color: var(--text-muted); background: transparent; font-size: 13px; }
+.api-inspector-modes button[aria-pressed="true"] { border-color: var(--border-color); color: var(--primary-hover); background: var(--surface); font-weight: 600; }
+.api-inspector-auth { margin-bottom: 20px; }
+.api-inspector-auth h2 { font-size: 18px; }
+.api-inspector-login-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: end; gap: 16px; margin-top: 18px; }
+.api-inspector-login-form label { display: grid; gap: 7px; min-width: 0; }
+.api-inspector-login-form .button { min-height: 44px; }
+.api-inspector-session { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; margin-top: 16px; padding: 14px; border-radius: 8px; background: var(--surface-muted); }
+.api-inspector-session > div { min-width: 0; overflow-wrap: anywhere; }
+.api-inspector-session p { margin-top: 5px; color: var(--text-muted); font-size: 12px; }
+.api-inspector-auth-notice { color: var(--primary-hover); font-size: 13px; line-height: 1.6; margin-top: 12px; }
+.api-inspector-api-disabled { margin-top: 12px; padding: 12px; border-left: 3px solid var(--warning-color); background: var(--surface-muted); color: var(--text-main); font-size: 13px; line-height: 1.65; }
 .api-inspector-notice { display: flex; align-items: flex-start; gap: 11px; padding: 14px 16px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--surface-muted); color: var(--text-muted); margin-bottom: 20px; font-size: 13px; line-height: 1.65; }
 .api-inspector-notice svg { margin-top: 2px; }
 .api-inspector-notice strong { color: var(--warning-color); font-weight: 600; }
@@ -78,6 +91,8 @@
 @media (max-width: 1000px) { .api-inspector-layout { grid-template-columns: minmax(200px, 235px) minmax(0, 1fr); gap: 14px; } .api-inspector-card { padding: 18px; } }
 @media (max-width: 760px) {
   .api-inspector { padding: 24px 20px 18px; }
+  .api-inspector-login-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .api-inspector-login-form .button { grid-column: 1 / -1; }
   .api-inspector-layout { grid-template-columns: minmax(0, 1fr); }
   .api-inspector-catalog { padding: 14px; }
   .api-inspector-list { max-height: 260px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -90,6 +105,10 @@
   .api-inspector-heading h1 { font-size: 22px; }
   .api-inspector-card { padding: 16px; }
   .api-inspector-form { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .api-inspector-login-form { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .api-inspector-modes { width: 100%; }
+  .api-inspector-modes button { flex: 1 1 130px; min-width: 0; }
+  .api-inspector-session .button { width: 100%; }
   .api-inspector-heading > .button { width: 100%; }
   .api-inspector-resource-heading { align-items: flex-start; }
   .api-inspector-resource-title { font-size: 12px; }

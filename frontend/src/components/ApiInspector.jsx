@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { AlertCircle, ArrowLeft, ArrowRight, Braces, Check, Copy, Database, Play, RefreshCw, Search, Table2 } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ArrowRight, Braces, Check, Copy, Database, KeyRound, LogOut, Play, RefreshCw, Search, Table2 } from 'lucide-react';
 import { apiRequest } from '../api-client.js';
+import { inspectCorporateApi, loginCorporateApi, logoutCorporateApi } from '../corporate-api-client.js';
 import { formatNumber, formatTimestamp } from '../dashboard-data.js';
 import {
   INSPECTOR_GROUPS, INSPECTOR_HEADERS, INSPECTOR_LIMITS, buildInspectorQuery,
@@ -26,9 +27,35 @@ export default function ApiInspector({ apiBase }) {
   const [error, setError] = useState('');
   const [tab, setTab] = useState('table');
   const [copyNotice, setCopyNotice] = useState('');
+  const [mode, setMode] = useState('api');
+  const [apiSession, setApiSession] = useState(null);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [authNotice, setAuthNotice] = useState('');
+  const [authStatus, setAuthStatus] = useState(null);
+  const authSequence = useRef(0);
+  const authController = useRef(null);
+  const passwordInput = useRef(null);
   const requestSequence = useRef(0);
   const requestController = useRef(null);
   const copySequence = useRef(0);
+
+  useEffect(() => {
+    setApiSession(null); setAuthBusy(false); setAuthError(''); setAuthNotice(''); setAuthStatus(null);
+    return () => { authSequence.current += 1; authController.current?.abort(); };
+  }, [apiBase]);
+
+  useEffect(() => {
+    if (!apiSession) return undefined;
+    const timer = setTimeout(() => {
+      setApiSession(null); setAuthNotice(''); setAuthStatus(null); setAuthError('Phiên API đã hết hạn. Vui lòng đăng nhập API lại.');
+      if (mode === 'api') {
+        requestSequence.current += 1; requestController.current?.abort(); copySequence.current += 1;
+        setResponse(null); setBusy(false); setCopyNotice('');
+      }
+    }, Math.max(0, apiSession.expiresAt - Date.now()));
+    return () => clearTimeout(timer);
+  }, [apiSession, mode]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -68,6 +95,7 @@ export default function ApiInspector({ apiBase }) {
   const resultJson = response ? JSON.stringify(response.body, null, 2) : '';
   const actualAddress = response && resource ? inspectorRequestAddress(resource, response.requestQuery, { apiBase, origin: globalThis.location?.origin }) : null;
   const sourceReadAt = inspectorHeader(response?.headers, 'X-Source-Read-At');
+  const canInspect = !authBusy && (mode === 'internal' || !!apiSession);
 
   function clearInspection() {
     requestSequence.current += 1; requestController.current?.abort(); copySequence.current += 1;
@@ -78,8 +106,54 @@ export default function ApiInspector({ apiBase }) {
   }
   function updateField(name, value) { clearInspection(); setValues((previous) => ({ ...previous, [name]: value })); }
 
+  function changeMode(next) { clearInspection(); setMode(next); }
+
+  async function loginApi(event) {
+    event.preventDefault();
+    if (authBusy) return;
+    const form = new FormData(event.currentTarget);
+    const username = String(form.get('api-username') || '').trim();
+    authController.current?.abort();
+    const controller = new AbortController(); authController.current = controller;
+    const sequence = ++authSequence.current;
+    clearInspection(); setApiSession(null); setAuthBusy(true); setAuthError(''); setAuthNotice(''); setAuthStatus(null);
+    const pending = loginCorporateApi({ username, password: String(form.get('api-password') || '') }, { baseUrl: apiBase, signal: controller.signal });
+    if (passwordInput.current) passwordInput.current.value = '';
+    try {
+      const result = await pending;
+      if (controller.signal.aborted || sequence !== authSequence.current) return;
+      setApiSession({ ...result, username }); setAuthStatus(result.statusCode);
+      setAuthNotice('Đăng nhập API thành công. Bạn có thể chọn API để kiểm tra.');
+    } catch (failure) {
+      if (controller.signal.aborted || sequence !== authSequence.current) return;
+      setAuthStatus(failure.status || null); setAuthError(failure.message || 'Chưa đăng nhập được API.');
+    } finally { if (sequence === authSequence.current) setAuthBusy(false); }
+  }
+
+  async function logoutApi() {
+    const session = apiSession;
+    if (!session || authBusy) return;
+    authController.current?.abort();
+    const controller = new AbortController(); authController.current = controller;
+    const sequence = ++authSequence.current;
+    clearInspection(); setApiSession(null); setAuthBusy(true); setAuthError(''); setAuthNotice(''); setAuthStatus(null);
+    try {
+      const result = await logoutCorporateApi({ accessToken: session.accessToken, baseUrl: apiBase, signal: controller.signal });
+      if (controller.signal.aborted || sequence !== authSequence.current) return;
+      setAuthStatus(result.statusCode); setAuthNotice('Đã đăng xuất API.');
+    } catch (failure) {
+      if (controller.signal.aborted || sequence !== authSequence.current) return;
+      setAuthStatus(failure.status || null);
+      if (failure.status === 401) setAuthNotice('Phiên API đã kết thúc.');
+      else setAuthError('Đã xóa phiên API khỏi màn hình. Chưa xác nhận được việc thu hồi phiên trên máy chủ.');
+    } finally { if (sequence === authSequence.current) setAuthBusy(false); }
+  }
+
   async function inspect(page = 1, snapshotId) {
-    if (!resource) return;
+    if (!resource || authBusy) return;
+    if (mode === 'api' && (!apiSession || apiSession.expiresAt <= Date.now())) {
+      clearInspection(); setApiSession(null); setAuthNotice(''); setAuthStatus(null); setAuthError('Vui lòng đăng nhập API trước khi kiểm tra.'); return;
+    }
     let query;
     try { query = buildInspectorQuery(resource, values, { page, limit, snapshotId }); }
     catch (failure) { setError(failure.message); setResponse(null); return; }
@@ -88,15 +162,23 @@ export default function ApiInspector({ apiBase }) {
     const sequence = ++requestSequence.current;
     setBusy(true); setError(''); setResponse(null); setCopyNotice(''); copySequence.current += 1;
     try {
-      const result = await apiRequest('/admin/corporate-api/inspect', {
-        baseUrl: apiBase, method: 'POST', body: { resource: resource.id, query }, signal: controller.signal,
+      const result = mode === 'api'
+        ? await inspectCorporateApi(resource, query, { accessToken: apiSession.accessToken, baseUrl: apiBase, signal: controller.signal })
+        : await apiRequest('/admin/corporate-api/inspect', {
+          baseUrl: apiBase, method: 'POST', body: { resource: resource.id, query }, signal: controller.signal,
       });
       if (controller.signal.aborted || sequence !== requestSequence.current) return;
+      if (mode === 'api' && result.statusCode === 401) {
+        setApiSession(null); setAuthNotice(''); setAuthStatus(401); setAuthError('Phiên API không còn hợp lệ. Vui lòng đăng nhập API lại.');
+      }
       const checked = validateInspection(result, resource, query);
       setResponse(checked);
       if (checked.statusCode < 200 || checked.statusCode >= 300 || String(checked.body.code) !== '1') setTab('json');
     } catch (failure) {
       if (controller.signal.aborted || sequence !== requestSequence.current) return;
+      if (mode === 'api' && failure.status === 401) {
+        setApiSession(null); setAuthNotice(''); setAuthStatus(401); setAuthError('Phiên API không còn hợp lệ. Vui lòng đăng nhập API lại.');
+      }
       setError(['REQUEST_TIMEOUT', 'NETWORK_ERROR'].includes(failure.code)
         ? 'Chưa nhận được phản hồi kiểm tra API. Vui lòng thử lại.'
         : failure.message || 'Chưa kiểm tra được API. Vui lòng thử lại.');
@@ -123,7 +205,25 @@ export default function ApiInspector({ apiBase }) {
     <header className="api-inspector-heading"><div><h1 id={`${prefix}-title`}>Kiểm tra API</h1><p>Chọn API, nhập tham số và xem kết quả trả về.</p></div>
       <button type="button" className="button" disabled={catalogLoading} onClick={() => setCatalogRevision((value) => value + 1)}><RefreshCw size={16} aria-hidden="true" />Tải lại danh sách</button>
     </header>
-    <div className="api-inspector-notice"><Database size={18} aria-hidden="true" /><p>Dùng phiên đăng nhập dashboard để đọc bản dữ liệu đã công bố. Phần này không kiểm tra tài khoản máy hoặc gửi dữ liệu đến Tổng công ty.{catalog?.enabled === false && <strong> API công khai chưa bật.</strong>}</p></div>
+    <div className="api-inspector-modes" role="group" aria-label="Cách kiểm tra API">
+      <button type="button" aria-pressed={mode === 'api'} disabled={authBusy} onClick={() => changeMode('api')}><KeyRound size={16} aria-hidden="true" />Tài khoản API</button>
+      <button type="button" aria-pressed={mode === 'internal'} disabled={authBusy} onClick={() => changeMode('internal')}><Database size={16} aria-hidden="true" />Dữ liệu nội bộ</button>
+    </div>
+    {mode === 'api' ? <section className="api-inspector-card api-inspector-auth" aria-labelledby={`${prefix}-login-title`}>
+      <div className="api-inspector-resource-heading"><div><h2 id={`${prefix}-login-title`}>Đăng nhập API</h2><p className="api-inspector-help">Dùng tài khoản API riêng để kiểm tra đăng nhập, quyền truy cập và dữ liệu trả về.</p></div>
+        <span className={`api-inspector-badge ${apiSession ? 'is-published' : ''}`}>{apiSession ? 'Đã đăng nhập API' : 'Chưa đăng nhập API'}</span>
+      </div>
+      {apiSession ? <div className="api-inspector-session"><div><strong>{apiSession.username}</strong><p>Hết hạn: {formatTimestamp(new Date(apiSession.expiresAt).toISOString())}</p></div><button type="button" className="button" disabled={authBusy} onClick={logoutApi}><LogOut size={16} aria-hidden="true" />Đăng xuất API</button></div>
+        : <form className="api-inspector-login-form" onSubmit={loginApi} aria-busy={authBusy}>
+          <label htmlFor={`${prefix}-username`}>Tài khoản API<input id={`${prefix}-username`} name="api-username" autoComplete="section-corporate-api username" autoCapitalize="none" autoCorrect="off" spellCheck={false} maxLength={80} required disabled={authBusy} /></label>
+          <label htmlFor={`${prefix}-password`}>Mật khẩu API<input id={`${prefix}-password`} name="api-password" ref={passwordInput} type="password" autoComplete="section-corporate-api current-password" maxLength={1024} required disabled={authBusy} /></label>
+          <button type="submit" className="button primary" disabled={authBusy}><KeyRound size={16} aria-hidden="true" />{authBusy ? 'Đang xử lý…' : 'Đăng nhập API'}</button>
+        </form>}
+      <p className="api-inspector-help">Phiên API chỉ được giữ khi bạn đang ở mục này. Tài khoản dashboard và tài khoản API dùng riêng.</p>
+      {catalog?.enabled === false && <p className="api-inspector-api-disabled" role="status">Dịch vụ API công khai đang tắt trên máy chủ. Cần bật dịch vụ và có tài khoản API được cấp trước khi đăng nhập.</p>}
+      {authError && <div className="api-inspector-error" role="alert"><AlertCircle size={18} aria-hidden="true" /><p>{authStatus && <strong>HTTP {authStatus} · </strong>}{authError}</p></div>}
+      {authNotice && <p className="api-inspector-auth-notice" role="status">{authStatus && <strong>HTTP {authStatus} · </strong>}{authNotice}</p>}
+    </section> : <div className="api-inspector-notice"><Database size={18} aria-hidden="true" /><p>Dùng quyền quản trị dashboard để đọc dữ liệu nội bộ. Chọn “Tài khoản API” để thử đăng nhập và gọi API thực tế.</p></div>}
     {catalogLoading && <p className="api-inspector-empty" role="status">Đang tải danh sách API…</p>}
     {catalogError && <div className="api-inspector-error" role="alert"><AlertCircle size={18} aria-hidden="true" /><p>{catalogError}</p></div>}
     {catalog && <div className="api-inspector-layout">
@@ -147,8 +247,9 @@ export default function ApiInspector({ apiBase }) {
               <label>Đơn vị<input value={catalog.companyId} readOnly /></label>
               {inspectorFields(resource).map((field) => <label key={field.name} htmlFor={`${prefix}-field-${field.name}`}>{field.label}{field.required && <span className="sr-only"> (bắt buộc)</span>}<input id={`${prefix}-field-${field.name}`} type={field.type} value={values[field.name] || ''} required={field.required} maxLength={field.type === 'text' ? 255 : undefined} onChange={(event) => updateField(field.name, event.target.value)} /></label>)}
               <label htmlFor={`${prefix}-limit`}>Dòng mỗi trang<select id={`${prefix}-limit`} value={limit} onChange={(event) => { clearInspection(); setLimit(Number(event.target.value)); }}>{INSPECTOR_LIMITS.map((value) => <option key={value} value={value}>{value} dòng</option>)}</select></label>
-              <button className="button primary api-inspector-run" type="submit" disabled={busy} aria-busy={busy}><Play size={16} aria-hidden="true" />{busy ? 'Đang kiểm tra…' : 'Chạy kiểm tra'}</button>
+              <button className="button primary api-inspector-run" type="submit" disabled={busy || !canInspect} aria-busy={busy}><Play size={16} aria-hidden="true" />{busy ? 'Đang kiểm tra…' : 'Chạy kiểm tra'}</button>
             </form>
+            {mode === 'api' && !apiSession && <p className="api-inspector-help">Đăng nhập API ở phía trên để chạy kiểm tra.</p>}
             {resource.group === 'operations' && <p className="api-inspector-help">Khoảng ngày lọc ngày tạo hoặc ngày sửa danh mục, không phải ngày sản lượng.</p>}
             {resource.id === 'customers' && <p className="api-inspector-help">Khoảng ngày lọc ngày tạo khách hàng, không phải ngày sản lượng.</p>}
             {Array.isArray(resource.coverage) && resource.coverage.some((range) => Array.isArray(range) && dateInput(range[0]) && dateInput(range[1])) && <details className="api-inspector-coverage"><summary>Các kỳ có dữ liệu công bố</summary><ul>{resource.coverage.filter((range) => Array.isArray(range) && dateInput(range[0]) && dateInput(range[1])).map((range, index) => <li key={`${range.join('-')}/${index}`}>{dateInput(range[0]).split('-').reverse().join('/')} – {dateInput(range[1]).split('-').reverse().join('/')}</li>)}</ul></details>}
@@ -168,7 +269,7 @@ export default function ApiInspector({ apiBase }) {
                 {rows.length && columns.length ? <div className="api-inspector-table-scroll" role="region" aria-label="Dữ liệu API trả về" tabIndex={0}><table><caption className="sr-only">{resource.label}: dữ liệu trên trang hiện tại</caption><thead><tr>{columns.map((column) => <th scope="col" key={column}>{column}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={index}>{columns.map((column) => <td key={column}>{inspectorCell(row?.[column])}</td>)}</tr>)}</tbody></table></div> : <p className="api-inspector-empty">{success ? rows.length ? 'Dữ liệu không có cấu trúc bảng. Hãy xem JSON.' : 'Không có bản ghi phù hợp với yêu cầu.' : response.body.message || 'API chưa trả dữ liệu để hiển thị.'}</p>}
               </div>
               <div id={`${prefix}-json-panel`} role="tabpanel" aria-labelledby={`${prefix}-json-tab`} hidden={tab !== 'json'}><pre className="api-inspector-json" tabIndex={0} aria-label="JSON trả về"><code>{resultJson}</code></pre></div>
-              <div className="api-inspector-pagination"><span>{pagination.total !== null ? `${formatNumber(rows.length, 0)}/${formatNumber(pagination.total, 0)} dòng` : `${formatNumber(rows.length, 0)} dòng trên trang`}{pagination.valid && ` · Trang ${pagination.page}/${pagination.pages}`}</span><div><button type="button" className="button" disabled={busy || !pagination.valid || pagination.page <= 1} onClick={() => inspect(pagination.page - 1, pagination.snapshotId)}><ArrowLeft size={14} aria-hidden="true" />Trước</button><button type="button" className="button" disabled={busy || !pagination.hasNext} onClick={() => inspect(pagination.page + 1, pagination.snapshotId)}>Sau<ArrowRight size={14} aria-hidden="true" /></button></div></div>
+              <div className="api-inspector-pagination"><span>{pagination.total !== null ? `${formatNumber(rows.length, 0)}/${formatNumber(pagination.total, 0)} dòng` : `${formatNumber(rows.length, 0)} dòng trên trang`}{pagination.valid && ` · Trang ${pagination.page}/${pagination.pages}`}</span><div><button type="button" className="button" disabled={busy || !canInspect || !pagination.valid || pagination.page <= 1} onClick={() => inspect(pagination.page - 1, pagination.snapshotId)}><ArrowLeft size={14} aria-hidden="true" />Trước</button><button type="button" className="button" disabled={busy || !canInspect || !pagination.hasNext} onClick={() => inspect(pagination.page + 1, pagination.snapshotId)}>Sau<ArrowRight size={14} aria-hidden="true" /></button></div></div>
               {success && !pagination.valid && <p className="api-inspector-help">Phản hồi chưa đủ thông tin phân trang hoặc phiên dữ liệu. Chạy lại từ trang đầu để tiếp tục kiểm tra.</p>}
               {sourceReadAt && <p className="api-inspector-help">Thời điểm đọc nguồn trong phản hồi: {formatTimestamp(sourceReadAt)}</p>}
               <details className="api-inspector-response-meta"><summary>Thông tin yêu cầu và phân trang</summary><code className="api-inspector-actual-url">GET {actualAddress}</code><dl>{INSPECTOR_HEADERS.map((header) => { const value = inspectorHeader(response.headers, header); return value === null ? null : <div key={header}><dt>{header}</dt><dd>{value}</dd></div>; })}</dl></details>

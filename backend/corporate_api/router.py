@@ -110,6 +110,15 @@ def login(body: Login, request: Request, store=Depends(get_machine_store)):
     return store.login(body.Username, body.Password.get_secret_value(), client_key)
 
 
+@router.post('/logout', name='corporate_logout')
+def logout(request: Request, actor=Depends(principal), store=Depends(get_machine_store)):
+    # principal already checked the exact Bearer syntax and machine identity.
+    # The store validates the token again under its write transaction so a
+    # concurrent expiry, logout or account change cannot revoke another token.
+    token = request.headers['Authorization'].split(' ')[1]
+    return store.logout(token)
+
+
 def _headers(response, result, contract='S-v3-CNT-1'):
     response.headers['X-Snapshot-Id'] = result['pagination']['snapshotId']
     response.headers['X-Source-Read-At'] = result['pagination']['sourceReadAt']

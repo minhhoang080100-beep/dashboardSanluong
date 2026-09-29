@@ -258,3 +258,19 @@ class MachineStore:
             if row is None:
                 raise MachineAuthError(401, "MACHINE_TOKEN_INVALID", "Token không hợp lệ hoặc đã hết hạn.")
             return self._public(row)
+
+    def logout(self, token):
+        """Revoke just this active token, rechecking it inside the write lock."""
+        if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
+            raise MachineAuthError(401, "MACHINE_TOKEN_INVALID", "Token không hợp lệ hoặc đã hết hạn.")
+        token_hash = _digest(token)
+        with self._db(write=True) as db:
+            now = self.clock()
+            row = db.execute("""SELECT c.* FROM machine_tokens t JOIN machine_clients c ON c.id=t.client_id
+                WHERE t.token_hash=? AND t.revoked_at IS NULL AND t.expires_at>? AND c.enabled=1""",
+                             (token_hash, now)).fetchone()
+            if row is None:
+                raise MachineAuthError(401, "MACHINE_TOKEN_INVALID", "Token không hợp lệ hoặc đã hết hạn.")
+            self._public(row)
+            db.execute("UPDATE machine_tokens SET revoked_at=? WHERE token_hash=?", (now, token_hash))
+        return {"data": [], "code": "1", "message": "Đăng xuất API thành công."}

@@ -85,6 +85,8 @@ test('copied URL uses configured API host and public path without credentials', 
   const value = inspectorRequestAddress(resource, query, { apiBase: 'https://backend.example/api', origin: 'https://dashboard.example' });
   assert.equal(value, 'https://backend.example/api/oprt/catalog/jobMethod?companyId=CNT&startDate=20260901&endDate=20260927&page=1&limit=20');
   assert.equal(inspectorRequestAddress(resource, {}, { apiBase: '/api', origin: 'https://dashboard.example' }), 'https://dashboard.example/api/oprt/catalog/jobMethod');
+  assert.equal(inspectorRequestAddress(resource, {}, { apiBase: '/proxy/api/', origin: 'https://dashboard.example' }), 'https://dashboard.example/proxy/api/oprt/catalog/jobMethod');
+  assert.equal(inspectorRequestAddress(resource, {}, { apiBase: 'https://backend.example/proxy/api/' }), 'https://backend.example/proxy/api/oprt/catalog/jobMethod');
 });
 
 test('table preserves all returned columns and distinguishes null from a missing field', () => {

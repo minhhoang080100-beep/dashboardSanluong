@@ -97,7 +97,7 @@ def api(tmp_path, monkeypatch):
 def test_thirteen_base_methods_and_no_roro_contract(api):
     paths = api["app"].openapi()["paths"]
     base_paths = {path: set(methods) for path, methods in paths.items() if "{" not in path}
-    assert base_paths == {"/api/login": {"post"}, **{f"/api/{resource}": {"get"} for resource in RESOURCE_KEYS},
+    assert base_paths == {"/api/login": {"post"}, "/api/logout": {"post"}, **{f"/api/{resource}": {"get"} for resource in RESOURCE_KEYS},
                           **{path: {"get"} for path in OPERATION_PATHS.values()}}
     assert not any("roro" in path.lower() for path in paths)
     assert "/api/containerSize/{record_id}" not in paths

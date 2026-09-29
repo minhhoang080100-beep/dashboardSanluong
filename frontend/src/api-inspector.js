@@ -123,8 +123,9 @@ export function inspectorPagination(response) {
 
 export function inspectorRequestAddress(resource, query, { apiBase = DEFAULT_API_BASE, origin = 'http://localhost' } = {}) {
   const suffix = new URLSearchParams(query).toString();
-  const path = `${resource.path}${suffix ? `?${suffix}` : ''}`;
-  try { return new URL(path, new URL(apiBase || DEFAULT_API_BASE, origin)).href; } catch { return path; }
+  const base = (apiBase || DEFAULT_API_BASE).replace(/\/+$/, '');
+  const path = `${base}/${resource.path.replace(/^\/api\//, '')}${suffix ? `?${suffix}` : ''}`;
+  try { return new URL(path, origin).href; } catch { return path; }
 }
 
 export function inspectorRows(response) {
