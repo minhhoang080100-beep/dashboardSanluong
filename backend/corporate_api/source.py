@@ -164,6 +164,7 @@ def _result():
             'excluded_scope_rows': 0, 'excluded_unknown_scope_rows': 0,
             'excluded_location_rows': 0, 'excluded_unknown_location_rows': 0,
             'excluded_nonphysical_rows': 0, 'excluded_empty_container_rows': 0,
+            'excluded_placeholder_rows': 0,
             'unselected_source_row_count': 0, 'source_errors': [], 'issue_samples': []}
 
 
@@ -413,6 +414,23 @@ class ProductionSource:
                         for endpoint in affected:
                             flag(endpoint, 'PHYSICAL_SHIP_OR_DIRECTION_UNAVAILABLE', fact, terminal)
                         continue
+                day = fact.get('business_date')
+                if isinstance(day, datetime):
+                    day = day.date()
+                if (_decimal(fact.get('cargo_id')) == 0
+                        and _decimal(fact.get('quantity')) == 0
+                        and _decimal(fact.get('native_weight')) == 0
+                        and method is not None and type(day) is date and start <= day <= end
+                        and (not is_quay or (_native_id(fact.get('ship_id')) is not None
+                                            and _native_id(fact.get('direction_id')) in {'1', '2'}))):
+                    # SmartTOS can insert a still-empty activity slot with the
+                    # explicit cargo ID 0 and both reported measures exactly 0.
+                    # It represents no cargo movement. Missing cargo metadata
+                    # for a positive ID, NULL measures and nonzero measures are
+                    # never treated as this placeholder or silently discarded.
+                    for endpoint in affected:
+                        results[endpoint]['excluded_placeholder_rows'] += 1
+                    continue
                 if kind not in {'container', 'bulk'}:
                     for name in affected:
                         issues[name]['CARGO_KIND_UNMAPPED'] += 1
@@ -424,9 +442,6 @@ class ProductionSource:
                 if method is None:
                     issues[name]['METHOD_ID_UNAVAILABLE'] += 1
                     continue
-                day = fact.get('business_date')
-                if isinstance(day, datetime):
-                    day = day.date()
                 if type(day) is not date or not start <= day <= end:
                     issues[name]['SOURCE_DATE_INVALID'] += 1
                     continue
@@ -565,5 +580,9 @@ class ProductionSource:
             if item['excluded_empty_container_rows']:
                 item['warnings'].append(
                     f"Loại {item['excluded_empty_container_rows']} phiếu container có số lượng bằng 0 và trọng lượng bằng 0, hoặc đơn vị CONT chưa ghi trọng lượng; không quy đổi trọng lượng thiếu thành 0."
+                )
+            if item['excluded_placeholder_rows']:
+                item['warnings'].append(
+                    f"Loại {item['excluded_placeholder_rows']} phiếu chưa nhập hàng có mã hàng, số lượng và trọng lượng nguồn đều bằng 0; không bỏ phiếu có chỉ tiêu thiếu hoặc khác 0."
                 )
         return {name: results[name] for name in selected}

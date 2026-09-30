@@ -172,3 +172,34 @@ service sau cập nhật. 446 kiểm thử liên quan đạt sau các thay đổ
 Không suy ra mọi API hoặc mọi kỳ đều sẵn sàng: danh mục đầy đủ vẫn có thể vướng
 ID trùng khác đối tượng; container qua cổng/bãi tháng 9 còn phiếu có số lượng
 dương nhưng chưa có khối lượng/kích cỡ xác định. Không tự điền các giá trị này.
+
+## Kiểm tra HTTP sau triển khai ngày 30/09/2026
+
+Đã triển khai `60ec476`, cập nhật profile tại volume và đăng nhập bằng tài khoản
+API. Bốn endpoint ngày 16/09/2026 trả HTTP 200 qua domain production:
+
+| Endpoint | Dòng tổng hợp | Tấn | TEU |
+|---|---:|---:|---:|
+| contQuayVolumesCB | 10 | 8.011,65 | 525 |
+| bulkQuayVolumesCB | 8 | 4.962,80 | — |
+| bulkGateVolumesCB | 9 | 1.642,46 | — |
+| contGateVolumesCB | 3 | 453,25 | 44 |
+
+`containerSize` trả HTTP 200 với 6 mã nguồn. Phản hồi chỉ gồm `data`, `code`,
+`message`; không có trường nguồn nội bộ. Phiên kiểm tra đã đăng xuất.
+
+Khi thử cả tháng, SmartTOS có thêm phiếu Bến Thủy `89236` ngày 30/09 chưa chọn
+hàng (`cargoId=0`), số lượng 0 và khối lượng 0, chưa được kiểm tra. Phiếu trống
+này không được coi là sản lượng thiếu phân loại. Quy tắc bỏ qua phải kiểm tra
+đúng cả ba giá trị 0, ngày và phương án hợp lệ; không áp dụng cho phiếu có lượng
+dương, khối lượng null, hoặc ID hàng dương nhưng mất bản ghi danh mục.
+
+Các vấn đề nguồn còn phải đối chiếu khi lấy tháng 09:
+
+- Container cổng/bãi: phiếu Cửa Lò `310813`, `310820` ngày 11/09 có số lượng
+  container nhưng thiếu khối lượng và mã kích cỡ xác định.
+- Cổng/bãi: phiếu Bến Thủy `88166`, `88178` ngày 24/09 ghi 180 ở trường khối
+  lượng nhưng `cargoId=0`. Không thể tự xác định đây là container hay hàng rời.
+- Hàng rời: có phiếu thiếu khối lượng/đơn vị quy đổi hợp lệ và có phương án chưa
+  được chọn. Cần sửa hoặc xác nhận tại nguồn; quyền để null cho trường tùy chọn
+  không áp dụng cho tấn, mã hàng, ngày hay phương án bắt buộc.

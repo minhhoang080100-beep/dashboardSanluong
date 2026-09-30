@@ -307,6 +307,75 @@ def test_zero_activity_does_not_hide_invalid_source_id_or_unclassified_cargo():
         assert result[name]['excluded_empty_container_rows'] == 0
 
 
+@pytest.mark.parametrize('side', ['quay', 'yard'])
+def test_exact_empty_cargo_zero_slot_is_excluded_after_scope_qualification(side):
+    p = yard_profile() if side == 'yard' else profile()
+    make_fact = yard_fact if side == 'yard' else fact
+    empty = make_fact(cargo_id=0, cargo_name=None, cargo_group_id=None,
+                      quantity=Decimal('0'), native_weight=Decimal('0'), quantity_unit_code=None)
+    result, _ = run([empty], p)
+    for prefix in ('cont', 'bulk'):
+        data = result[prefix + ('Gate' if side == 'yard' else 'Quay') + 'VolumesCB']
+        assert data['ready'] and not data['rows'] and data['excluded_placeholder_rows'] == 1
+        assert any('mã hàng, số lượng và trọng lượng nguồn đều bằng 0' in warning
+                   for warning in data['warnings'])
+
+
+def test_new_empty_placeholder_does_not_change_existing_container_weight_or_teu():
+    result, _ = run([fact(), fact(source_id=2, cargo_id=0, cargo_name=None, cargo_group_id=None,
+                                 quantity=0, native_weight=0, quantity_unit_code=None)])
+    data = result['contQuayVolumesCB']
+    assert data['ready'] and data['excluded_placeholder_rows'] == 1
+    assert len(data['rows']) == 1 and data['rows'][0]['containerWeight'] == Decimal('30.125')
+    assert data['rows'][0]['containerTEU'] == 2
+
+
+@pytest.mark.parametrize('updates', [
+    {'cargo_id': None}, {'cargo_id': 999}, {'cargo_id': -1}, {'cargo_id': False},
+    {'quantity': None}, {'quantity': 1}, {'quantity': -1}, {'quantity': False},
+    {'native_weight': None}, {'native_weight': Decimal('0.01')}, {'native_weight': Decimal('180')},
+    {'native_weight': -1}, {'native_weight': False}, {'native_weight': Decimal('NaN')},
+    {'method_id': None}, {'method_id': 0}, {'business_date': None}, {'business_date': date(2026, 10, 1)},
+    {'ship_id': None}, {'direction_id': None},
+])
+def test_empty_placeholder_rule_never_hides_missing_invalid_or_nonzero_source_data(updates):
+    row = fact(**{'cargo_id': 0, 'cargo_name': None, 'cargo_group_id': None,
+                  'quantity': 0, 'native_weight': 0, 'quantity_unit_code': None, **updates})
+    result, _ = run([row], {**profile(), 'quay_selection': 'source_statistics'})
+    for name in ('contQuayVolumesCB', 'bulkQuayVolumesCB'):
+        assert result[name]['blockers'] == ['CARGO_KIND_UNMAPPED']
+        assert result[name]['excluded_placeholder_rows'] == 0
+
+
+def test_empty_yard_placeholder_with_method_zero_remains_unclassified():
+    result, _ = run([yard_fact(cargo_id=0, quantity=0, native_weight=0, method_id=0)], yard_profile())
+    for name in ('contGateVolumesCB', 'bulkGateVolumesCB'):
+        assert result[name]['blockers'] == ['CARGO_KIND_UNMAPPED']
+        assert result[name]['excluded_placeholder_rows'] == 0
+
+
+@pytest.mark.parametrize('physical', [None, True, 2])
+def test_empty_placeholder_cannot_hide_invalid_physical_flag(physical):
+    result, _ = run([fact(cargo_id=0, quantity=0, native_weight=0, physical_voyage=physical)])
+    for name in ('contQuayVolumesCB', 'bulkQuayVolumesCB'):
+        assert result[name]['blockers'] == ['PHYSICAL_SHIP_OR_DIRECTION_UNAVAILABLE']
+        assert result[name]['excluded_placeholder_rows'] == 0
+
+
+def test_placeholder_is_not_used_to_reclassify_unknown_berth_or_unknown_yard():
+    p = yard_profile()
+    result, _ = run([fact(cargo_id=0, quantity=0, native_weight=0,
+                         production_scope='unclassified', vessel_type_code=None),
+                     yard_fact(source_id=2, cargo_id=0, quantity=0, native_weight=0,
+                               vessel_type_code=None)], p)
+    for prefix in ('cont', 'bulk'):
+        quay, gate = result[prefix+'QuayVolumesCB'], result[prefix+'GateVolumesCB']
+        assert quay['ready'] and gate['ready'] and not quay['rows'] and not gate['rows']
+        assert quay['excluded_unknown_scope_rows'] == 1
+        assert gate['excluded_unknown_location_rows'] == 2
+        assert quay['excluded_placeholder_rows'] == gate['excluded_placeholder_rows'] == 0
+
+
 def test_native_cargo_group_reference_is_used_in_production_instead_of_manual_map():
     p = yard_profile()
     p.update(cargo_catalog_source='native_groups', cargo_types={'55': 'Native group'})
