@@ -1,4 +1,6 @@
-"""Bounded source reads shared by the explicit offline extraction command."""
+"""Bounded source reads shared by extraction and on-demand API requests."""
+from contextlib import contextmanager
+from contextvars import ContextVar
 import logging
 import re
 from datetime import date, datetime, time
@@ -13,10 +15,47 @@ from .errors import CorporateError
 
 logger = logging.getLogger(__name__)
 DATABASES = frozenset({'SmartTOS', 'SmartTOS_BenThuy'})
+_deadline = ContextVar('corporate_source_deadline', default=None)
 _DESCRIBED_TYPES = {
     int: 'int', str: 'nvarchar', bool: 'bit', Decimal: 'decimal', float: 'float',
     datetime: 'datetime2', date: 'date', time: 'time', bytes: 'varbinary', bytearray: 'varbinary',
 }
+
+
+@contextmanager
+def source_read_budget(seconds=35):
+    """A per-request budget; never alter another request's SQL timeout."""
+    previous = _deadline.get()
+    end = perf_counter() + seconds
+    token = _deadline.set(min(previous, end) if previous is not None else end)
+    try:
+        yield
+    finally:
+        _deadline.reset(token)
+
+
+def _remaining():
+    deadline = _deadline.get()
+    if deadline is None:
+        return None
+    remaining = deadline - perf_counter()
+    if remaining < 1:
+        raise CorporateError(503, 'SOURCE_TIMEOUT', 'Truy vấn SmartTOS quá thời gian. Hãy chọn kỳ ngắn hơn hoặc thử lại.', retry_after=5)
+    return max(1, int(remaining))
+
+
+def _connect(database):
+    remaining = _remaining()
+    connection = (get_db_connection(database) if remaining is None else
+                  get_db_connection(database, connect_timeout_seconds=remaining))
+    try:
+        remaining = _remaining()
+        if remaining is not None:
+            connection.timeout = min(connection.timeout or remaining, remaining)
+        return connection
+    except BaseException:
+        _close_source_resource(connection)
+        raise
 
 
 def _close_source_resource(resource):
@@ -45,9 +84,10 @@ def describe_table(database, table):
     connection = cursor = None
     started = perf_counter()
     try:
-        connection = get_db_connection(database)
+        connection = _connect(database)
         cursor = connection.cursor()
         cursor.execute(f'SELECT TOP (0) * FROM [dbo].[{table}]')
+        _remaining()
         description = cursor.description
         if not description:
             raise CorporateError(503, 'SOURCE_SCHEMA', 'Chưa xác minh được cấu trúc bảng nguồn.')
@@ -80,16 +120,29 @@ def query_source(database, statement, params=()):
     started = perf_counter()
     phase = 'cursor'
     try:
-        connection = get_db_connection(database)
+        connection = _connect(database)
         cursor = connection.cursor()
         phase = 'execute'
         cursor.execute(statement, params)
+        _remaining()
         phase = 'fetch'
         names = [field[0] for field in cursor.description]
-        rows = cursor.fetchmany(250_001)
+        if _deadline.get() is None:
+            rows = cursor.fetchmany(250_001)
+        else:
+            rows = []
+            while len(rows) <= 250_000:
+                _remaining()
+                batch = cursor.fetchmany(min(1000, 250_001 - len(rows)))
+                _remaining()
+                rows.extend(batch)
+                if len(batch) < 1000:
+                    break
         if len(rows) > 250_000:
             raise CorporateError(422, 'SOURCE_ROW_LIMIT', 'Kỳ lấy dữ liệu vượt giới hạn. Hãy chia nhỏ khoảng ngày.')
-        return [dict(zip(names, row)) for row in rows]
+        result = [dict(zip(names, row)) for row in rows]
+        _remaining()
+        return result
     except CorporateError:
         raise
     except Exception as exc:

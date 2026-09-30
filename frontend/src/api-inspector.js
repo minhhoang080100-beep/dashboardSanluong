@@ -1,5 +1,6 @@
 export const INSPECTOR_GROUPS = { production: 'Sản lượng', catalog_s: 'Danh mục sản lượng', operations: 'Danh mục vận hành' };
 export const INSPECTOR_LIMITS = [20, 50, 100];
+export const INSPECTOR_LIVE_MAX_DAYS = 31;
 export const INSPECTOR_HEADERS = ['X-Page', 'X-Limit', 'X-Total-Count', 'X-Total-Pages', 'X-Has-Next', 'X-Snapshot-Id', 'X-Source-Read-At', 'X-Error-Code', 'Retry-After'];
 const RESERVED_FILTERS = new Set(['companyId', 'page', 'limit', 'snapshotId']);
 const SNAPSHOT_ID = /^[a-f0-9]{32}$/i;
@@ -24,7 +25,8 @@ export function inspectorFields(resource) {
 }
 
 export function validateInspectorCatalog(value) {
-  if (!own(value) || typeof value.enabled !== 'boolean' || value.companyId !== 'CNT' || value.mode !== 'internal' || !Array.isArray(value.resources)) {
+  if (!own(value) || typeof value.enabled !== 'boolean' || value.companyId !== 'CNT' || value.mode !== 'internal' || !Array.isArray(value.resources)
+      || ![undefined, 'published', 'live'].includes(value.readMode)) {
     throw new Error('Danh sách API trả về chưa hợp lệ. Vui lòng tải lại.');
   }
   const ids = new Set();
@@ -32,7 +34,7 @@ export function validateInspectorCatalog(value) {
     if (!own(resource) || typeof resource.id !== 'string' || !resource.id || ids.has(resource.id)
         || typeof resource.label !== 'string' || !Object.hasOwn(INSPECTOR_GROUPS, resource.group)
         || resource.method !== 'GET' || !/^\/api\/[A-Za-z0-9/_-]+$/.test(resource.path)
-        || !['published', 'not_published'].includes(resource.status) || !Array.isArray(resource.filters)) {
+        || !(value.readMode === 'live' ? ['live'] : ['published', 'not_published']).includes(resource.status) || !Array.isArray(resource.filters)) {
       throw new Error('Danh sách API trả về chưa hợp lệ. Vui lòng tải lại.');
     }
     const fields = new Set();
@@ -48,11 +50,15 @@ export function validateInspectorCatalog(value) {
   return value;
 }
 
+export function inspectorStatusLabel(resource) {
+  return resource?.status === 'live' ? 'Truy vấn SmartTOS' : resource?.status === 'published' ? 'Có bản công bố' : 'Chưa công bố';
+}
+
 export function initialInspectorValues(resource, now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Ho_Chi_Minh', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
   const part = (type) => parts.find((item) => item.type === type)?.value;
   const today = `${part('year')}-${part('month')}-${part('day')}`;
-  const ranges = (Array.isArray(resource?.coverage) ? resource.coverage : [])
+  const ranges = (resource?.status !== 'live' && Array.isArray(resource?.coverage) ? resource.coverage : [])
     .filter((item) => Array.isArray(item) && item.length === 2 && dateInput(item[0]) && dateInput(item[1]) && item[0] <= item[1])
     .sort((a, b) => b[1].localeCompare(a[1]) || b[0].localeCompare(a[0]));
   const range = ranges[0];
@@ -75,9 +81,15 @@ export function buildInspectorQuery(resource, values, { limit = 20, page = 1, sn
     query[field.name] = normalized;
   }
   if (query.startDate && query.endDate && query.startDate > query.endDate) throw new Error('Ngày bắt đầu không được sau ngày kết thúc.');
+  if (resource.status === 'live' && resource.group === 'production' && query.startDate && query.endDate) {
+    const duration = (Date.parse(`${dateInput(query.endDate)}T00:00:00Z`) - Date.parse(`${dateInput(query.startDate)}T00:00:00Z`)) / 86400000 + 1;
+    if (duration > INSPECTOR_LIVE_MAX_DAYS) throw new Error(`Mỗi lần truy vấn sản lượng tối đa ${INSPECTOR_LIVE_MAX_DAYS} ngày. Vui lòng chọn khoảng ngày ngắn hơn.`);
+  }
   query.page = String(page); query.limit = String(limit);
-  if ((page > 1 || snapshotId) && (typeof snapshotId !== 'string' || !SNAPSHOT_ID.test(snapshotId))) throw new Error('Chưa có mã phiên dữ liệu hợp lệ. Hãy chạy lại từ trang đầu.');
-  if (snapshotId) query.snapshotId = snapshotId;
+  if (resource.status !== 'live') {
+    if ((page > 1 || snapshotId) && (typeof snapshotId !== 'string' || !SNAPSHOT_ID.test(snapshotId))) throw new Error('Chưa có mã phiên dữ liệu hợp lệ. Hãy chạy lại từ trang đầu.');
+    if (snapshotId) query.snapshotId = snapshotId;
+  }
   return query;
 }
 
@@ -102,7 +114,8 @@ export function validateInspection(value, resource, query) {
   return value;
 }
 
-export function inspectorPagination(response) {
+export function inspectorPagination(response, resource) {
+  const live = resource?.status === 'live';
   const rows = Array.isArray(response?.body?.data) ? response.body.data.length : 0;
   const integer = (name, min = 0) => {
     const raw = inspectorHeader(response?.headers, name);
@@ -111,11 +124,12 @@ export function inspectorPagination(response) {
   };
   const page = integer('X-Page', 1), limit = integer('X-Limit', 1), total = integer('X-Total-Count');
   const hasNext = inspectorHeader(response?.headers, 'X-Has-Next');
-  const snapshotId = inspectorHeader(response?.headers, 'X-Snapshot-Id');
+  const snapshotId = live ? null : inspectorHeader(response?.headers, 'X-Snapshot-Id');
   const valid = page !== null && limit !== null && total !== null && total >= rows && rows <= limit
     && String(page) === String(response?.requestQuery?.page) && String(limit) === String(response?.requestQuery?.limit)
-    && ['true', 'false'].includes(hasNext) && SNAPSHOT_ID.test(snapshotId || '')
-    && (!response?.requestQuery?.snapshotId || response.requestQuery.snapshotId === snapshotId)
+    && ['true', 'false'].includes(hasNext)
+    && (live || (SNAPSHOT_ID.test(snapshotId || '')
+      && (!response?.requestQuery?.snapshotId || response.requestQuery.snapshotId === snapshotId)))
     && (hasNext === 'true') === (page * limit < total)
     && response?.statusCode >= 200 && response.statusCode < 300 && String(response?.body?.code) === '1';
   return { valid, page, limit, total, snapshotId, hasNext: valid && hasNext === 'true', pages: total !== null && limit ? Math.max(1, Math.ceil(total / limit)) : null };

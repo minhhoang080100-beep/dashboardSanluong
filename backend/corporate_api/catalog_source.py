@@ -440,7 +440,7 @@ def _native_sizes(reader, report_day):
     return output, warnings
 
 
-def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=None):
+def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=None, resources=None):
     """Return per-resource readiness, validated rows and explicit blockers.
 
     query_fn(database, SELECT_sql, parameter_tuple) -> list[dict].
@@ -451,8 +451,12 @@ def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=No
     """
     if company_id != 'CNT':
         raise ValueError('Unsupported company')
+    selected = list(RESOURCES if resources is None else resources)
+    if (not selected or len(set(selected)) != len(selected)
+            or any(resource not in RESOURCES for resource in selected)):
+        raise ValueError('Invalid catalog resource selection')
     report_day = (report_date or datetime.now(VIETNAM_TIMEZONE).date()).strftime('%Y%m%d')
-    results = {resource: _empty() for resource in RESOURCES}
+    results = {resource: _empty() for resource in selected}
     cargo_mode = (profile or {}).get('cargo_catalog_source', 'configured')
     if cargo_mode not in {'configured', 'native_groups'}:
         raise ValueError('Invalid cargo catalog source')
@@ -462,6 +466,8 @@ def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=No
     for resource, mapping_key, id_key, name_key in (
         ('cargoType', 'cargo_types', 'cargoTypeId', 'cargoTypeName'),
     ):
+        if resource not in results:
+            continue
         if cargo_mode == 'native_groups':
             continue
         try:
@@ -477,6 +483,7 @@ def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=No
     native = ('shipDetails', 'customers', 'handlingMethodList', 'class', 'origins', 'cargoCategory', 'containerSize')
     if cargo_mode == 'native_groups':
         native += ('cargoType',)
+    native = tuple(resource for resource in native if resource in results)
     terminals = (profile or {}).get('terminals', list(SOURCES))
     if (not isinstance(terminals, list) or not terminals
             or any(not isinstance(t, str) or t not in SOURCES for t in terminals)

@@ -73,12 +73,28 @@ def default_exports():
     return ExportStore()
 
 
+def read_mode():
+    mode = os.environ.get('CORPORATE_READ_MODE', 'published').strip().lower()
+    if mode not in {'published', 'live'}:
+        raise CorporateError(503, 'SOURCE_CONFIGURATION_INVALID', 'Cấu hình nguồn đọc API không hợp lệ.')
+    return mode
+
+
+@lru_cache(maxsize=1)
+def default_live():
+    from .live import LiveReader
+    return LiveReader()
+
+
 def get_machine_store(request: Request, enabled=Depends(require_enabled)):
     return getattr(request.app.state, 'corporate_auth', None) or default_auth()
 
 
 def get_exports(request: Request, enabled=Depends(require_enabled)):
-    return getattr(request.app.state, 'corporate_exports', None) or default_exports()
+    configured = getattr(request.app.state, 'corporate_exports', None)
+    if configured is not None:
+        return configured
+    return default_live() if read_mode() == 'live' else default_exports()
 
 
 def principal(request: Request, store=Depends(get_machine_store)):
@@ -120,7 +136,9 @@ def logout(request: Request, actor=Depends(principal), store=Depends(get_machine
 
 
 def _headers(response, result, contract='S-v3-CNT-1'):
-    response.headers['X-Snapshot-Id'] = result['pagination']['snapshotId']
+    snapshot_id = result['pagination'].get('snapshotId')
+    if snapshot_id:
+        response.headers['X-Snapshot-Id'] = snapshot_id
     response.headers['X-Source-Read-At'] = result['pagination']['sourceReadAt']
     response.headers['X-Corporate-Contract'] = contract
     for key, header in (('page', 'X-Page'), ('limit', 'X-Limit'),

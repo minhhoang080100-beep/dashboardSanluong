@@ -110,7 +110,7 @@ def log_database_failure(exc: Exception, *, phase: str, started_at: float,
     )
 
 
-def get_db_connection(database: str | None = None):
+def get_db_connection(database: str | None = None, *, connect_timeout_seconds: int | None = None):
     target = database or settings.DB_DATABASE
     if target not in DATABASES:
         raise ValueError("Unsupported database")
@@ -134,8 +134,11 @@ def get_db_connection(database: str | None = None):
     connection = None
     started_at = perf_counter()
     try:
+        connect_timeout = settings.DB_CONNECT_TIMEOUT_SECONDS
+        if connect_timeout_seconds is not None:
+            connect_timeout = max(1, min(connect_timeout, int(connect_timeout_seconds)))
         connection = pyodbc.connect(
-            conn_str, timeout=settings.DB_CONNECT_TIMEOUT_SECONDS, autocommit=True
+            conn_str, timeout=connect_timeout, autocommit=True
         )
         connection.timeout = settings.DB_QUERY_TIMEOUT_SECONDS
         return connection

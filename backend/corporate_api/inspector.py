@@ -1,4 +1,4 @@
-"""Dashboard-admin inspection of published exports, without machine login or SQL Server.
+"""Dashboard-admin inspection through the configured published or live API reader.
 
 This is an internal reader, not a test of public API authentication or reachability.
 It deliberately shares the public reader's validation, freshness and snapshot rules.
@@ -24,7 +24,7 @@ from .errors import CorporateError
 from .freshness import max_age_seconds
 from .operation_contracts import OPERATION_MODELS, OPERATION_PATHS, OperationQuery
 from .registry import MODELS
-from .router import CorporateRoute, _headers, default_exports, error_response, public_result
+from .router import CorporateRoute, _headers, default_exports, default_live, read_mode, error_response, public_result
 
 
 COMPANY_ID = 'CNT'
@@ -87,7 +87,9 @@ def require_inspector(user: dict = Depends(require_user)):
 def _exports(request):
     # Called only inside an endpoint after all dashboard permission checks.
     configured = getattr(request.app.state, 'corporate_exports', None)
-    return configured if configured is not None else default_exports()
+    if configured is not None:
+        return configured
+    return default_live() if read_mode() == 'live' else default_exports()
 
 
 def _path(resource):
@@ -109,15 +111,18 @@ router = APIRouter(prefix='/api/admin/corporate-api', tags=['Kiểm tra API'], r
 
 @router.get('/catalog')
 def catalog(request: Request, user=Depends(require_inspector)):
-    exports = _exports(request)
-    # Count indexed rows only; never fetch export payloads or private warnings.
-    placeholders = ','.join('?' for _ in MODELS)
-    with exports.db() as db:
-        published = {row['resource']: dict(row) for row in db.execute(f'''
-            SELECT v.resource,v.snapshot_id,v.read_at,v.coverage,COUNT(r.seq) AS row_count
-            FROM export_versions v LEFT JOIN export_rows r ON v.snapshot_id=r.snapshot_id
-            WHERE v.current=1 AND v.company_id=? AND v.resource IN ({placeholders})
-            GROUP BY v.snapshot_id''', [COMPANY_ID, *MODELS])}
+    live = read_mode() == 'live'
+    published = {}
+    if not live:
+        exports = _exports(request)
+        # Count indexed rows only; never fetch export payloads or private warnings.
+        placeholders = ','.join('?' for _ in MODELS)
+        with exports.db() as db:
+            published = {row['resource']: dict(row) for row in db.execute(f'''
+                SELECT v.resource,v.snapshot_id,v.read_at,v.coverage,COUNT(r.seq) AS row_count
+                FROM export_versions v LEFT JOIN export_rows r ON v.snapshot_id=r.snapshot_id
+                WHERE v.current=1 AND v.company_id=? AND v.resource IN ({placeholders})
+                GROUP BY v.snapshot_id''', [COMPANY_ID, *MODELS])}
     resources = []
     for resource in MODELS:
         version = published.get(resource)
@@ -125,14 +130,15 @@ def catalog(request: Request, user=Depends(require_inspector)):
             'id': resource, 'label': LABELS[resource],
             'group': 'production' if resource in PRODUCTION else 'operations' if resource in OPERATION_MODELS else 'catalog_s',
             'path': _path(resource), 'method': 'GET', 'filters': _filters(resource),
-            'status': 'published' if version else 'not_published',
+            'status': 'live' if live else 'published' if version else 'not_published',
             'rowCount': version['row_count'] if version else None,
             'sourceReadAt': version['read_at'] if version else None,
             'coverage': json.loads(version['coverage']) if version else [],
             'snapshotId': version['snapshot_id'] if version else None,
         })
     return {'enabled': os.environ.get('CORPORATE_API_ENABLED', '').strip().lower() in {'1', 'true'},
-            'companyId': COMPANY_ID, 'resources': resources, 'mode': 'internal'}
+            'companyId': COMPANY_ID, 'resources': resources, 'mode': 'internal',
+            **({'readMode': 'live'} if live else {})}
 
 
 class InspectInput(BaseModel):

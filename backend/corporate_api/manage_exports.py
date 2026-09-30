@@ -46,7 +46,8 @@ def extract(profile, start, end, resources, query_fn=query_source):
     read_started = datetime.now(timezone.utc).isoformat()
     datasets = {}
     if set(resources) & (set(S_MODELS) - PRODUCTION):
-        datasets.update(extract_catalogs(query_fn, profile=profile))
+        datasets.update(extract_catalogs(query_fn, profile=profile,
+                        resources=[key for key in resources if key in S_MODELS and key not in PRODUCTION]))
     if set(resources) & set(OPERATION_MODELS):
         from .operation_source import extract_operation_catalogs
         datasets.update(extract_operation_catalogs(query_fn, profile=profile,

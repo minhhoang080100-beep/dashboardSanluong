@@ -4,9 +4,9 @@ import { apiRequest } from '../api-client.js';
 import { inspectCorporateApi, loginCorporateApi, logoutCorporateApi } from '../corporate-api-client.js';
 import { formatNumber, formatTimestamp } from '../dashboard-data.js';
 import {
-  INSPECTOR_GROUPS, INSPECTOR_HEADERS, INSPECTOR_LIMITS, buildInspectorQuery,
+  INSPECTOR_GROUPS, INSPECTOR_HEADERS, INSPECTOR_LIMITS, INSPECTOR_LIVE_MAX_DAYS, buildInspectorQuery,
   dateInput, initialInspectorValues, inspectorCell, inspectorColumns, inspectorFields,
-  inspectorHeader, inspectorPagination, inspectorRequestAddress, inspectorRows,
+  inspectorHeader, inspectorPagination, inspectorRequestAddress, inspectorRows, inspectorStatusLabel,
   validateInspection, validateInspectorCatalog,
 } from '../api-inspector.js';
 import './ApiInspector.css';
@@ -76,6 +76,7 @@ export default function ApiInspector({ apiBase }) {
   }, [apiBase, catalogRevision]);
 
   const resource = catalog?.resources.find((item) => item.id === selectedId) || null;
+  const liveRead = catalog?.readMode === 'live';
   const filteredResources = useMemo(() => {
     const needle = search.trim().toLocaleLowerCase('vi-VN');
     return (catalog?.resources || []).filter((item) => (group === 'all' || item.group === group)
@@ -90,7 +91,7 @@ export default function ApiInspector({ apiBase }) {
   }, [resource, values, limit, apiBase]);
   const rows = inspectorRows(response);
   const columns = inspectorColumns(rows);
-  const pagination = inspectorPagination(response);
+  const pagination = inspectorPagination(response, resource);
   const success = response && response.statusCode >= 200 && response.statusCode < 300 && String(response.body.code) === '1';
   const resultJson = response ? JSON.stringify(response.body, null, 2) : '';
   const actualAddress = response && resource ? inspectorRequestAddress(resource, response.requestQuery, { apiBase, origin: globalThis.location?.origin }) : null;
@@ -223,7 +224,7 @@ export default function ApiInspector({ apiBase }) {
       {catalog?.enabled === false && <p className="api-inspector-api-disabled" role="status">Dịch vụ API công khai đang tắt trên máy chủ. Cần bật dịch vụ và có tài khoản API được cấp trước khi đăng nhập.</p>}
       {authError && <div className="api-inspector-error" role="alert"><AlertCircle size={18} aria-hidden="true" /><p>{authStatus && <strong>HTTP {authStatus} · </strong>}{authError}</p></div>}
       {authNotice && <p className="api-inspector-auth-notice" role="status">{authStatus && <strong>HTTP {authStatus} · </strong>}{authNotice}</p>}
-    </section> : <div className="api-inspector-notice"><Database size={18} aria-hidden="true" /><p>Dùng quyền quản trị dashboard để đọc dữ liệu nội bộ. Chọn “Tài khoản API” để thử đăng nhập và gọi API thực tế.</p></div>}
+    </section> : <div className="api-inspector-notice"><Database size={18} aria-hidden="true" /><p>Dùng quyền quản trị dashboard để {catalog ? liveRead ? 'truy vấn trực tiếp SmartTOS' : 'đọc kho dữ liệu đã công bố' : 'kiểm tra dữ liệu nội bộ'}. Chọn “Tài khoản API” để thử đăng nhập và gọi API thực tế.</p></div>}
     {catalogLoading && <p className="api-inspector-empty" role="status">Đang tải danh sách API…</p>}
     {catalogError && <div className="api-inspector-error" role="alert"><AlertCircle size={18} aria-hidden="true" /><p>{catalogError}</p></div>}
     {catalog && <div className="api-inspector-layout">
@@ -232,17 +233,23 @@ export default function ApiInspector({ apiBase }) {
         <label htmlFor={`${prefix}-group`}>Nhóm API</label><select id={`${prefix}-group`} value={group} onChange={(event) => setGroup(event.target.value)}><option value="all">Tất cả nhóm</option>{Object.entries(INSPECTOR_GROUPS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select>
         <p className="api-inspector-catalog-count">{filteredResources.length}/{catalog.resources.length} API</p>
         <nav className="api-inspector-list" aria-label="Chọn API để kiểm tra">{filteredResources.map((item) => <button className="api-inspector-resource" type="button" key={item.id} aria-pressed={item.id === selectedId} onClick={() => selectResource(item)}>
-          <span className="api-inspector-resource-title">{item.label}</span><code>{item.path}</code><small className={item.status === 'published' ? 'is-published' : ''}>{item.status === 'published' ? 'Có bản công bố' : 'Chưa công bố'}</small>
+          <span className="api-inspector-resource-title">{item.label}</span><code>{item.path}</code><small className={item.status === 'published' || item.status === 'live' ? 'is-published' : ''}>{inspectorStatusLabel(item)}</small>
         </button>)}</nav>
         {!filteredResources.length && <p className="api-inspector-empty">Không có API phù hợp.</p>}
       </aside>
       <div className="api-inspector-workspace">
         {resource ? <>
           <section className="api-inspector-card" aria-labelledby={`${prefix}-resource-title`}>
-            <div className="api-inspector-resource-heading"><div><p className="api-inspector-eyebrow">{INSPECTOR_GROUPS[resource.group]}</p><h2 id={`${prefix}-resource-title`}>{resource.label}</h2></div><span className={`api-inspector-badge ${resource.status === 'published' ? 'is-published' : ''}`}>{resource.status === 'published' ? 'Có bản công bố' : 'Chưa công bố'}</span></div>
+            <div className="api-inspector-resource-heading"><div><p className="api-inspector-eyebrow">{INSPECTOR_GROUPS[resource.group]}</p><h2 id={`${prefix}-resource-title`}>{resource.label}</h2></div><span className={`api-inspector-badge ${resource.status === 'published' || resource.status === 'live' ? 'is-published' : ''}`}>{inspectorStatusLabel(resource)}</span></div>
             <div className="api-inspector-path"><strong>GET</strong><code>{resource.path}</code></div>
-            <div className="api-inspector-source"><span>Đọc nguồn: {resource.sourceReadAt ? formatTimestamp(resource.sourceReadAt) : 'Chưa có thông tin'}</span><span>{resource.rowCount != null ? `${formatNumber(resource.rowCount, 0)} dòng trong bản công bố` : 'Chưa có số dòng công bố'}</span></div>
-            <p className="api-inspector-help">Có bản công bố không đồng nghĩa dữ liệu còn mới. Kết quả kiểm tra bên dưới sẽ hiển thị trạng thái thực tế.</p>
+            {liveRead ? <>
+              <div className="api-inspector-source"><span>Nguồn dữ liệu: SmartTOS</span><span>Không cần nạp dữ liệu trước</span></div>
+              <p className="api-inspector-help">Mỗi lần gọi API sẽ truy vấn lại SmartTOS. Thời điểm đọc nguồn hiển thị cùng kết quả bên dưới.</p>
+            </> : <>
+              <div className="api-inspector-source"><span>Đọc nguồn: {resource.sourceReadAt ? formatTimestamp(resource.sourceReadAt) : 'Chưa có thông tin'}</span><span>{resource.rowCount != null ? `${formatNumber(resource.rowCount, 0)} dòng trong bản công bố` : 'Chưa có số dòng công bố'}</span></div>
+              <p className="api-inspector-help">Có bản công bố không đồng nghĩa dữ liệu còn mới. Kết quả kiểm tra bên dưới sẽ hiển thị trạng thái thực tế.</p>
+            </>}
+            {liveRead && resource.group === 'production' && <p className="api-inspector-help">Mỗi lần truy vấn sản lượng tối đa {INSPECTOR_LIVE_MAX_DAYS} ngày. Với kỳ dài, hãy kiểm tra lần lượt từng tháng.</p>}
             <form className="api-inspector-form" onSubmit={(event) => { event.preventDefault(); inspect(); }}>
               <label>Đơn vị<input value={catalog.companyId} readOnly /></label>
               {inspectorFields(resource).map((field) => <label key={field.name} htmlFor={`${prefix}-field-${field.name}`}>{field.label}{field.required && <span className="sr-only"> (bắt buộc)</span>}<input id={`${prefix}-field-${field.name}`} type={field.type} value={values[field.name] || ''} required={field.required} maxLength={field.type === 'text' ? 255 : undefined} onChange={(event) => updateField(field.name, event.target.value)} /></label>)}
@@ -252,7 +259,7 @@ export default function ApiInspector({ apiBase }) {
             {mode === 'api' && !apiSession && <p className="api-inspector-help">Đăng nhập API ở phía trên để chạy kiểm tra.</p>}
             {resource.group === 'operations' && <p className="api-inspector-help">Khoảng ngày lọc ngày tạo hoặc ngày sửa danh mục, không phải ngày sản lượng.</p>}
             {resource.id === 'customers' && <p className="api-inspector-help">Khoảng ngày lọc ngày tạo khách hàng, không phải ngày sản lượng.</p>}
-            {Array.isArray(resource.coverage) && resource.coverage.some((range) => Array.isArray(range) && dateInput(range[0]) && dateInput(range[1])) && <details className="api-inspector-coverage"><summary>Các kỳ có dữ liệu công bố</summary><ul>{resource.coverage.filter((range) => Array.isArray(range) && dateInput(range[0]) && dateInput(range[1])).map((range, index) => <li key={`${range.join('-')}/${index}`}>{dateInput(range[0]).split('-').reverse().join('/')} – {dateInput(range[1]).split('-').reverse().join('/')}</li>)}</ul></details>}
+            {!liveRead && Array.isArray(resource.coverage) && resource.coverage.some((range) => Array.isArray(range) && dateInput(range[0]) && dateInput(range[1])) && <details className="api-inspector-coverage"><summary>Các kỳ có dữ liệu công bố</summary><ul>{resource.coverage.filter((range) => Array.isArray(range) && dateInput(range[0]) && dateInput(range[1])).map((range, index) => <li key={`${range.join('-')}/${index}`}>{dateInput(range[0]).split('-').reverse().join('/')} – {dateInput(range[1]).split('-').reverse().join('/')}</li>)}</ul></details>}
             <div className="api-inspector-request"><div><span>Đường dẫn yêu cầu</span><button type="button" className="api-inspector-copy" disabled={!preview} onClick={() => copyText(preview, 'đường dẫn yêu cầu')}><Copy size={14} aria-hidden="true" />Sao chép URL</button></div><code tabIndex={0}>{preview || 'Nhập đủ tham số hợp lệ để xem đường dẫn.'}</code></div>
           </section>
 
@@ -269,8 +276,9 @@ export default function ApiInspector({ apiBase }) {
                 {rows.length && columns.length ? <div className="api-inspector-table-scroll" role="region" aria-label="Dữ liệu API trả về" tabIndex={0}><table><caption className="sr-only">{resource.label}: dữ liệu trên trang hiện tại</caption><thead><tr>{columns.map((column) => <th scope="col" key={column}>{column}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={index}>{columns.map((column) => <td key={column}>{inspectorCell(row?.[column])}</td>)}</tr>)}</tbody></table></div> : <p className="api-inspector-empty">{success ? rows.length ? 'Dữ liệu không có cấu trúc bảng. Hãy xem JSON.' : 'Không có bản ghi phù hợp với yêu cầu.' : response.body.message || 'API chưa trả dữ liệu để hiển thị.'}</p>}
               </div>
               <div id={`${prefix}-json-panel`} role="tabpanel" aria-labelledby={`${prefix}-json-tab`} hidden={tab !== 'json'}><pre className="api-inspector-json" tabIndex={0} aria-label="JSON trả về"><code>{resultJson}</code></pre></div>
-              <div className="api-inspector-pagination"><span>{pagination.total !== null ? `${formatNumber(rows.length, 0)}/${formatNumber(pagination.total, 0)} dòng` : `${formatNumber(rows.length, 0)} dòng trên trang`}{pagination.valid && ` · Trang ${pagination.page}/${pagination.pages}`}</span><div><button type="button" className="button" disabled={busy || !canInspect || !pagination.valid || pagination.page <= 1} onClick={() => inspect(pagination.page - 1, pagination.snapshotId)}><ArrowLeft size={14} aria-hidden="true" />Trước</button><button type="button" className="button" disabled={busy || !canInspect || !pagination.hasNext} onClick={() => inspect(pagination.page + 1, pagination.snapshotId)}>Sau<ArrowRight size={14} aria-hidden="true" /></button></div></div>
-              {success && !pagination.valid && <p className="api-inspector-help">Phản hồi chưa đủ thông tin phân trang hoặc phiên dữ liệu. Chạy lại từ trang đầu để tiếp tục kiểm tra.</p>}
+              <div className="api-inspector-pagination"><span>{pagination.total !== null ? `${formatNumber(rows.length, 0)}/${formatNumber(pagination.total, 0)} dòng` : `${formatNumber(rows.length, 0)} dòng trên trang`}{pagination.valid && ` · Trang ${pagination.page}/${pagination.pages}`}</span><div><button type="button" className="button" disabled={busy || !canInspect || !pagination.valid || pagination.page <= 1} onClick={() => inspect(pagination.page - 1, liveRead ? undefined : pagination.snapshotId)}><ArrowLeft size={14} aria-hidden="true" />Trước</button><button type="button" className="button" disabled={busy || !canInspect || !pagination.hasNext} onClick={() => inspect(pagination.page + 1, liveRead ? undefined : pagination.snapshotId)}>Sau<ArrowRight size={14} aria-hidden="true" /></button></div></div>
+              {success && liveRead && pagination.pages > 1 && <p className="api-inspector-help">Mỗi trang đọc lại nguồn; dữ liệu có thể thay đổi giữa các lần chuyển trang.</p>}
+              {success && !pagination.valid && <p className="api-inspector-help">{liveRead ? 'Phản hồi chưa đủ thông tin phân trang.' : 'Phản hồi chưa đủ thông tin phân trang hoặc phiên dữ liệu.'} Chạy lại từ trang đầu để tiếp tục kiểm tra.</p>}
               {sourceReadAt && <p className="api-inspector-help">Thời điểm đọc nguồn trong phản hồi: {formatTimestamp(sourceReadAt)}</p>}
               <details className="api-inspector-response-meta"><summary>Thông tin yêu cầu và phân trang</summary><code className="api-inspector-actual-url">GET {actualAddress}</code><dl>{INSPECTOR_HEADERS.map((header) => { const value = inspectorHeader(response.headers, header); return value === null ? null : <div key={header}><dt>{header}</dt><dd>{value}</dd></div>; })}</dl></details>
             </>}

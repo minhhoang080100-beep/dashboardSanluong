@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   buildInspectorQuery, dateInput, dateQuery, initialInspectorValues, inspectorCell,
-  inspectorColumns, inspectorHeader, inspectorPagination, inspectorRequestAddress,
+  inspectorColumns, inspectorHeader, inspectorPagination, inspectorRequestAddress, inspectorStatusLabel,
   validateInspection, validateInspectorCatalog,
 } from './api-inspector.js';
 
@@ -30,6 +30,12 @@ test('date defaults use latest valid coverage or the current month in Vietnam', 
   assert.deepEqual(initialInspectorValues(resource, new Date('2026-08-31T18:00:00Z')), { startDate: '2026-09-01', endDate: '2026-09-01' });
 });
 
+test('live resources start in the current Vietnam month instead of stale published coverage', () => {
+  const live = { ...resource, status: 'live', coverage: [['20260101', '20261231']] };
+  assert.deepEqual(initialInspectorValues(live, new Date('2026-09-29T08:00:00Z')), { startDate: '2026-09-01', endDate: '2026-09-29' });
+  assert.deepEqual(initialInspectorValues(live, new Date('2026-09-30T18:00:00Z')), { startDate: '2026-10-01', endDate: '2026-10-01' });
+});
+
 test('query uses only declared filters and a fixed company without leaking unrelated fields', () => {
   assert.deepEqual(buildInspectorQuery(resource, { ...values, password: 'never-copy', companyId: 'OTHER', unknown: 'ignore' }), query);
   const withCompany = { ...resource, filters: [{ name: 'companyId', label: 'Company', type: 'text', required: true }, ...fields] };
@@ -47,6 +53,32 @@ test('pagination requires the previously returned snapshot and approved page siz
   assert.equal(buildInspectorQuery(resource, values).snapshotId, undefined);
 });
 
+test('live page requests use page and limit only, discarding any snapshot from an earlier read', () => {
+  const live = { ...resource, status: 'live' };
+  assert.deepEqual(buildInspectorQuery(live, values, { page: 2 }), { ...query, page: '2' });
+  for (const oldSnapshot of [snapshot, 'expired-or-invalid']) {
+    assert.deepEqual(buildInspectorQuery(live, values, { page: 2, snapshotId: oldSnapshot }), { ...query, page: '2' });
+    assert.equal(buildInspectorQuery(live, { ...values, snapshotId: oldSnapshot }, { snapshotId: oldSnapshot }).snapshotId, undefined);
+  }
+  assert.throws(() => buildInspectorQuery(live, values, { page: 0 }), /phân trang/);
+  assert.throws(() => buildInspectorQuery(live, values, { limit: 200 }), /phân trang/);
+});
+
+test('live production limits each inclusive date range to 31 days without changing input filters', () => {
+  const live = { ...resource, status: 'live', group: 'production' };
+  const month = { startDate: '2026-01-01', endDate: '2026-01-31' };
+  assert.equal(buildInspectorQuery(live, month).endDate, '20260131');
+  assert.equal(buildInspectorQuery(live, { startDate: '2024-02-01', endDate: '2024-03-02' }).endDate, '20240302');
+  const year = { startDate: '2026-01-01', endDate: '2026-09-29' };
+  assert.throws(() => buildInspectorQuery(live, year), /tối đa 31 ngày/);
+  assert.deepEqual(year, { startDate: '2026-01-01', endDate: '2026-09-29' });
+  assert.throws(() => buildInspectorQuery(live, { ...month, endDate: '2026-02-01' }), /tối đa 31 ngày/);
+  assert.throws(() => buildInspectorQuery(live, { startDate: '2024-02-01', endDate: '2024-03-03' }), /tối đa 31 ngày/);
+  for (const unrestricted of [{ ...resource, status: 'live' }, { ...resource, group: 'production' }, { ...live, group: 'catalog_s' }]) {
+    assert.equal(buildInspectorQuery(unrestricted, year).endDate, '20260929');
+  }
+});
+
 test('pagination is case insensitive and stops on inconsistent or changed snapshots', () => {
   const page = inspectorPagination(response());
   assert.equal(page.valid, true); assert.equal(page.hasNext, true); assert.equal(page.pages, 2);
@@ -57,6 +89,27 @@ test('pagination is case insensitive and stops on inconsistent or changed snapsh
   assert.equal(inspectorPagination({ ...next, headers: { ...next.headers, 'X-Snapshot-Id': 'short' } }).valid, false);
   assert.equal(inspectorPagination({ ...next, headers: { ...next.headers, 'X-Has-Next': 'true' } }).valid, false);
   assert.equal(inspectorPagination({ ...next, statusCode: 503 }).hasNext, false);
+});
+
+test('live pagination works without snapshots only when the selected resource uses the live reader', () => {
+  const live = { ...resource, status: 'live' };
+  const first = response({ headers: { 'X-Page': '1', 'X-Limit': '20', 'X-Total-Count': '21', 'X-Has-Next': 'true', 'X-Source-Read-At': '2026-09-29T01:00:00Z' } });
+  assert.equal(inspectorPagination(first, live).valid, true);
+  assert.equal(inspectorPagination(first, live).hasNext, true);
+  assert.equal(inspectorPagination(first, live).snapshotId, null);
+  assert.equal(inspectorPagination(first, resource).valid, false);
+  assert.equal(inspectorPagination(first).valid, false);
+  const next = response({ requestQuery: { ...query, page: '2' }, headers: { 'X-Page': '2', 'X-Limit': '20', 'X-Total-Count': '22', 'X-Has-Next': 'false', 'X-Source-Read-At': '2026-09-29T01:01:00Z' } });
+  assert.equal(inspectorPagination(next, live).valid, true);
+  assert.equal(inspectorPagination(next, live).hasNext, false);
+  assert.equal(inspectorPagination(next, live).total, 22);
+  for (const changed of [
+    { ...next, headers: { ...next.headers, 'X-Page': '1' } },
+    { ...next, headers: { ...next.headers, 'X-Limit': '50' } },
+    { ...next, headers: { ...next.headers, 'X-Has-Next': 'true' } },
+    { ...next, headers: { ...next.headers, 'X-Total-Count': undefined } },
+    { ...next, statusCode: 503 },
+  ]) assert.equal(inspectorPagination(changed, live).valid, false);
 });
 
 test('empty success remains distinct from blocked or malformed API results', () => {
@@ -79,6 +132,19 @@ test('catalog permits only GET API paths and known groups without duplicate IDs 
     assert.throws(() => validateInspectorCatalog({ ...catalog, resources: [changed] }), /chưa hợp lệ/);
   }
   assert.throws(() => validateInspectorCatalog({ ...catalog, resources: [resource, resource] }), /chưa hợp lệ/);
+});
+
+test('catalog recognizes live reads while preserving the existing published contract and labels', () => {
+  const live = { ...resource, status: 'live', coverage: undefined };
+  const catalog = { enabled: true, companyId: 'CNT', mode: 'internal', readMode: 'live', resources: [live] };
+  assert.equal(validateInspectorCatalog(catalog), catalog);
+  assert.equal(inspectorStatusLabel(live), 'Truy vấn SmartTOS');
+  assert.equal(inspectorStatusLabel(resource), 'Có bản công bố');
+  assert.equal(inspectorStatusLabel({ ...resource, status: 'not_published' }), 'Chưa công bố');
+  assert.equal(validateInspectorCatalog({ ...catalog, readMode: 'published', resources: [resource] }).resources[0], resource);
+  for (const changed of [{ ...catalog, readMode: 'unknown' }, { ...catalog, readMode: undefined }, { ...catalog, resources: [resource] }]) {
+    assert.throws(() => validateInspectorCatalog(changed), /chưa hợp lệ/);
+  }
 });
 
 test('copied URL uses configured API host and public path without credentials', () => {

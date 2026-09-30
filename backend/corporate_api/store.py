@@ -114,6 +114,12 @@ class ExportStore:
         if self.path in forbidden:
             raise ValueError('Export and authentication stores must use separate files.')
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._initialize_schema()
+        if os.name != 'nt':
+            self.path.chmod(0o600)
+
+    def _initialize_schema(self):
+        """Share the validated indexing schema with short-lived memory readers."""
         with self.db() as db:
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS export_versions (
@@ -190,9 +196,6 @@ class ExportStore:
                                (created, version['snapshot_id'], row['seq']))
                 db.execute('UPDATE export_versions SET customer_date_basis=? WHERE snapshot_id=?',
                            (CUSTOMER_DATE_BASIS, version['snapshot_id']))
-        if os.name != 'nt':
-            self.path.chmod(0o600)
-
     @contextmanager
     def db(self):
         existing = getattr(self._local, 'connection', None)
