@@ -108,8 +108,8 @@ Các lỗi còn lại được phân biệt để xử lý đúng nguyên nhân:
 
 - `SOURCE_MAPPING_REQUIRED`: cấu hình sản lượng còn thiếu cơ sở ngày hoặc cách
   chọn tác nghiệp; dừng trước khi truy vấn SQL.
-- `SOURCE_NULL_POLICY_REQUIRED`: còn trường thiếu nguồn và chưa được bên nhận
-  xác nhận cho phép để trống.
+- `SOURCE_NULL_POLICY_REQUIRED`: còn trường thiếu nguồn và profile chưa cho phép
+  để trống. Quyết định cho phép thử API không thay thế xác nhận của bên nhận.
 - `SOURCE_ID_CONFLICT`: ID gốc trùng nhưng khác nội dung giữa hai database.
 - Các lỗi đơn vị, khối lượng và quan hệ kích cỡ container giữ mã riêng, không
   gộp thành thông báo chung hoặc trả dữ liệu thiếu như một kết quả đầy đủ.
@@ -118,3 +118,57 @@ Chuyển chế độ đọc không đồng nghĩa cả 32 API đã đủ dữ li
 cần hoàn thiện các ánh xạ còn thiếu; không tự duyệt trường null hoặc đổi ID nguồn.
 263 kiểm thử backend liên quan đến live, HTTP, inspector, nguồn sản lượng và
 danh mục đã đạt sau thay đổi này.
+
+## Bổ sung xử lý truy vấn và mã container
+
+Theo xác nhận của chủ dashboard ngày 30/09/2026, chế độ
+`container_size_source: "native_cargo"` dùng chính `Cargo.cargoId` và mã hàng
+container báo cáo (`20F`, `40F`, `20E`, `40E`, các mã đã hỗ trợ) làm ID và
+`localSzTp`. Không gán chúng vào một mã ISO bất kỳ. `isoSzTp`, `heightCode`,
+`containerTypeCode` giữ null. Chế độ `native_domestic` vẫn giữ yêu cầu quan hệ
+đã xác minh tới `vwContainerSizeTypeDomestic` khi được chọn.
+
+Profile có thể cho phép các trường nullable về nguồn gốc/chủ khai thác/đại lý
+để kiểm tra API theo xác nhận này. Tấn, TEU, ngày, mã bắt buộc và các tham chiếu
+có giá trị vẫn được kiểm tra. Đây chưa phải xác nhận Tổng công ty chấp nhận
+trường thiếu, và không cho phép thay khối lượng chưa có bằng 0.
+
+`quay_selection: "source_statistics"` dùng nhóm thống kê
+`SANLUONG-QUACANG` cùng hướng xếp/dỡ từ SmartTOS, không cần duy trì một danh
+sách ID phương án trùng lặp trong profile. Phân loại theo nhóm hàng có thể
+cấu hình bằng `cargo_kind_by_group`; ánh xạ từng mặt hàng được ưu tiên hơn.
+Mặt hàng chưa phân loại vẫn bị chặn, không tự gán tất cả vào hàng rời.
+
+Các thay đổi giảm công việc SQL cho mỗi yêu cầu:
+
+- Chỉ trích xuất endpoint sản lượng được yêu cầu. API hàng rời không đọc
+  danh mục kích cỡ container.
+- Đọc phiếu và cầu ban đầu bằng hai SELECT riêng rồi ghép theo mã chuyến.
+  Chỉ xét các chuyến phát sinh trong kỳ, nhưng lịch sử cầu của mỗi chuyến
+  vẫn không bị cắt theo ngày báo cáo.
+- Đọc danh mục theo các ID thực sự được tham chiếu tại từng xí nghiệp, kiểm tra
+  đúng nguồn và toàn bộ quan hệ nhóm hàng cha. Bản ghi cùng ID ở nguồn không
+  phát sinh không chặn kết quả. Nếu cả hai nguồn thực sự dùng cùng ID nhưng
+  khác nội dung nghiệp vụ thì vẫn chặn; thiếu ID không được lấy nguồn khác bù.
+- Tái sử dụng kết nối SQL trong một yêu cầu và đóng khi yêu cầu kết thúc.
+  Mỗi SELECT vẫn đọc mới; không giữ kết quả cho yêu cầu tiếp theo.
+
+Đối chiếu trực tiếp ngày 16/09: 288 phiếu container tại Cửa Lò liên quan 9
+`cargoManifestId`, nhưng không có chi tiết tương ứng trong `ContainerManifest`.
+Không dùng quan hệ này để tự gán mã ISO hoặc phân bổ khối lượng phiếu.
+
+Phiếu container chưa có hoạt động được loại khi số lượng bằng 0 và khối lượng
+nguồn bằng 0; nếu khối lượng null thì còn phải có đơn vị CONT. Phiếu có số lượng
+dương nhưng thiếu khối lượng vẫn bị chặn. Bộ đếm loại bỏ chỉ nằm trong chẩn đoán
+nội bộ. Sản lượng chưa xác định được cầu đầu tiên không được gán vào Cảng Nghệ
+Tĩnh; quy tắc chọn cầu đầu tiên và loại Cầu 5 được giữ nguyên.
+
+Bản ứng viên đã đọc SQL thật từ Railway qua đầy đủ bộ đọc live: container qua
+cầu tháng 09/2026 trả 118 dòng tổng hợp; ngày 16/09 có 10 dòng container qua cầu,
+8 dòng hàng rời qua cầu và 9 dòng hàng rời qua cổng/bãi. Thời gian từng yêu cầu
+khoảng 14–17 giây. Đây là kiểm tra trước triển khai, chưa phải xác nhận HTTP của
+service sau cập nhật. 446 kiểm thử liên quan đạt sau các thay đổi cuối cùng.
+
+Không suy ra mọi API hoặc mọi kỳ đều sẵn sàng: danh mục đầy đủ vẫn có thể vướng
+ID trùng khác đối tượng; container qua cổng/bãi tháng 9 còn phiếu có số lượng
+dương nhưng chưa có khối lượng/kích cỡ xác định. Không tự điền các giá trị này.

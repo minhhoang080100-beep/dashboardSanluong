@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from backend.corporate_api.contracts import Query
+from backend.corporate_api.contracts import Query, IDENTITY
 from backend.corporate_api.errors import CorporateError
 from backend.corporate_api.live import LiveReader
 from backend.corporate_api.manage_exports import FORMAT, extract, profile_digest
@@ -27,14 +27,22 @@ class Source:
             {**MASTER, 'originId': str(number), 'originName': f'Origin {number}'}
             for number in (1, 2, 3)]}
         self.calls = []
+        self.scopes = []
         self.blocked = set()
 
-    def __call__(self, profile, start, end, resources):
+    def __call__(self, profile, start, end, resources, *, reference_scope=None):
         self.calls.append(tuple(resources))
+        self.scopes.append(deepcopy(reference_scope))
+        def rows(name):
+            result = deepcopy(self.rows[name])
+            if reference_scope is not None:
+                requested = set().union(*map(set, reference_scope[name].values()))
+                result = [row for row in result if row[IDENTITY[name]] in requested]
+            return result
         return {'format': FORMAT, 'companyId': 'CNT', 'profileDigest': profile_digest(profile),
                 'sourceReadAt': datetime.now(timezone.utc).isoformat(),
                 'startDate': start.strftime('%Y%m%d'), 'endDate': end.strftime('%Y%m%d'),
-                'datasets': {name: {'rows': deepcopy(self.rows[name]),
+                'datasets': {name: {'rows': rows(name),
                     'ready': name not in self.blocked,
                     'blockers': ['SOURCE_ID_CONFLICT'] if name in self.blocked else [],
                     'warnings': [], 'coverage': [[start.strftime('%Y%m%d'), end.strftime('%Y%m%d')]]}
@@ -183,6 +191,8 @@ def test_production_rejects_more_than_31_days_before_extraction(reader, source):
     ('bulkGateVolumesCB', {'production_scope': None}),
     ('bulkGateVolumesCB', {'production_scope': ['private-invalid-value']}),
     ('bulkGateVolumesCB', {'gate_selection': ['private-invalid-value']}),
+    ('bulkQuayVolumesCB', {'quay_selection': ['private-invalid-value']}),
+    ('bulkQuayVolumesCB', {'quay_selection': 'unknown'}),
     ('bulkQuayVolumesCB', {}),
     ('contQuayVolumesCB', {'quay_method_ids': {'cua_lo': [1]}}),
     ('bulkQuayVolumesCB', {'quay_method_ids': {'cua_lo': [1], 'ben_thuy': []}}),
@@ -206,6 +216,8 @@ def test_incomplete_production_mapping_fails_before_slot_or_source(resource, cha
     ('contGateVolumesCB', {}),
     ('bulkQuayVolumesCB', {'quay_method_ids': {'cua_lo': [1], 'ben_thuy': [2]}}),
     ('contQuayVolumesCB', {'quay_method_ids': {'cua_lo': [1], 'ben_thuy': [2]}}),
+    ('bulkQuayVolumesCB', {'quay_selection': 'source_statistics'}),
+    ('contQuayVolumesCB', {'quay_selection': 'source_statistics'}),
     ('bulkGateVolumesCB', {'gate_selection': 'methods',
                            'gate_method_ids': {'cua_lo': [1], 'ben_thuy': [2]}}),
 ])
@@ -220,7 +232,7 @@ def test_production_preflight_accepts_endpoint_specific_selection(resource, meth
 
 
 def bulk_source():
-    return Source({
+    rows = {
         'bulkGateVolumesCB': [{'reportDate': '20260929', 'finishDate': '20260916', 'companyId': 'CNT',
             'cargoTypeId': '10', 'cargoCategoryId': '20', 'handlingMethodId': '30',
             'bulkOriginId': None, 'bulkWeight': 12.5, 'customerCode': None}],
@@ -228,7 +240,11 @@ def bulk_source():
                            'cargoId': '20', 'cargoName': 'Native cargo'}],
         'cargoType': [{**MASTER, 'cargoTypeId': '10', 'cargoTypeName': 'Native group'}],
         'handlingMethodList': [{**MASTER, 'handlingMethodId': '30', 'handlingMethodName': 'Native method'}],
-    })
+    }
+    for data in rows.values():
+        for row in data:
+            row['_sourceTerminals'] = ['cua_lo']
+    return Source(rows)
 
 
 def test_production_resolves_actual_dependencies_only_and_enforces_null_policy():
@@ -241,6 +257,11 @@ def test_production_resolves_actual_dependencies_only_and_enforces_null_policy()
         assert {name for call in source.calls for name in call} == {
             'bulkGateVolumesCB', 'cargoCategory', 'cargoType', 'handlingMethodList'}
         assert len(source.calls) == 2
+        assert source.scopes[1] == {
+            'cargoCategory': {'cua_lo': ['20'], 'ben_thuy': []},
+            'cargoType': {'cua_lo': ['10'], 'ben_thuy': []},
+            'handlingMethodList': {'cua_lo': ['30'], 'ben_thuy': []}}
+        assert not any(key.startswith('_') for row in result['data'] for key in row)
     finally:
         reader.close()
     source.calls.clear()
@@ -274,13 +295,112 @@ def test_missing_dependency_reference_and_conflict_never_return_partial_success(
     source.rows['cargoType'][0]['cargoTypeId'] = '999'
     reader = LiveReader(profile=profile, extract_fn=source)
     try:
-        assert_error('SOURCE_DATA_NOT_READY', lambda: reader.read(
+        assert_error('SOURCE_REFERENCE_NOT_FOUND', lambda: reader.read(
             'bulkGateVolumesCB', q(startDate='20260901', endDate='20260930')), 503)
         source.blocked.add('cargoCategory')
         assert_error('SOURCE_ID_CONFLICT', lambda: reader.read(
             'bulkGateVolumesCB', q(startDate='20260901', endDate='20260930')), 503)
     finally:
         reader.close()
+
+
+def production_reader(source, **kwargs):
+    profile = {**PRODUCTION_PROFILE,
+               'accepted_null_fields': {'bulkGateVolumesCB': ['bulkOriginId', 'customerCode']}}
+    return LiveReader(profile=profile, extract_fn=source, **kwargs)
+
+
+def read_bulk(reader):
+    return reader.read('bulkGateVolumesCB', q(startDate='20260901', endDate='20260930'))
+
+
+@pytest.mark.parametrize('provenance', [None, [], ['unknown'], ['cua_lo', 'cua_lo'], ['cua_lo', 1]])
+def test_production_without_valid_provenance_cannot_use_union_catalogs(provenance):
+    source = bulk_source()
+    source.rows['bulkGateVolumesCB'][0]['_sourceTerminals'] = provenance
+    reader = production_reader(source)
+    assert_error('SOURCE_DATA_NOT_READY', lambda: read_bulk(reader), 503)
+    assert source.calls == [('bulkGateVolumesCB',)]
+
+
+def test_used_id_found_only_in_other_database_does_not_resolve_the_reference():
+    source = bulk_source()
+    source.rows['cargoType'][0]['_sourceTerminals'] = ['ben_thuy']
+    reader = production_reader(source)
+    assert_error('SOURCE_REFERENCE_NOT_FOUND', lambda: read_bulk(reader), 503)
+    assert len(source.calls) == 2
+
+
+def test_aggregated_production_requires_reference_in_every_contributing_source():
+    source = bulk_source()
+    source.rows['bulkGateVolumesCB'][0]['_sourceTerminals'] = ['cua_lo', 'ben_thuy']
+    for resource in ('cargoType', 'handlingMethodList'):
+        source.rows[resource][0]['_sourceTerminals'] = ['cua_lo', 'ben_thuy']
+    reader = production_reader(source)
+    assert_error('SOURCE_REFERENCE_NOT_FOUND', lambda: read_bulk(reader), 503)
+    assert source.scopes[1]['cargoCategory'] == {'cua_lo': ['20'], 'ben_thuy': ['20']}
+    source.rows['cargoCategory'][0]['_sourceTerminals'] = ['cua_lo', 'ben_thuy']
+    assert read_bulk(reader)['data'][0]['bulkWeight'] == 12.5
+
+
+def test_catalog_provenance_is_required_even_when_its_id_matches():
+    source = bulk_source()
+    del source.rows['cargoType'][0]['_sourceTerminals']
+    assert_error('SOURCE_DATA_NOT_READY', lambda: read_bulk(production_reader(source)), 503)
+
+
+def test_cargo_parent_closure_adds_parent_and_its_own_type_dependencies():
+    source = bulk_source()
+    source.rows['cargoCategory'][0]['cargoParentId'] = '21'
+    source.rows['cargoCategory'].append({**MASTER, 'cargoId': '21', 'cargoName': 'Parent cargo',
+        'cargoTypeId': '11', 'cargoParentId': None, '_sourceTerminals': ['cua_lo']})
+    source.rows['cargoType'].append({**MASTER, 'cargoTypeId': '11', 'cargoTypeName': 'Parent type',
+                                    '_sourceTerminals': ['cua_lo']})
+    result = read_bulk(production_reader(source))
+    assert result['data'][0]['bulkWeight'] == 12.5
+    assert source.calls == [('bulkGateVolumesCB',),
+        ('cargoCategory', 'cargoType', 'handlingMethodList'), ('cargoCategory',), ('cargoType',)]
+    assert source.scopes[2] == {'cargoCategory': {'cua_lo': ['20', '21'], 'ben_thuy': []}}
+    assert source.scopes[3] == {'cargoType': {'cua_lo': ['10', '11'], 'ben_thuy': []}}
+    assert '_sourceTerminals' not in json.dumps(result)
+
+
+def test_catalog_presence_in_an_additional_source_grows_dependencies_for_that_source():
+    source = bulk_source()
+    source.rows['cargoCategory'][0]['_sourceTerminals'] = ['cua_lo', 'ben_thuy']
+    reader = production_reader(source)
+    assert_error('SOURCE_REFERENCE_NOT_FOUND', lambda: read_bulk(reader), 503)
+    assert source.scopes[-1] == {'cargoType': {'cua_lo': ['10'], 'ben_thuy': ['10']}}
+
+
+def test_cargo_parent_cycle_stops_before_store_allocation():
+    source = bulk_source()
+    source.rows['cargoCategory'][0]['cargoParentId'] = '21'
+    source.rows['cargoCategory'].append({**MASTER, 'cargoId': '21', 'cargoName': 'Parent cargo',
+        'cargoTypeId': '10', 'cargoParentId': '20', '_sourceTerminals': ['cua_lo']})
+    def forbidden_factory():
+        pytest.fail('Cyclic dependencies must fail before allocating a store')
+    reader = production_reader(source, store_factory=forbidden_factory)
+    assert_error('SOURCE_DATA_NOT_READY', lambda: read_bulk(reader), 503)
+    assert len(source.calls) == 3
+
+
+def test_reference_expansion_has_a_round_limit(monkeypatch):
+    source = bulk_source()
+    source.rows['cargoCategory'][0]['cargoParentId'] = '21'
+    source.rows['cargoCategory'].extend({**MASTER, 'cargoId': str(identity), 'cargoName': 'Parent cargo',
+        'cargoTypeId': '10', 'cargoParentId': str(identity + 1), '_sourceTerminals': ['cua_lo']}
+        for identity in range(21, 30))
+    monkeypatch.setattr('backend.corporate_api.live.MAX_REFERENCE_ROUNDS', 2)
+    assert_error('SOURCE_DATA_NOT_READY', lambda: read_bulk(production_reader(source)), 503)
+    assert len(source.calls) == 3  # one production read and two bounded catalog rounds
+
+
+def test_standalone_catalog_reads_are_not_narrowed_to_production_references():
+    source = bulk_source()
+    source.rows['cargoType'].append({**MASTER, 'cargoTypeId': '11', 'cargoTypeName': 'Unrelated type'})
+    result = LiveReader(profile=PROFILE, extract_fn=source).read('cargoType', q())
+    assert len(result['data']) == 2 and source.scopes == [None]
 
 
 def test_failed_contract_or_not_found_read_closes_request_store(source):
@@ -507,3 +627,21 @@ def test_manage_extract_passes_only_selected_s_catalogs(monkeypatch):
     result = extract(PROFILE, date(2026, 1, 1), date(2026, 9, 29), ['origins'])
     assert calls == [['origins']]
     assert list(result['datasets']) == ['origins']
+
+
+def test_manage_extract_forwards_internal_reference_scope_without_profile_changes(monkeypatch):
+    calls = []
+    def catalogs(query_fn, **kwargs):
+        calls.append(kwargs)
+        return {'origins': {'rows': [], 'ready': True, 'blockers': []}}
+    monkeypatch.setattr('backend.corporate_api.catalog_source.extract_catalogs', catalogs)
+    scope = {'origins': {'cua_lo': ['1'], 'ben_thuy': []}}
+    result = extract(PROFILE, date(2026, 9, 1), date(2026, 9, 30), ['origins'], reference_scope=scope)
+    assert calls[0]['reference_scope'] == scope and calls[0]['profile'] == PROFILE
+    assert result['profileDigest'] == profile_digest(PROFILE)
+
+
+@pytest.mark.parametrize('resource', ['bulkGateVolumesCB', 'oprt.cargoDirect'])
+def test_manage_extract_cannot_use_reference_scope_for_production_or_operation(resource):
+    with pytest.raises(ValueError, match='only available for S catalogs'):
+        extract(PROFILE, date(2026, 9, 1), date(2026, 9, 30), [resource], reference_scope={})

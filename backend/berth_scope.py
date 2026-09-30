@@ -29,10 +29,15 @@ def initial_berth_query(schema: str, terminal: str, *, selection="all") -> str:
     """
     if not isinstance(terminal, str) or _SCHEMAS.get(terminal) != schema:
         raise ValueError("Nguồn xí nghiệp không hợp lệ.")
-    if not isinstance(selection, str) or selection not in {"all", "voyage"}:
+    if not isinstance(selection, str) or selection not in {"all", "voyage", "period_voyages"}:
         raise ValueError("Phạm vi tra cứu cầu không hợp lệ.")
     # Restrict WHICH voyage needs attribution, never WHEN its first berth was.
     selected_voyage = "AND history.vesselVoyageId = ?" if selection == "voyage" else ""
+    if selection == "period_voyages":
+        # The caller supplies this fixed CTE from its active facts in the
+        # reporting period. Keep every historical berth for those voyages.
+        selected_voyage = """AND EXISTS (SELECT 1 FROM period_voyages selected
+                          WHERE selected.vesselVoyageId = history.vesselVoyageId)"""
     assigned = """first_event.missing_time = 0
         AND first_event.invalid_first = 0
         AND first_event.first_berth_min = first_event.first_berth_max"""

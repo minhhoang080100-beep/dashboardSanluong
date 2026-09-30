@@ -34,7 +34,7 @@ def profile_digest(profile):
                                      separators=(',', ':')).encode()).hexdigest()
 
 
-def extract(profile, start, end, resources, query_fn=query_source):
+def extract(profile, start, end, resources, query_fn=query_source, *, reference_scope=None):
     # Lazy imports keep account management and HTTP reads independent of pyodbc.
     from .catalog_source import extract_catalogs
     from .source import ProductionSource
@@ -42,18 +42,22 @@ def extract(profile, start, end, resources, query_fn=query_source):
         raise ValueError('Extract one to 31 inclusive calendar days at a time.')
     if not resources or set(resources) - set(MODELS):
         raise ValueError('Unknown or empty extraction resource selection.')
+    if reference_scope is not None and (set(resources) & PRODUCTION or set(resources) & set(OPERATION_MODELS)):
+        raise ValueError('Reference-scoped extraction is only available for S catalogs.')
     selected_terminals(profile)
     read_started = datetime.now(timezone.utc).isoformat()
     datasets = {}
     if set(resources) & (set(S_MODELS) - PRODUCTION):
         datasets.update(extract_catalogs(query_fn, profile=profile,
-                        resources=[key for key in resources if key in S_MODELS and key not in PRODUCTION]))
+                        resources=[key for key in resources if key in S_MODELS and key not in PRODUCTION],
+                        reference_scope=reference_scope))
     if set(resources) & set(OPERATION_MODELS):
         from .operation_source import extract_operation_catalogs
         datasets.update(extract_operation_catalogs(query_fn, profile=profile,
                          resources=[key for key in resources if key in OPERATION_MODELS]))
     if set(resources) & PRODUCTION:
-        datasets.update(ProductionSource(query_fn).extract(start, end, profile))
+        datasets.update(ProductionSource(query_fn).extract(start, end, profile,
+                        resources=[key for key in resources if key in PRODUCTION]))
     return {'format': FORMAT, 'companyId': 'CNT', 'profileDigest': profile_digest(profile),
             'sourceReadAt': read_started,
             'startDate': start.strftime('%Y%m%d'), 'endDate': end.strftime('%Y%m%d'),

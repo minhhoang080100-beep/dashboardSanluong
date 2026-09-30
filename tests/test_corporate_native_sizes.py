@@ -99,7 +99,8 @@ def test_production_native_size_requires_verified_relation(mapped_id, cargo_name
     catalogs = native_source()
     facts = Query([fact(cargo_name=cargo_name)])
     def query(database, sql, params):
-        if sql == SCHEMA_SQL or 't.tallyShiftId AS source_id' in sql:
+        if (sql == SCHEMA_SQL or 't.tallyShiftId AS source_id' in sql
+                or 'berth_scope.vesselVoyageId AS voyage_id' in sql):
             return facts(database, sql, params)
         return catalogs(database, sql, params)
     p = {**profile(), 'container_size_source': 'native_domestic',

@@ -17,7 +17,7 @@ from backend.corporate_api.router import router
 from backend.corporate_api.source import REQUIRED_COLUMNS, SCHEMA_SQL
 from backend.corporate_api.store import ExportStore
 from test_corporate_catalog_source import FakeQuery, approved_profile
-from test_corporate_source import fact
+from test_corporate_source import fact, berth_rows_for
 
 
 class FullSource(FakeQuery):
@@ -30,12 +30,14 @@ class FullSource(FakeQuery):
         if sql == SCHEMA_SQL:
             return [{'table_name': table, 'column_name': column}
                     for table, columns in REQUIRED_COLUMNS.items() for column in columns]
-        if 't.tallyShiftId AS source_id' in sql:
-            return [fact(source_id=index, cargo_id=cargo, cargo_name='20F' if cargo == 31 else 'Bulk',
+        if ('t.tallyShiftId AS source_id' in sql
+                or 'berth_scope.vesselVoyageId AS voyage_id' in sql):
+            rows = [fact(source_id=index, cargo_id=cargo, cargo_name='20F' if cargo == 31 else 'Bulk',
                          method_id=method, quay_eligible=int(method == 40), ship_id=10, customer_id=20,
                          native_weight=Decimal(weight))
                     for index, (cargo, method, weight) in enumerate(
                         [(31, 40, '1.125'), (30, 40, '2.250'), (31, 41, '3.125'), (30, 41, '4.250')], 1)]
+            return berth_rows_for(rows) if 'berth_scope.vesselVoyageId AS voyage_id' in sql else rows
         return super().__call__(database, sql, params)
 
 

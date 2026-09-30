@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation
 import re
 
 from .contracts import MODELS, IDENTITY
+from .errors import CorporateError
 
 SOURCES = {'cua_lo': 'SmartTOS', 'ben_thuy': 'SmartTOS_BenThuy'}
 RESOURCES = ('shipDetails', 'customers', 'cargoType', 'cargoCategory',
@@ -19,6 +20,7 @@ RESOURCES = ('shipDetails', 'customers', 'cargoType', 'cargoCategory',
 TABLES = ('Vessel', 'Partner', 'Cargo', 'JobMethod', 'CargoDirect', 'CargoOrigin', 'CargoGroup',
           'vwContainerSizeTypeDomestic')
 MAX_MASTER_ROWS = 100000
+REFERENCE_CHUNK_SIZE = 500
 INTEGER_TYPES = {'int', 'bigint', 'smallint', 'tinyint'}
 TEXT_TYPES = {'varchar', 'nvarchar', 'char', 'nchar'}
 DATE_TYPES = {'datetime', 'datetime2', 'smalldatetime', 'date', 'datetimeoffset'}
@@ -29,6 +31,12 @@ SHIP_NUMBERS = {'shipLOA', 'shipBeam', 'shipGRT', 'shipDWT'}
 CUSTOMER_OPTIONAL = {'customerNameEN', 'customerTaxCode', 'customerPhoneNum',
                      'customerAddress', 'customerEmail', 'isCarrier', 'isAgent', 'customerStatus'}
 VIETNAM_TIMEZONE = timezone(timedelta(hours=7))
+# Verified native reporting codes in Cargo group 1034 (both TOS databases).
+# These are local reporting size/status classes, not ISO equipment types.
+NATIVE_CARGO_SIZE_CODES = {'20F': '20', '20E': '20', '20R': '20',
+                         '40F': '40', '40E': '40', '40R': '40',
+                         '45F': '45', '45E': '45'}
+NATIVE_CONTAINER_CARGO_GROUP = 1034
 
 
 class SourceProblem(ValueError):
@@ -47,6 +55,93 @@ def source_id(terminal, native_id):
     return value
 
 
+def _reference_ids(values):
+    """Validate an internal native-ID scope before it reaches SQL."""
+    if (not isinstance(values, (list, tuple)) or len(values) > MAX_MASTER_ROWS
+            or any(not isinstance(value, str) for value in values)):
+        raise ValueError('Invalid native reference scope')
+    try:
+        normalized = tuple(source_id('cua_lo', value) for value in values)
+    except ValueError:
+        raise ValueError('Invalid native reference scope') from None
+    if len(set(normalized)) != len(normalized):
+        raise ValueError('Duplicate native reference identity')
+    return tuple(sorted(normalized, key=int))
+
+
+def _reference_scope(scope, selected):
+    if scope is None:
+        return None
+    if not isinstance(scope, dict) or set(scope) != set(selected):
+        raise ValueError('Invalid catalog reference scope')
+    result = {}
+    for resource, terminals in scope.items():
+        if not isinstance(terminals, dict) or set(terminals) != set(SOURCES):
+            raise ValueError('Invalid reference source terminals')
+        result[resource] = {terminal: _reference_ids(values)
+                            for terminal, values in terminals.items()}
+        combined = set().union(*map(set, result[resource].values()))
+        if not combined or len(combined) > MAX_MASTER_ROWS:
+            raise ValueError('Invalid catalog reference scope size')
+    return result
+
+
+def _with_provenance(row, other):
+    if '_sourceTerminals' not in row and '_sourceTerminals' not in other:
+        return row
+    return {**row, '_sourceTerminals': sorted(
+        set(row.get('_sourceTerminals', [])) | set(other.get('_sourceTerminals', [])))}
+
+
+def _merge_reference_rows(resource, left, right):
+    """Resolve metadata-only differences without changing business identity.
+
+    Allowed for private dependency checks and full S catalogs without date
+    filters. Full customers must stay strict because creation-date filtering
+    would lose a source variant when selecting one original metadata row.
+    All business fields and lifecycle flags remain strict. Select one original
+    row, retaining its entire timestamp pair and customer creation-date index.
+    """
+    ignored = {'createdDate', 'modifiedDate', 'reportDate', '_sourceTerminals'}
+    if resource == 'customers':
+        ignored.add('_createdDate')  # Derived from metadata.createdDate.
+
+    def business(row):
+        result = {key:value for key,value in row.items() if key not in ignored}
+        if resource == 'customers' and isinstance(result.get('metadata'), dict):
+            result['metadata'] = {key:value for key,value in result['metadata'].items()
+                                  if key not in {'createdDate','modifiedDate'}}
+        return result
+
+    def date_key(value):
+        if value is None:
+            return (0, '')
+        normalized = _timestamp(value)
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=VIETNAM_TIMEZONE)
+        # Compare instants without astimezone overflowing valid year boundaries.
+        local = ((parsed.toordinal()*86400 + parsed.hour*3600 + parsed.minute*60
+                  + parsed.second)*1000000 + parsed.microsecond)
+        offset = parsed.utcoffset()
+        instant = local - ((offset.days*86400 + offset.seconds)*1000000 + offset.microseconds)
+        return (instant, normalized)
+
+    def original_key(row):
+        metadata = row['metadata'] if resource == 'customers' else row
+        created, modified = metadata.get('createdDate'), metadata.get('modifiedDate')
+        # Validate both source timestamps even if only one determines ordering.
+        created_key, modified_key = date_key(created), date_key(modified)
+        return (modified_key if modified is not None else created_key,
+                created_key, modified_key, row.get('reportDate') or '')
+
+    left_key, right_key = original_key(left), original_key(right)
+    if business(left) != business(right):
+        return None
+    chosen, other = (right, left) if right_key > left_key else (left, right)
+    return _with_provenance(chosen, other)
+
+
 def merge_origin_rows(rows):
     """Coalesce the same native origin across databases, preserving one source row."""
     merged = {}
@@ -58,8 +153,10 @@ def merge_origin_rows(rows):
         def stamp(item):
             return (item.get('modifiedDate') or item.get('createdDate') or '',
                     item.get('createdDate') or '')
-        if old is None or stamp(row) > stamp(old):
+        if old is None:
             merged[key] = row
+        else:
+            merged[key] = _with_provenance(row, old) if stamp(row) > stamp(old) else _with_provenance(old, row)
     return list(merged.values())
 
 
@@ -134,22 +231,46 @@ class _Reader:
                 or any(not isinstance(table, str) or table not in TABLES for table in selected)
                 or len(set(selected)) != len(selected)):
             raise SourceProblem('SOURCE_SCHEMA', 'Phạm vi bảng danh mục nguồn không hợp lệ.')
-        # Only placeholders enter SQL text. Values come from the fixed source
-        # table allowlist, never from an API filter or a configured SQL fragment.
         selected = tuple(selected)
-        placeholders = ','.join('?' for _ in selected)
-        rows = self._query(f"""SELECT TABLE_NAME AS table_name,COLUMN_NAME AS column_name,
-            DATA_TYPE AS data_type FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME IN ({placeholders})
-            ORDER BY TABLE_NAME,ORDINAL_POSITION""", selected)
+        describe = getattr(query_fn, 'describe_table', None)
+        if callable(describe):
+            # SQL Server's broad INFORMATION_SCHEMA queries can be expensive.
+            # This capability uses a fresh zero-row SELECT of each needed table
+            # and returns validated driver type categories, never guessed types.
+            rows = []
+            for table in selected:
+                try:
+                    columns = describe(self.database, table)
+                except CorporateError as exc:
+                    safe_codes = {'SOURCE_TIMEOUT', 'SOURCE_UNAVAILABLE', 'SOURCE_SCHEMA', 'SOURCE_ROW_LIMIT'}
+                    code = exc.code if exc.code in safe_codes else 'SOURCE_UNAVAILABLE'
+                    raise SourceProblem(code, 'Chưa đọc được cấu trúc nguồn danh mục hợp lệ.') from None
+                except Exception:
+                    raise SourceProblem('SOURCE_UNAVAILABLE', 'Chưa đọc được cấu trúc nguồn danh mục.') from None
+                if not isinstance(columns, list) or any(not isinstance(column, dict) for column in columns):
+                    raise SourceProblem('SOURCE_SCHEMA', 'Kết quả kiểm tra cấu trúc danh mục không hợp lệ.')
+                rows.extend({'table_name': table, 'column_name': column.get('column_name'),
+                             'data_type': column.get('data_type')} for column in columns)
+        else:
+            # Injected query functions without this capability keep the original
+            # parameterized metadata contract. Only allowlisted values enter it.
+            placeholders = ','.join('?' for _ in selected)
+            rows = self._query(f"""SELECT TABLE_NAME AS table_name,COLUMN_NAME AS column_name,
+                DATA_TYPE AS data_type FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME IN ({placeholders})
+                ORDER BY TABLE_NAME,ORDINAL_POSITION""", selected)
         self.schema = {}
         for row in rows:
             if (not isinstance(row.get('table_name'), str)
                     or not isinstance(row.get('column_name'), str)
-                    or not isinstance(row.get('data_type'), str)):
+                    or not row['column_name'] or not isinstance(row.get('data_type'), str)
+                    or not row['data_type']):
                 raise SourceProblem('SOURCE_SCHEMA', 'Kết quả kiểm tra cấu trúc danh mục không hợp lệ.')
             if row.get('table_name') in selected:
-                self.schema.setdefault(row['table_name'], {})[row['column_name']] = str(row['data_type']).lower()
+                columns = self.schema.setdefault(row['table_name'], {})
+                if row['column_name'] in columns:
+                    raise SourceProblem('SOURCE_SCHEMA', 'Cấu trúc danh mục có tên cột trùng.')
+                columns[row['column_name']] = row['data_type'].lower()
 
     def _query(self, sql, params=()):
         try:
@@ -157,11 +278,44 @@ class _Reader:
             if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
                 raise TypeError('Query result must contain rows')
             return rows
+        except CorporateError as exc:
+            safe_errors = {
+                'SOURCE_TIMEOUT': 'Truy vấn nguồn danh mục quá thời gian.',
+                'SOURCE_UNAVAILABLE': 'Chưa đọc được nguồn danh mục.',
+                'SOURCE_SCHEMA': 'Chưa xác minh được cấu trúc nguồn danh mục.',
+                'SOURCE_ROW_LIMIT': 'Danh mục vượt giới hạn đọc an toàn.',
+            }
+            code = exc.code if exc.code in safe_errors else 'SOURCE_UNAVAILABLE'
+            raise SourceProblem(code, safe_errors[code]) from None
         except Exception:
             # Never leak connection details, SQL text or source values in public errors.
             raise SourceProblem('SOURCE_UNAVAILABLE', 'Chưa đọc được nguồn danh mục.') from None
 
-    def read(self, table, key, name, *, include_deleted=False, optional_map=None, resource=None):
+    def select_rows(self, table, selected, key, predicates, *, reference_ids=None):
+        """Run bounded parameterized lookups; None retains full-master behavior."""
+        identities = None if reference_ids is None else _reference_ids(reference_ids)
+        batches = [None] if identities is None else [
+            identities[offset:offset + REFERENCE_CHUNK_SIZE]
+            for offset in range(0, len(identities), REFERENCE_CHUNK_SIZE)]
+        rows = []
+        for batch in batches:
+            conditions = list(predicates)
+            if batch is not None:
+                conditions.append(_identifier(key) + ' IN (' + ','.join('?' for _ in batch) + ')')
+            where = ' WHERE ' + ' AND '.join(conditions) if conditions else ''
+            sql = (f'SELECT TOP ({MAX_MASTER_ROWS + 1}) ' + ','.join(_identifier(c) for c in selected)
+                   + f' FROM [dbo].{_identifier(table)}' + where + f' ORDER BY {_identifier(key)}')
+            chunk = self._query(sql, batch or ())
+            if batch is not None and any(str(row.get(key)) not in batch for row in chunk):
+                raise SourceProblem('SOURCE_DATA', 'Nguồn danh mục trả về mã ngoài phạm vi yêu cầu.')
+            rows.extend(chunk)
+            if len(rows) > MAX_MASTER_ROWS:
+                raise SourceProblem('SOURCE_LIMIT', 'Danh mục vượt giới hạn đọc an toàn; cần chia lô.')
+        return rows
+
+    def read(self, table, key, name, *, include_deleted=False, optional_map=None, resource=None,
+             reference_ids=None):
+        identities = None if reference_ids is None else _reference_ids(reference_ids)
         columns = self.schema.get(table, {})
         required = {key: INTEGER_TYPES, name: TEXT_TYPES, 'rowDeleted': {'bit'}}
         if table == 'Vessel':
@@ -201,7 +355,7 @@ class _Reader:
                 raise SourceProblem('SOURCE_SCHEMA', f'Cột đã cấu hình cho {resource}.{target} chưa được xác minh.')
             selected.append(col)
         selected = list(dict.fromkeys(selected))
-        signature = (table, tuple(selected), include_deleted)
+        signature = (table, tuple(selected), include_deleted, identities)
         if signature not in self.cache:
             predicates = []
             if not include_deleted:
@@ -209,12 +363,7 @@ class _Reader:
             if table == 'Vessel':
                 predicates.append('ISNULL([isVirtualVessel],0)=0')
                 predicates.append('[vesselId]>0')
-            where = ' WHERE ' + ' AND '.join(predicates) if predicates else ''
-            sql = (f'SELECT TOP ({MAX_MASTER_ROWS + 1}) ' + ','.join(_identifier(c) for c in selected)
-                   + f' FROM [dbo].{_identifier(table)}' + where + f' ORDER BY {_identifier(key)}')
-            rows = self._query(sql)
-            if len(rows) > MAX_MASTER_ROWS:
-                raise SourceProblem('SOURCE_LIMIT', 'Danh mục vượt giới hạn đọc an toàn; cần chia lô.')
+            rows = self.select_rows(table, selected, key, predicates, reference_ids=identities)
             self.cache[signature] = rows
         rows = self.cache[signature]
         seen = set()
@@ -253,7 +402,7 @@ def _mapping(profile, key, terminal=None):
     return value
 
 
-def _native(reader, resource, profile, report_day):
+def _native(reader, resource, profile, report_day, *, reference_ids=None):
     config = {'shipDetails': ('Vessel', 'vesselId', 'vesselName'),
               'customers': ('Partner', 'partnerId', 'partnerFullName'),
               'handlingMethodList': ('JobMethod', 'jobMethodId', 'jobMethodName'),
@@ -271,7 +420,7 @@ def _native(reader, resource, profile, report_day):
         if not isinstance(field_map, dict) or set(field_map) - optional:
             raise SourceProblem('MAPPING_REQUIRED', 'Ánh xạ thuộc tính danh mục không hợp lệ.')
     rows, warnings = reader.read(table, key, name, include_deleted=resource == 'customers',
-                                optional_map=field_map, resource=resource)
+                                optional_map=field_map, resource=resource, reference_ids=reference_ids)
     if resource == 'shipDetails':
         warnings.append('Phạm vi danh mục tàu: vesselId > 0, chưa xóa và không phải tàu ảo.')
     if optional - set(field_map):
@@ -330,17 +479,52 @@ def _configured_categories(reader, profile, report_day):
     return _category_rows(reader, assignments, type_names, report_day)
 
 
-def _native_categories(reader, report_day):
+def _native_categories(reader, report_day, *, reference_ids=None):
     if reader.schema.get('Cargo', {}).get('cargoGroupId') not in INTEGER_TYPES:
         raise SourceProblem('SOURCE_SCHEMA', 'Chưa xác minh quan hệ Cargo.cargoGroupId.')
-    groups, _ = reader.read('CargoGroup', 'cargoGroupId', 'cargoGroupName')
-    cargos, _ = reader.read('Cargo', 'cargoId', 'cargoName')
+    cargos, warnings = reader.read('Cargo', 'cargoId', 'cargoName', reference_ids=reference_ids)
+    group_ids = None
+    if reference_ids is not None:
+        try:
+            group_ids = sorted({source_id(reader.terminal, row.get('cargoGroupId')) for row in cargos}, key=int)
+        except ValueError:
+            raise SourceProblem('SOURCE_DATA', 'Mặt hàng thiếu cargoGroupId hợp lệ.') from None
+    groups, group_warnings = reader.read('CargoGroup', 'cargoGroupId', 'cargoGroupName', reference_ids=group_ids)
     type_names = {source_id(reader.terminal, r['cargoGroupId']): r['cargoGroupName'] for r in groups}
     try:
         assignments = {source_id(reader.terminal, r['cargoId']): source_id(reader.terminal, r.get('cargoGroupId')) for r in cargos}
     except ValueError:
         raise SourceProblem('SOURCE_DATA', 'Mặt hàng thiếu cargoGroupId hợp lệ.') from None
-    return _category_rows(reader, assignments, type_names, report_day)
+    if reference_ids is None:
+        return _category_rows(reader, assignments, type_names, report_day)
+    # A scoped dependency extraction is a node batch, not a complete tree.
+    # The caller must grow the scope with these parent/type references until
+    # closure and validate the complete graph before returning production data.
+    if reader.schema.get('Cargo', {}).get('cargoParentId') not in INTEGER_TYPES:
+        raise SourceProblem('SOURCE_SCHEMA', 'Chưa xác minh quan hệ nhóm hàng cha cargoParentId.')
+    if set(assignments.values()) - set(type_names):
+        raise SourceProblem('SOURCE_REFERENCE_NOT_FOUND', 'Không tìm thấy nhóm hàng trong đúng nguồn tham chiếu.')
+    output = []
+    for raw in cargos:
+        identity = source_id(reader.terminal, raw['cargoId'])
+        parent = raw.get('cargoParentId')
+        try:
+            parent_id = source_id(reader.terminal, parent) if parent not in (None, 0) else None
+        except ValueError:
+            raise SourceProblem('SOURCE_DATA', 'Mã nhóm hàng cha nguồn không hợp lệ.') from None
+        row = _base(raw, report_day)
+        row.update(cargoId=identity, cargoName=_text(raw['cargoName']),
+                   cargoTypeId=assignments[identity], cargoParentId=parent_id)
+        output.append(row)
+    parents = {row['cargoId']: row['cargoParentId'] for row in output}
+    for current in parents:
+        visited = set()
+        while current in parents:
+            if current in visited:
+                raise SourceProblem('SOURCE_DATA', 'Cây danh mục hàng có vòng lặp.')
+            visited.add(current)
+            current = parents[current]
+    return output, warnings + group_warnings
 
 
 def _category_rows(reader, assignments, type_names, report_day):
@@ -397,7 +581,60 @@ def _configured_sizes(reader, profile, report_day):
     return output, warnings
 
 
-def _native_sizes(reader, report_day):
+def _native_cargo_sizes(reader, report_day, *, reference_ids=None):
+    """Expose approved local reporting classes using their existing Cargo IDs.
+
+    This explicit mode does not link a reporting class to an ISO/domestic size
+    row. Unknown physical height/type/ISO remain null. A scoped ID is checked
+    in each source that actually references it; standalone catalogs read both.
+    """
+    table = 'Cargo'
+    columns = reader.schema.get(table, {})
+    required = {'cargoId': INTEGER_TYPES, 'cargoCode': TEXT_TYPES,
+                'cargoName': TEXT_TYPES, 'cargoGroupId': INTEGER_TYPES, 'rowDeleted': {'bit'}}
+    if any(columns.get(key) not in types for key, types in required.items()):
+        raise SourceProblem('SOURCE_SCHEMA', 'Chưa xác minh đủ cột mã container báo cáo trong Cargo.')
+    selected, warnings = list(required), []
+    for field in ('createTime', 'updateTime'):
+        if field not in columns:
+            warnings.append(f'{table}.{field} chưa có trong nguồn; trả null.')
+        elif columns[field] not in DATE_TYPES:
+            raise SourceProblem('SOURCE_SCHEMA', 'Sai kiểu ngày của danh mục Cargo.')
+        else:
+            selected.append(field)
+    predicates = ['ISNULL([rowDeleted],0)=0']
+    if reference_ids is None:
+        codes = ','.join("N'" + code + "'" for code in NATIVE_CARGO_SIZE_CODES)
+        predicates += [f'[cargoGroupId]={NATIVE_CONTAINER_CARGO_GROUP}',
+                       f'[cargoCode] IN ({codes})', '[cargoName]=[cargoCode]']
+    rows = reader.select_rows(table, selected, 'cargoId', predicates, reference_ids=reference_ids)
+    output, seen = [], set()
+    for raw in rows:
+        if set(selected) - set(raw):
+            raise SourceProblem('SOURCE_DATA', 'Danh mục Cargo thiếu cột nguồn đã yêu cầu.')
+        if _flag(raw['rowDeleted']):
+            continue
+        try:
+            identity = source_id(reader.terminal, raw['cargoId'])
+        except ValueError:
+            raise SourceProblem('SOURCE_DATA', 'Khóa Cargo nguồn không hợp lệ.') from None
+        if identity in seen:
+            raise SourceProblem('SOURCE_DATA', 'Danh mục mã container báo cáo có ID trùng.')
+        seen.add(identity)
+        code, name = _text(raw['cargoCode']), _text(raw['cargoName'])
+        if (raw['cargoGroupId'] != NATIVE_CONTAINER_CARGO_GROUP
+                or code not in NATIVE_CARGO_SIZE_CODES or name != code):
+            raise SourceProblem('MAPPING_REQUIRED',
+                'Mã Cargo được tham chiếu chưa phải mã container báo cáo đã xác minh.')
+        output.append({**_base(raw, report_day), 'containerSizeId': identity,
+                       'localSzTp': name, 'sizeCode': NATIVE_CARGO_SIZE_CODES[code],
+                       'isoSzTp': None, 'heightCode': None, 'containerTypeCode': None})
+    warnings.append('containerSizeId giữ Cargo ID của mã container báo cáo nội bộ; '
+                    'chưa có ISO, mã chiều cao và loại vật lý, các trường này trả null.')
+    return output, warnings
+
+
+def _native_sizes(reader, report_day, *, reference_ids=None):
     """Use domestic row identity: several local codes can share an ISO type ID.
 
     SQL evidence 2026-09-23: type 321 is ISO 45G0 with containerSize='40'.
@@ -420,11 +657,8 @@ def _native_sizes(reader, report_day):
             selected.append(field)
         else:
             warnings.append(f'{table}.{field} chưa có trong nguồn; trả null.')
-    rows = reader._query(f'SELECT TOP ({MAX_MASTER_ROWS + 1}) '
-        + ','.join(_identifier(field) for field in selected)
-        + ' FROM [dbo].[vwContainerSizeTypeDomestic]'
-        + ' WHERE ISNULL([rowDeleted],0)=0 AND ISNULL([rowInvisible],0)=0'
-        + ' ORDER BY [containerSizeTypeDomesticId]')
+    rows = reader.select_rows(table, selected, 'containerSizeTypeDomesticId',
+        ['ISNULL([rowDeleted],0)=0', 'ISNULL([rowInvisible],0)=0'], reference_ids=reference_ids)
     if len(rows) > MAX_MASTER_ROWS:
         raise SourceProblem('SOURCE_LIMIT', 'Danh mục kích cỡ vượt giới hạn đọc an toàn.')
     output, seen = [], set()
@@ -449,7 +683,8 @@ def _native_sizes(reader, report_day):
     return output, warnings
 
 
-def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=None, resources=None):
+def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=None, resources=None,
+                     reference_scope=None):
     """Return per-resource readiness, validated rows and explicit blockers.
 
     query_fn(database, SELECT_sql, parameter_tuple) -> list[dict].
@@ -457,6 +692,12 @@ def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=No
     never mean that the company has no such data. S/customer date filters use
     metadata.createdDate only, as specified by the customer query parameter
     table. Exported timestamps preserve source values and nulls.
+
+    reference_scope is internal only: resource -> terminal -> native ID list.
+    It reads each terminal's actual used IDs, checks existence in that same
+    source, and returns private source provenance. It does
+    not resolve cargo parent closure; the caller must request and validate all
+    ancestors before using these partial catalogs to validate production rows.
     """
     if company_id != 'CNT':
         raise ValueError('Unsupported company')
@@ -464,14 +705,20 @@ def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=No
     if (not selected or len(set(selected)) != len(selected)
             or any(resource not in RESOURCES for resource in selected)):
         raise ValueError('Invalid catalog resource selection')
+    scope = _reference_scope(reference_scope, selected)
     report_day = (report_date or datetime.now(VIETNAM_TIMEZONE).date()).strftime('%Y%m%d')
     results = {resource: _empty() for resource in selected}
     cargo_mode = (profile or {}).get('cargo_catalog_source', 'configured')
     if cargo_mode not in {'configured', 'native_groups'}:
         raise ValueError('Invalid cargo catalog source')
     size_mode = (profile or {}).get('container_size_source', 'configured')
-    if size_mode not in {'configured', 'native_domestic'}:
+    if size_mode not in {'configured', 'native_domestic', 'native_cargo'}:
         raise ValueError('Invalid container size source')
+    if scope is not None:
+        if (set(selected) & {'cargoType', 'cargoCategory'} and cargo_mode != 'native_groups'):
+            raise ValueError('Native cargo catalogs required for reference scope')
+        if 'containerSize' in selected and size_mode not in {'native_domestic', 'native_cargo'}:
+            raise ValueError('Native container sizes required for reference scope')
     for resource, mapping_key, id_key, name_key in (
         ('cargoType', 'cargo_types', 'cargoTypeId', 'cargoTypeName'),
     ):
@@ -500,33 +747,54 @@ def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=No
         'cargoCategory': ('Cargo', 'CargoGroup') if cargo_mode == 'native_groups' else ('Cargo',),
         'containerSize': ('vwContainerSizeTypeDomestic',) if size_mode == 'native_domestic' else ('Cargo',),
     }
-    needed = {table for resource in native for table in table_dependencies[resource]}
-    selected_tables = tuple(table for table in TABLES if table in needed)
     terminals = (profile or {}).get('terminals', list(SOURCES))
     if (not isinstance(terminals, list) or not terminals
             or any(not isinstance(t, str) or t not in SOURCES for t in terminals)
             or len(set(terminals)) != len(terminals)):
         raise ValueError('Invalid source terminals')
+    if scope is not None and set(terminals) != set(SOURCES):
+        raise ValueError('Reference scope requires both source terminals')
     for terminal in terminals:
-        if not native:
-            # A configured cargoType-only request has no native table dependency.
+        terminal_native = tuple(resource for resource in native
+                                if scope is None or scope[resource][terminal])
+        if scope is not None:
+            for resource in native:
+                if resource not in terminal_native:
+                    results[resource]['source_coverage'].append({'terminal': terminal, 'row_count': 0})
+        if not terminal_native:
+            # No dependency on this terminal's catalogs. Production extraction
+            # must still verify both fact sources before constructing the scope.
+            # Do not let an unused table/schema block valid source-specific IDs.
             continue
+        needed = {table for resource in terminal_native for table in table_dependencies[resource]}
+        selected_tables = tuple(table for table in TABLES if table in needed)
         try:
             reader = _Reader(query_fn, terminal, tables=selected_tables)
         except SourceProblem as exc:
-            for resource in native:
+            for resource in terminal_native:
                 _block(results[resource], exc, terminal)
             continue
-        for resource in native:
+        for resource in terminal_native:
             try:
+                reference_ids = None if scope is None else sorted(
+                    scope[resource][terminal], key=int)
                 if resource == 'cargoCategory':
-                    rows, warnings = (_native_categories(reader, report_day) if cargo_mode == 'native_groups'
+                    rows, warnings = (_native_categories(reader, report_day, reference_ids=reference_ids) if cargo_mode == 'native_groups'
                                       else _configured_categories(reader, profile, report_day))
                 elif resource == 'containerSize':
-                    rows, warnings = (_native_sizes(reader, report_day) if size_mode == 'native_domestic'
-                                      else _configured_sizes(reader, profile, report_day))
+                    if size_mode == 'native_cargo':
+                        rows, warnings = _native_cargo_sizes(reader, report_day, reference_ids=reference_ids)
+                    else:
+                        rows, warnings = (_native_sizes(reader, report_day, reference_ids=reference_ids) if size_mode == 'native_domestic'
+                                          else _configured_sizes(reader, profile, report_day))
                 else:
-                    rows, warnings = _native(reader, resource, profile, report_day)
+                    rows, warnings = _native(reader, resource, profile, report_day, reference_ids=reference_ids)
+                if scope is not None:
+                    found = {row[IDENTITY[resource]] for row in rows}
+                    if set(scope[resource][terminal]) - found:
+                        raise SourceProblem('SOURCE_REFERENCE_NOT_FOUND',
+                            'Không tìm thấy mã danh mục trong đúng nguồn tham chiếu.')
+                    rows = [{**row, '_sourceTerminals': [terminal]} for row in rows]
                 results[resource]['rows'].extend(rows)
                 results[resource]['warnings'].extend(warnings)
                 results[resource]['source_coverage'].append({'terminal': terminal, 'row_count': len(rows)})
@@ -534,21 +802,29 @@ def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=No
                 _block(results[resource], exc, terminal)
     for resource, result in results.items():
         result['warnings'] = list(dict.fromkeys(result['warnings']))
-        if resource == 'origins' and result['ready']:
-            try:
-                result['rows'] = merge_origin_rows(result['rows'])
-            except SourceProblem as exc:
-                _block(result, exc)
         # Native IDs may overlap between databases. Only identical catalog rows
-        # can be coalesced; never choose one conflicting source arbitrarily.
+        # can be coalesced apart from source metadata dates. Full customers are
+        # strict because their public query filters by creation date; other S
+        # catalogs have no date filter. Scoped dependencies are never published.
         if result['ready']:
             unique = {}
             conflict_ids = set()
             for row in result['rows']:
                 key = row[IDENTITY[resource]]
-                if key in unique and unique[key] != row:
+                old = unique.get(key)
+                comparable = {k: v for k, v in row.items() if k != '_sourceTerminals'}
+                if old is not None and {k: v for k, v in old.items() if k != '_sourceTerminals'} != comparable:
+                    if scope is not None or resource != 'customers':
+                        try:
+                            merged = _merge_reference_rows(resource, old, row)
+                        except SourceProblem as exc:
+                            _block(result, exc)
+                            continue
+                        if merged is not None:
+                            unique[key] = merged
+                            continue
                     conflict_ids.add(key)
-                unique[key] = row
+                unique[key] = _with_provenance(row, old) if old is not None else row
             if conflict_ids:
                 result['identity_conflicts'] = sorted(conflict_ids)[:50]
                 result['identity_conflict_count'] = len(conflict_ids)

@@ -20,6 +20,9 @@ from .sql import source_read_budget
 
 
 MAX_PROFILE_BYTES = 2 * 1024 * 1024
+MAX_REFERENCE_ROUNDS = 64
+MAX_REFERENCE_IDS = 100_000
+SOURCE_TERMINALS = ('cua_lo', 'ben_thuy')
 TZ = timezone(timedelta(hours=7))
 
 # Ordered, fixed diagnostics only. Do not expose adapter messages, row values or
@@ -38,6 +41,7 @@ PRODUCTION_BLOCKER_MESSAGES = {
     'CONTAINER_QUANTITY_UNAVAILABLE': 'Còn phiếu container thiếu số lượng hợp lệ để tính TEU.',
     'WEIGHT_OUT_OF_RANGE': 'Khối lượng của phiếu vượt giới hạn số liệu cho phép của API.',
     'AGGREGATE_OUT_OF_RANGE': 'Tổng sản lượng vượt giới hạn số liệu cho phép của API.',
+    'SOURCE_REFERENCE_NOT_FOUND': 'Mã danh mục của sản lượng không tồn tại trong đúng nguồn xí nghiệp tham chiếu.',
 }
 
 
@@ -103,11 +107,15 @@ class LiveReader:
     def _check_production_profile(resource, profile):
         scope = profile.get('production_scope')
         gate_selection = profile.get('gate_selection', 'methods')
+        quay_selection = profile.get('quay_selection', 'methods')
         valid = (profile.get('date_basis') == 'shiftDate'
                  and isinstance(scope, str) and scope in {'nghe_tinh', 'vietsun', 'all_activity'}
-                 and isinstance(gate_selection, str) and gate_selection in {'methods', 'vessel_type'})
-        methods_key = ('quay_method_ids' if resource in {'contQuayVolumesCB', 'bulkQuayVolumesCB'}
-                       else 'gate_method_ids' if gate_selection == 'methods' else None)
+                 and isinstance(gate_selection, str) and gate_selection in {'methods', 'vessel_type'}
+                 and isinstance(quay_selection, str) and quay_selection in {'methods', 'source_statistics'})
+        if resource in {'contQuayVolumesCB', 'bulkQuayVolumesCB'}:
+            methods_key = 'quay_method_ids' if quay_selection == 'methods' else None
+        else:
+            methods_key = 'gate_method_ids' if gate_selection == 'methods' else None
         if methods_key is not None:
             methods = profile.get(methods_key)
             valid = valid and isinstance(methods, dict) and all(
@@ -158,12 +166,116 @@ class LiveReader:
         return CorporateError(503, 'SOURCE_DATA_NOT_READY',
                               'Dữ liệu SmartTOS chưa đáp ứng ánh xạ hoặc kiểm tra chất lượng của API.')
 
+    @staticmethod
+    def _provenance(row):
+        terminals = row.get('_sourceTerminals') if isinstance(row, dict) else None
+        if (not isinstance(terminals, list) or not terminals
+                or any(not isinstance(value, str) or value not in SOURCE_TERMINALS for value in terminals)
+                or len(set(terminals)) != len(terminals)):
+            raise ValueError('Missing or invalid source provenance for reference validation.')
+        return terminals
+
+    @staticmethod
+    def _reference_id(value):
+        if (not isinstance(value, str) or not value.isascii() or not value.isdigit()
+                or len(value) > 19 or value.startswith('0')):
+            raise ValueError('Invalid native reference identity.')
+        return value
+
+    def _grow_reference_scope(self, resource, rows, scope):
+        for row in rows:
+            terminals = self._provenance(row)
+            for field, (target, _) in references_for(resource).items():
+                if field == IDENTITY.get(resource) or field not in row or row[field] is None:
+                    continue
+                values = row[field] if isinstance(row[field], list) else [row[field]]
+                if not values:
+                    continue
+                targets = scope.setdefault(target, {terminal: set() for terminal in SOURCE_TERMINALS})
+                for value in values:
+                    identity = self._reference_id(value)
+                    for terminal in terminals:
+                        targets[terminal].add(identity)
+                if len(set().union(*targets.values())) > MAX_REFERENCE_IDS:
+                    raise ValueError('Native reference scope exceeds the bounded limit.')
+
+    def _verify_reference_membership(self, resource, rows, scope):
+        found = {terminal: set() for terminal in SOURCE_TERMINALS}
+        requested = set().union(*scope.values())
+        seen = set()
+        for row in rows:
+            identity = self._reference_id(row.get(IDENTITY[resource]))
+            if identity not in requested or identity in seen:
+                raise ValueError('Catalog returned an unrequested or duplicate native identity.')
+            seen.add(identity)
+            for terminal in self._provenance(row):
+                found[terminal].add(identity)
+        if any(scope[terminal] - found[terminal] for terminal in SOURCE_TERMINALS):
+            raise self._dataset_error({'blockers': ['SOURCE_REFERENCE_NOT_FOUND']})
+
+    @staticmethod
+    def _check_cargo_parent_cycles(datasets):
+        rows = datasets.get('cargoCategory', {}).get('rows', [])
+        parents = {row['cargoId']: row.get('cargoParentId') for row in rows}
+        completed = set()
+        for identity in parents:
+            path = set()
+            current = identity
+            while current in parents and current not in completed:
+                if current in path:
+                    raise ValueError('Native cargo parent relation contains a cycle.')
+                path.add(current)
+                current = parents[current]
+            completed.update(path)
+
+    def _production_preview(self, resource, profile, start, end):
+        """Validate only used catalogs, including source-specific ancestor closure."""
+        preview = self._extract(profile, start, end, [resource])
+        if (not isinstance(preview, dict) or not isinstance(preview.get('datasets'), dict)
+                or set(preview['datasets']) != {resource}):
+            raise ValueError('Invalid source adapter result')
+        self._check_size(preview)
+        production = preview['datasets'][resource]
+        if production.get('ready') is not True or production.get('blockers'):
+            raise self._dataset_error(production)
+        if unaccepted_nulls(resource, production['rows'], profile):
+            raise CorporateError(503, 'SOURCE_NULL_POLICY_REQUIRED',
+                                 'Dữ liệu sản lượng còn trường thiếu nguồn; cần bổ sung nguồn hoặc xác nhận các trường được phép để trống trước khi trả API.')
+        scope, checked = {}, {}
+        self._grow_reference_scope(resource, production['rows'], scope)
+        for _ in range(MAX_REFERENCE_ROUNDS):
+            names = sorted(name for name, targets in scope.items() if checked.get(name) != targets)
+            if not names:
+                return preview, set(preview['datasets'])
+            requested = {name: {terminal: sorted(scope[name][terminal], key=int)
+                                for terminal in SOURCE_TERMINALS} for name in names}
+            part = self._extract(profile, start, end, names, reference_scope=requested)
+            if (not isinstance(part, dict) or not isinstance(part.get('datasets'), dict)
+                    or set(part['datasets']) != set(names)):
+                raise ValueError('Invalid scoped catalog adapter result')
+            for name in names:
+                dataset = part['datasets'][name]
+                if dataset.get('ready') is not True or dataset.get('blockers'):
+                    raise self._dataset_error(dataset)
+                self._verify_reference_membership(name, dataset['rows'], scope[name])
+                checked[name] = {terminal: set(requested[name][terminal]) for terminal in SOURCE_TERMINALS}
+            preview['datasets'].update(part['datasets'])
+            self._check_size(preview)
+            self._check_cargo_parent_cycles(preview['datasets'])
+            for name in names:
+                self._grow_reference_scope(name, part['datasets'][name]['rows'], scope)
+        raise ValueError('Native reference closure did not stabilize within the bounded limit.')
+
     def _build(self, resource, query, profile):
         today = datetime.now(TZ).date()
         start = datetime.strptime(query.startDate, '%Y%m%d').date() if query.startDate else today
         end = datetime.strptime(query.endDate, '%Y%m%d').date() if query.endDate else today
-        pending, selected = {resource}, set()
-        preview = None
+        if resource in PRODUCTION:
+            preview, selected = self._production_preview(resource, profile, start, end)
+            pending = set()
+        else:
+            pending, selected = {resource}, set()
+            preview = None
         # Dependencies are discovered only from populated fields in extracted
         # rows. A null optional FK never makes an unrelated catalog mandatory.
         while pending:
