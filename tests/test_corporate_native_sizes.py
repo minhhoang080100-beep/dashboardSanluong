@@ -45,6 +45,17 @@ def test_native_sizes_preserve_local_rows_sharing_iso_and_actual_length():
     assert all(r['createdDate'] is None for r in result['rows'])
 
 
+def test_native_size_only_request_probes_only_domestic_size_view_metadata():
+    source = native_source()
+    result = extract_catalogs(source, profile={'container_size_source': 'native_domestic'},
+                              resources=['containerSize'])
+    assert result['containerSize']['ready']
+    assert [row['containerSizeId'] for row in result['containerSize']['rows']] == ['617', '775']
+    metadata = [(sql, params) for _, sql, params in source.calls if 'INFORMATION_SCHEMA' in sql]
+    assert len(metadata) == 2
+    assert all(params == (TABLE,) and sql.count('?') == 1 for sql, params in metadata)
+
+
 @pytest.mark.parametrize('problem', ['missing_schema', 'duplicate', 'missing_name'])
 def test_native_sizes_fail_closed_on_invalid_source(problem):
     source = native_source()

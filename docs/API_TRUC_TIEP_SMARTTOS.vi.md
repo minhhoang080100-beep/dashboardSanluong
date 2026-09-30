@@ -85,3 +85,36 @@ khoảng 6 giây. Kết quả này không phải bằng chứng mật khẩu sai
 
 Chưa bật `live` trên production. Cần khôi phục phân giải/kết nối máy chủ SQL,
 rà soát profile đang áp dụng, rồi thử dữ liệu thật trước khi chuyển chế độ.
+
+## Xử lý cấu hình và lỗi 503 ngày 30/09/2026
+
+Kiểm tra mới trên Railway xác nhận mã `e6c651b` đã có, nhưng bộ đọc vẫn là
+`published` và chưa có `CORPORATE_SOURCE_PROFILE`. Kết nối `SELECT 1` đến cả
+hai database đã thành công; một số lần kết nối với giới hạn 5 giây vẫn timeout.
+Thử riêng bộ đọc live với giới hạn kết nối 10 giây trả được 2 nguồn gốc hàng
+và 6 hướng hàng. Đây là kiểm tra dữ liệu thật, không phải dữ liệu mẫu.
+
+Cấu hình chuyển sang đọc trực tiếp dùng `CORPORATE_READ_MODE=live`,
+`CORPORATE_SOURCE_PROFILE=/data/corporate-source.json` và
+`DB_CONNECT_TIMEOUT_SECONDS=10`. File profile chỉ có các ánh xạ nguồn đã xác minh;
+không dùng lại cấu hình thử có mã `CNT-*` tự đặt. Theo xác nhận ngày 30/09,
+phạm vi API sản lượng là `nghe_tinh`: loại Cầu 5 theo cầu cập ban đầu.
+
+Bộ đọc danh mục chỉ kiểm tra metadata của các bảng liên quan đến API đang gọi.
+Ví dụ, nguồn gốc hàng chỉ cần `CargoOrigin`, hướng hàng chỉ cần `CargoDirect`.
+Mỗi yêu cầu vẫn đọc lại SmartTOS, không giữ cache kết quả.
+
+Các lỗi còn lại được phân biệt để xử lý đúng nguyên nhân:
+
+- `SOURCE_MAPPING_REQUIRED`: cấu hình sản lượng còn thiếu cơ sở ngày hoặc cách
+  chọn tác nghiệp; dừng trước khi truy vấn SQL.
+- `SOURCE_NULL_POLICY_REQUIRED`: còn trường thiếu nguồn và chưa được bên nhận
+  xác nhận cho phép để trống.
+- `SOURCE_ID_CONFLICT`: ID gốc trùng nhưng khác nội dung giữa hai database.
+- Các lỗi đơn vị, khối lượng và quan hệ kích cỡ container giữ mã riêng, không
+  gộp thành thông báo chung hoặc trả dữ liệu thiếu như một kết quả đầy đủ.
+
+Chuyển chế độ đọc không đồng nghĩa cả 32 API đã đủ dữ liệu. API sản lượng vẫn
+cần hoàn thiện các ánh xạ còn thiếu; không tự duyệt trường null hoặc đổi ID nguồn.
+263 kiểm thử backend liên quan đến live, HTTP, inspector, nguồn sản lượng và
+danh mục đã đạt sau thay đổi này.

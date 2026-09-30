@@ -14,12 +14,31 @@ import threading
 
 from .errors import CorporateError
 from .manage_exports import extract, json_default, publish_preview, references_for
+from .reconciliation import unaccepted_nulls
 from .registry import IDENTITY, MODELS, PRODUCTION
 from .sql import source_read_budget
 
 
 MAX_PROFILE_BYTES = 2 * 1024 * 1024
 TZ = timezone(timedelta(hours=7))
+
+# Ordered, fixed diagnostics only. Do not expose adapter messages, row values or
+# arbitrary codes; connection failures retain priority in _dataset_error.
+PRODUCTION_BLOCKER_MESSAGES = {
+    'DATE_BASIS_UNCONFIRMED': 'Chưa xác nhận cơ sở ngày dùng để tính sản lượng API.',
+    'PRODUCTION_SCOPE_UNCONFIRMED': 'Chưa xác nhận phạm vi sản lượng áp dụng cho API.',
+    'QUAY_METHODS_UNCONFIRMED': 'Chưa cấu hình phương án tác nghiệp thuộc sản lượng qua cầu.',
+    'GATE_METHODS_UNCONFIRMED': 'Chưa cấu hình phương án tác nghiệp thuộc sản lượng qua cổng/bãi.',
+    'CARGO_KIND_UNMAPPED': 'Còn mặt hàng chưa được phân loại để tính sản lượng API.',
+    'CARGO_TYPE_UNMAPPED': 'Còn mặt hàng chưa có ánh xạ loại hàng hợp lệ cho API.',
+    'CONTAINER_SIZE_RELATION_UNCONFIRMED': 'Chưa xác minh quan hệ giữa mặt hàng và mã kích cỡ container.',
+    'CONTAINER_SIZE_UNMAPPED': 'Còn mặt hàng container chưa có kích cỡ hoặc hệ số TEU hợp lệ.',
+    'CONTAINER_QUANTITY_UNIT_UNCONFIRMED': 'Còn phiếu container chưa xác minh được đơn vị số lượng.',
+    'WEIGHT_OR_UNIT_UNAVAILABLE': 'Còn phiếu thiếu khối lượng hoặc đơn vị quy đổi sang tấn hợp lệ.',
+    'CONTAINER_QUANTITY_UNAVAILABLE': 'Còn phiếu container thiếu số lượng hợp lệ để tính TEU.',
+    'WEIGHT_OUT_OF_RANGE': 'Khối lượng của phiếu vượt giới hạn số liệu cho phép của API.',
+    'AGGREGATE_OUT_OF_RANGE': 'Tổng sản lượng vượt giới hạn số liệu cho phép của API.',
+}
 
 
 class LiveReader:
@@ -81,6 +100,24 @@ class LiveReader:
         """Compatibility hook: requests release their own stores before returning."""
 
     @staticmethod
+    def _check_production_profile(resource, profile):
+        scope = profile.get('production_scope')
+        gate_selection = profile.get('gate_selection', 'methods')
+        valid = (profile.get('date_basis') == 'shiftDate'
+                 and isinstance(scope, str) and scope in {'nghe_tinh', 'vietsun', 'all_activity'}
+                 and isinstance(gate_selection, str) and gate_selection in {'methods', 'vessel_type'})
+        methods_key = ('quay_method_ids' if resource in {'contQuayVolumesCB', 'bulkQuayVolumesCB'}
+                       else 'gate_method_ids' if gate_selection == 'methods' else None)
+        if methods_key is not None:
+            methods = profile.get(methods_key)
+            valid = valid and isinstance(methods, dict) and all(
+                isinstance(methods.get(terminal), list) and bool(methods[terminal])
+                for terminal in ('cua_lo', 'ben_thuy'))
+        if not valid:
+            raise CorporateError(503, 'SOURCE_MAPPING_REQUIRED',
+                                 'Chưa cấu hình đầy đủ cơ sở ngày, phạm vi sản lượng và cách chọn tác nghiệp cho API sản lượng.')
+
+    @staticmethod
     def _busy():
         return CorporateError(503, 'SOURCE_BUSY',
                               'Nguồn SmartTOS đang xử lý yêu cầu khác. Vui lòng thử lại sau.', retry_after=2)
@@ -115,6 +152,9 @@ class LiveReader:
         if 'SOURCE_ID_CONFLICT' in codes:
             return CorporateError(503, 'SOURCE_ID_CONFLICT',
                                   'ID nguồn trùng nhưng khác nội dung giữa Cửa Lò và Bến Thủy. Cần thống nhất cách phân biệt mã trước khi trả dữ liệu.')
+        for code, message in PRODUCTION_BLOCKER_MESSAGES.items():
+            if code in codes:
+                return CorporateError(503, code, message)
         return CorporateError(503, 'SOURCE_DATA_NOT_READY',
                               'Dữ liệu SmartTOS chưa đáp ứng ánh xạ hoặc kiểm tra chất lượng của API.')
 
@@ -145,6 +185,9 @@ class LiveReader:
                 dataset = preview['datasets'][name]
                 if dataset.get('ready') is not True or dataset.get('blockers'):
                     raise self._dataset_error(dataset)
+                if name in PRODUCTION and unaccepted_nulls(name, dataset['rows'], profile):
+                    raise CorporateError(503, 'SOURCE_NULL_POLICY_REQUIRED',
+                                         'Dữ liệu sản lượng còn trường thiếu nguồn; cần bổ sung nguồn hoặc xác nhận các trường được phép để trống trước khi trả API.')
                 for row in dataset['rows']:
                     for field, (target, _) in references_for(name).items():
                         if field == IDENTITY.get(name) or field not in row or row[field] is None:
@@ -184,6 +227,8 @@ class LiveReader:
             raise CorporateError(422, 'SNAPSHOT_NOT_SUPPORTED',
                                  'API trực tiếp luôn đọc lại SmartTOS và không nhận snapshotId. Hãy bỏ tham số này.')
         profile = self._profile()
+        if resource in PRODUCTION:
+            self._check_production_profile(resource, profile)
         store = None
         acquired = False
         try:

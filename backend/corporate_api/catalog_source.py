@@ -125,21 +125,30 @@ def _block(result, problem, terminal=None):
 
 
 class _Reader:
-    def __init__(self, query_fn, terminal):
+    def __init__(self, query_fn, terminal, *, tables=None):
         self.query_fn, self.terminal = query_fn, terminal
         self.database = SOURCES[terminal]
         self.cache = {}
-        rows = self._query("""SELECT TABLE_NAME AS table_name,COLUMN_NAME AS column_name,
+        selected = TABLES if tables is None else tables
+        if (not isinstance(selected, (tuple, list)) or not selected
+                or any(not isinstance(table, str) or table not in TABLES for table in selected)
+                or len(set(selected)) != len(selected)):
+            raise SourceProblem('SOURCE_SCHEMA', 'Phạm vi bảng danh mục nguồn không hợp lệ.')
+        # Only placeholders enter SQL text. Values come from the fixed source
+        # table allowlist, never from an API filter or a configured SQL fragment.
+        selected = tuple(selected)
+        placeholders = ','.join('?' for _ in selected)
+        rows = self._query(f"""SELECT TABLE_NAME AS table_name,COLUMN_NAME AS column_name,
             DATA_TYPE AS data_type FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME IN (?,?,?,?,?,?,?,?)
-            ORDER BY TABLE_NAME,ORDINAL_POSITION""", TABLES)
+            WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME IN ({placeholders})
+            ORDER BY TABLE_NAME,ORDINAL_POSITION""", selected)
         self.schema = {}
         for row in rows:
             if (not isinstance(row.get('table_name'), str)
                     or not isinstance(row.get('column_name'), str)
                     or not isinstance(row.get('data_type'), str)):
                 raise SourceProblem('SOURCE_SCHEMA', 'Kết quả kiểm tra cấu trúc danh mục không hợp lệ.')
-            if row.get('table_name') in TABLES:
+            if row.get('table_name') in selected:
                 self.schema.setdefault(row['table_name'], {})[row['column_name']] = str(row['data_type']).lower()
 
     def _query(self, sql, params=()):
@@ -484,14 +493,26 @@ def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=No
     if cargo_mode == 'native_groups':
         native += ('cargoType',)
     native = tuple(resource for resource in native if resource in results)
+    table_dependencies = {
+        'shipDetails': ('Vessel',), 'customers': ('Partner',),
+        'handlingMethodList': ('JobMethod',), 'class': ('CargoDirect',),
+        'origins': ('CargoOrigin',), 'cargoType': ('CargoGroup',),
+        'cargoCategory': ('Cargo', 'CargoGroup') if cargo_mode == 'native_groups' else ('Cargo',),
+        'containerSize': ('vwContainerSizeTypeDomestic',) if size_mode == 'native_domestic' else ('Cargo',),
+    }
+    needed = {table for resource in native for table in table_dependencies[resource]}
+    selected_tables = tuple(table for table in TABLES if table in needed)
     terminals = (profile or {}).get('terminals', list(SOURCES))
     if (not isinstance(terminals, list) or not terminals
             or any(not isinstance(t, str) or t not in SOURCES for t in terminals)
             or len(set(terminals)) != len(terminals)):
         raise ValueError('Invalid source terminals')
     for terminal in terminals:
+        if not native:
+            # A configured cargoType-only request has no native table dependency.
+            continue
         try:
-            reader = _Reader(query_fn, terminal)
+            reader = _Reader(query_fn, terminal, tables=selected_tables)
         except SourceProblem as exc:
             for resource in native:
                 _block(results[resource], exc, terminal)

@@ -4,7 +4,7 @@ import re
 
 import pytest
 
-from backend.corporate_api.catalog_source import extract_catalogs, source_id
+from backend.corporate_api.catalog_source import extract_catalogs, source_id, _Reader, SourceProblem, TABLES
 
 
 def fixture_source():
@@ -79,6 +79,62 @@ def approved_profile():
 
 def extract(query=None, profile=None):
     return extract_catalogs(query or FakeQuery(), profile=profile, report_date=date(2026, 9, 21))
+
+
+@pytest.mark.parametrize('resource,tables', [
+    ('origins', ('CargoOrigin',)), ('class', ('CargoDirect',)),
+    ('shipDetails', ('Vessel',)), ('customers', ('Partner',)),
+    ('handlingMethodList', ('JobMethod',)), ('cargoCategory', ('Cargo',)),
+    ('containerSize', ('Cargo',)),
+])
+def test_selected_catalog_metadata_only_probes_required_tables(resource, tables):
+    query = FakeQuery()
+    result = extract_catalogs(query, profile=approved_profile(), resources=[resource])
+    assert set(result) == {resource}
+    assert result[resource]['ready']
+    metadata_calls = [(database, sql, params) for database, sql, params in query.calls
+                      if 'INFORMATION_SCHEMA' in sql]
+    assert len(metadata_calls) == 2
+    assert {database for database, _, _ in metadata_calls} == {'SmartTOS', 'SmartTOS_BenThuy'}
+    for _, sql, params in metadata_calls:
+        assert params == tables
+        assert sql.count('?') == len(tables)
+        assert all(table not in sql for table in TABLES)
+
+
+def test_multiple_catalogs_share_one_metadata_query_for_dependency_union():
+    query = FakeQuery()
+    result = extract_catalogs(query, resources=['origins', 'class'])
+    assert all(item['ready'] for item in result.values())
+    metadata_calls = [params for _, sql, params in query.calls if 'INFORMATION_SCHEMA' in sql]
+    assert metadata_calls == [('CargoDirect', 'CargoOrigin')] * 2
+
+
+def test_configured_type_only_does_not_query_unneeded_source_metadata():
+    def forbidden(*args):
+        pytest.fail('Configured type definitions have no source-table dependency')
+    result = extract_catalogs(forbidden, profile=approved_profile(), resources=['cargoType'])
+    assert result['cargoType']['ready']
+    assert result['cargoType']['rows'][0]['cargoTypeId'] == 'CNT-BULK'
+
+
+@pytest.mark.parametrize('tables', [
+    ['UnknownTable'], ['CargoOrigin; DROP TABLE Secret'], [], ['CargoOrigin', 'CargoOrigin'],
+    'CargoOrigin', [None], {'CargoOrigin'},
+])
+def test_metadata_table_scope_rejects_unknown_or_invalid_values_before_query(tables):
+    query = FakeQuery()
+    with pytest.raises(SourceProblem) as caught:
+        _Reader(query, 'cua_lo', tables=tables)
+    assert caught.value.code == 'SOURCE_SCHEMA'
+    assert 'Secret' not in str(caught.value)
+    assert query.calls == []
+
+
+def test_metadata_reader_default_preserves_existing_full_table_scope():
+    query = FakeQuery()
+    _Reader(query, 'cua_lo')
+    assert query.calls[0][2] == TABLES
 
 
 @pytest.mark.parametrize('metadata', [
@@ -191,6 +247,17 @@ def native_cargo_query():
         for row in query.data[db]['Cargo']:
             row['cargoGroupId'] = 55
     return query
+
+
+@pytest.mark.parametrize('resource,tables', [
+    ('cargoType', ('CargoGroup',)), ('cargoCategory', ('Cargo', 'CargoGroup')),
+])
+def test_native_cargo_metadata_covers_only_real_relation_dependencies(resource, tables):
+    query = native_cargo_query()
+    result = extract_catalogs(query, profile={'cargo_catalog_source': 'native_groups'}, resources=[resource])
+    assert result[resource]['ready']
+    assert [params for _, sql, params in query.calls if 'INFORMATION_SCHEMA' in sql] == [tables] * 2
+    assert all(row.get('cargoTypeId') == '55' for row in result[resource]['rows'])
 
 
 def test_native_cargo_catalog_uses_all_source_rows_and_real_group_id():

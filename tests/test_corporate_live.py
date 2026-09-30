@@ -16,6 +16,8 @@ from backend.corporate_api.operation_contracts import OperationQuery
 
 
 PROFILE = {'approved': True, 'company_id': 'CNT', 'terminals': ['cua_lo', 'ben_thuy']}
+PRODUCTION_PROFILE = {**PROFILE, 'date_basis': 'shiftDate', 'production_scope': 'all_activity',
+                      'gate_selection': 'vessel_type'}
 MASTER = {'reportDate': '20260929', 'createdDate': '2026-09-01', 'modifiedDate': None}
 
 
@@ -175,6 +177,48 @@ def test_production_rejects_more_than_31_days_before_extraction(reader, source):
     assert source.calls == []
 
 
+@pytest.mark.parametrize('resource,changes', [
+    ('bulkGateVolumesCB', {'date_basis': None}),
+    ('contGateVolumesCB', {'date_basis': 'createTime'}),
+    ('bulkGateVolumesCB', {'production_scope': None}),
+    ('bulkGateVolumesCB', {'production_scope': ['private-invalid-value']}),
+    ('bulkGateVolumesCB', {'gate_selection': ['private-invalid-value']}),
+    ('bulkQuayVolumesCB', {}),
+    ('contQuayVolumesCB', {'quay_method_ids': {'cua_lo': [1]}}),
+    ('bulkQuayVolumesCB', {'quay_method_ids': {'cua_lo': [1], 'ben_thuy': []}}),
+    ('bulkGateVolumesCB', {'gate_selection': 'methods'}),
+    ('contGateVolumesCB', {'gate_selection': 'methods', 'gate_method_ids': {'cua_lo': [1]}}),
+])
+def test_incomplete_production_mapping_fails_before_slot_or_source(resource, changes, source):
+    class ForbiddenSlots:
+        def acquire(self, **_):
+            pytest.fail('Invalid production mapping must fail before acquiring the SQL slot')
+    reader = LiveReader(profile={**PRODUCTION_PROFILE, **changes}, extract_fn=source)
+    reader._slots = ForbiddenSlots()
+    error = assert_error('SOURCE_MAPPING_REQUIRED', lambda: reader.read(
+        resource, q(startDate='20260901', endDate='20260930')), 503)
+    assert 'private-invalid-value' not in error.message
+    assert source.calls == []
+
+
+@pytest.mark.parametrize('resource,methods', [
+    ('bulkGateVolumesCB', {}),
+    ('contGateVolumesCB', {}),
+    ('bulkQuayVolumesCB', {'quay_method_ids': {'cua_lo': [1], 'ben_thuy': [2]}}),
+    ('contQuayVolumesCB', {'quay_method_ids': {'cua_lo': [1], 'ben_thuy': [2]}}),
+    ('bulkGateVolumesCB', {'gate_selection': 'methods',
+                           'gate_method_ids': {'cua_lo': [1], 'ben_thuy': [2]}}),
+])
+def test_production_preflight_accepts_endpoint_specific_selection(resource, methods):
+    source = Source({resource: []})
+    reader = LiveReader(profile={**PRODUCTION_PROFILE, **methods}, extract_fn=source)
+    try:
+        assert reader.read(resource, q(startDate='20260901', endDate='20260930'))['code'] == '1'
+        assert source.calls == [(resource,)]
+    finally:
+        reader.close()
+
+
 def bulk_source():
     return Source({
         'bulkGateVolumesCB': [{'reportDate': '20260929', 'finishDate': '20260916', 'companyId': 'CNT',
@@ -189,7 +233,7 @@ def bulk_source():
 
 def test_production_resolves_actual_dependencies_only_and_enforces_null_policy():
     source = bulk_source()
-    profile = {**PROFILE, 'accepted_null_fields': {'bulkGateVolumesCB': ['bulkOriginId', 'customerCode']}}
+    profile = {**PRODUCTION_PROFILE, 'accepted_null_fields': {'bulkGateVolumesCB': ['bulkOriginId', 'customerCode']}}
     reader = LiveReader(profile=profile, extract_fn=source)
     try:
         result = reader.read('bulkGateVolumesCB', q(startDate='20260901', endDate='20260930'))
@@ -199,17 +243,34 @@ def test_production_resolves_actual_dependencies_only_and_enforces_null_policy()
         assert len(source.calls) == 2
     finally:
         reader.close()
-    unaccepted = LiveReader(profile=PROFILE, extract_fn=source)
+    source.calls.clear()
+    def forbidden_factory():
+        pytest.fail('Unaccepted nulls must fail before dependency reads or store allocation')
+    unaccepted = LiveReader(profile=PRODUCTION_PROFILE, extract_fn=source, store_factory=forbidden_factory)
     try:
-        assert_error('SOURCE_DATA_NOT_READY', lambda: unaccepted.read(
+        assert_error('SOURCE_NULL_POLICY_REQUIRED', lambda: unaccepted.read(
             'bulkGateVolumesCB', q(startDate='20260901', endDate='20260930')), 503)
+        assert source.calls == [('bulkGateVolumesCB',)]
     finally:
         unaccepted.close()
 
 
+def test_partially_accepted_null_policy_still_blocks_before_dependency_reads():
+    source = bulk_source()
+    profile = {**PRODUCTION_PROFILE, 'accepted_null_fields': {'bulkGateVolumesCB': ['bulkOriginId']}}
+    reader = LiveReader(profile=profile, extract_fn=source)
+    try:
+        error = assert_error('SOURCE_NULL_POLICY_REQUIRED', lambda: reader.read(
+            'bulkGateVolumesCB', q(startDate='20260901', endDate='20260930')), 503)
+        assert source.calls == [('bulkGateVolumesCB',)]
+        assert 'Native cargo' not in error.message
+    finally:
+        reader.close()
+
+
 def test_missing_dependency_reference_and_conflict_never_return_partial_success():
     source = bulk_source()
-    profile = {**PROFILE, 'accepted_null_fields': {'bulkGateVolumesCB': ['bulkOriginId', 'customerCode']}}
+    profile = {**PRODUCTION_PROFILE, 'accepted_null_fields': {'bulkGateVolumesCB': ['bulkOriginId', 'customerCode']}}
     source.rows['cargoType'][0]['cargoTypeId'] = '999'
     reader = LiveReader(profile=profile, extract_fn=source)
     try:
@@ -249,6 +310,13 @@ def test_exception_details_are_never_exposed():
 
 @pytest.mark.parametrize('code,retry_after', [
     ('SOURCE_UNAVAILABLE', 5), ('SOURCE_TIMEOUT', 5), ('SOURCE_ID_CONFLICT', None),
+    ('DATE_BASIS_UNCONFIRMED', None), ('PRODUCTION_SCOPE_UNCONFIRMED', None),
+    ('QUAY_METHODS_UNCONFIRMED', None), ('GATE_METHODS_UNCONFIRMED', None),
+    ('CARGO_KIND_UNMAPPED', None), ('CARGO_TYPE_UNMAPPED', None),
+    ('CONTAINER_SIZE_RELATION_UNCONFIRMED', None), ('CONTAINER_SIZE_UNMAPPED', None),
+    ('CONTAINER_QUANTITY_UNIT_UNCONFIRMED', None), ('WEIGHT_OR_UNIT_UNAVAILABLE', None),
+    ('CONTAINER_QUANTITY_UNAVAILABLE', None), ('WEIGHT_OUT_OF_RANGE', None),
+    ('AGGREGATE_OUT_OF_RANGE', None),
 ])
 @pytest.mark.parametrize('object_blocker', [False, True])
 def test_known_source_failure_categories_keep_fixed_safe_messages(source, code, retry_after, object_blocker):
@@ -263,6 +331,26 @@ def test_known_source_failure_categories_keep_fixed_safe_messages(source, code, 
     assert error.retry_after == retry_after
     assert 'Password' not in error.message and 'private-host' not in error.message
     assert 'private-record' not in error.message
+
+
+@pytest.mark.parametrize('blockers,expected', [
+    (['CARGO_KIND_UNMAPPED', 'SOURCE_UNAVAILABLE', 'SOURCE_TIMEOUT'], 'SOURCE_TIMEOUT'),
+    (['WEIGHT_OR_UNIT_UNAVAILABLE', 'SOURCE_ID_CONFLICT', 'SOURCE_UNAVAILABLE'], 'SOURCE_UNAVAILABLE'),
+    (['DATE_BASIS_UNCONFIRMED', 'SOURCE_ID_CONFLICT'], 'SOURCE_ID_CONFLICT'),
+])
+def test_source_failure_priority_precedes_mapping_and_null_policy(blockers, expected):
+    source = bulk_source()
+    def fail(*args):
+        preview = source(*args)
+        preview['datasets']['bulkGateVolumesCB'].update(ready=False, blockers=blockers)
+        return preview
+    reader = LiveReader(profile=PRODUCTION_PROFILE, extract_fn=fail)
+    try:
+        assert_error(expected, lambda: reader.read(
+            'bulkGateVolumesCB', q(startDate='20260901', endDate='20260930')), 503)
+        assert source.calls == [('bulkGateVolumesCB',)]
+    finally:
+        reader.close()
 
 
 def test_unknown_source_failure_never_echoes_arbitrary_code_or_message(source):
@@ -335,7 +423,7 @@ def test_invalid_rows_and_missing_operation_dates_fail_validation():
 
 def test_31_day_production_limit_is_inclusive_and_accepts_verified_empty_period():
     source = Source({'bulkGateVolumesCB': []})
-    reader = LiveReader(profile=PROFILE, extract_fn=source)
+    reader = LiveReader(profile=PRODUCTION_PROFILE, extract_fn=source)
     try:
         result = reader.read('bulkGateVolumesCB', q(startDate='20260701', endDate='20260731'))
         assert result['data'] == [] and result['code'] == '1'
