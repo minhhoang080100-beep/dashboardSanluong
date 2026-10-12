@@ -315,3 +315,29 @@ frontend đạt. Kiểm tra trình duyệt bằng dữ liệu giả lập ở k�
 và 375px xác nhận đọc chi tiết theo thao tác, giữ JSON gốc, hủy yêu cầu cũ
 khi đổi bộ lọc và không tràn ngang. Đây chưa phải kiểm thử đăng nhập/giao
 diện production với tài khoản quản trị thật.
+
+## Kiểm tra sau triển khai ngày 12/10/2026
+
+Railway đã triển khai thành công mã `e837b28`. Đăng nhập và đăng xuất tài khoản
+API qua domain production đều trả 200. Kết quả HTTP đọc mới:
+
+| Endpoint | Kỳ | HTTP | Dòng tổng hợp | Tấn | TEU |
+|---|---|---:|---:|---:|---:|
+| contQuayVolumesCB | 01–30/09/2026 | 200 | 118 | Chưa cộng toàn bộ trang | Chưa cộng toàn bộ trang |
+| contQuayVolumesCB | 01–12/10/2026 | 200 | 22 | 16.107,52 | 1.047 |
+| contGateVolumesCB | 01–12/10/2026 | 200 | 42 | 8.496,84 | 750 |
+| bulkGateVolumesCB | 01–12/10/2026 | 503 | — | — | — |
+| bulkGateVolumesCB | 01–30/09/2026 | 503 | — | — | — |
+
+Hàng rời cổng/bãi kỳ tháng 10 giữ mã `WEIGHT_OR_UNIT_UNAVAILABLE`; kỳ tháng 9
+giữ mã `CARGO_KIND_UNMAPPED`. Không trả các dòng đã tính được như một kết quả
+đầy đủ. Bốn endpoint ngày 16/09 đều trả 200; tấn và TEU khớp bảng kiểm tra
+ngày 30/09 phía trên. Phản hồi công khai vẫn chỉ có `data`, `code`, `message`.
+Các lượt gọi trên mất khoảng 9–14 giây; đây là số đo lần kiểm tra, không phải
+cam kết thời gian phản hồi.
+
+Vercel đã phục vụ JavaScript/CSS có nút và bảng chẩn đoán mới. Đây là kiểm
+tra tài nguyên triển khai, chưa phải đăng nhập giao diện production bằng
+tài khoản quản trị. Bằng chứng HTTP và tài nguyên frontend nằm trong
+`outputs/api-review-20261012/production-http.result.json` và
+`outputs/api-review-20261012/frontend-deployment.json` ở máy rà soát.

@@ -12,9 +12,11 @@ from playwright.sync_api import expect, sync_playwright
 PLAN_PERIOD_QUERY_KEYS = {"period_type", "week", "month", "quarter", "year", "start_date", "end_date", "voyage_id"}
 
 
-def install_navigation_fixture(page, role="admin"):
+def install_navigation_fixture(page, role="admin", *, terminals=None):
     state = {"requests": [], "reports": [], "plan_queries": []}
     auth = install_auth_fixture(page, role=role)
+    if terminals is not None:
+        auth["user"]["terminals"] = list(terminals)
 
     def respond(route):
         path = urlparse(route.request.url).path.removeprefix("/api")
@@ -44,6 +46,10 @@ def install_navigation_fixture(page, role="admin"):
             route.fulfill(json={"items": [], "total": 0, "page": 1, "page_size": 25})
         elif path == "/admin/metrics":
             route.fulfill(json={"operations": {}, "cache": {}})
+        elif path == "/admin/corporate-api/catalog":
+            route.fulfill(json={"enabled": True, "companyId": "CNT", "mode": "internal", "readMode": "live", "resources": [
+                {"id": "origins", "label": "Xuất xứ hàng hóa", "group": "catalog_s", "method": "GET",
+                 "path": "/api/origins", "status": "live", "filters": []}]})
         else:
             route.fallback()
 
@@ -78,7 +84,9 @@ def main():
         page.goto(f"{args.url.rstrip('/')}#admin")
         active_view(page, "admin")
         expect(page.locator(".sidebar")).to_have_count(0)
-        expect(page.locator(".top-nav a")).to_have_count(3)
+        expect(page.locator(".top-nav a")).to_have_count(4)
+        assert page.locator(".top-nav a").evaluate_all("links => links.map(link => link.getAttribute('href'))") == [
+            "#overview", "#management", "#api-inspector", "#admin"]
         expect(page.locator("#admin-content")).to_be_visible()
         expect(page.get_by_role("heading", name="Tài khoản nội bộ", exact=True)).to_be_visible()
         expect(page.get_by_text("Chưa có tài khoản.", exact=True)).to_be_visible()
@@ -87,6 +95,18 @@ def main():
         assert not any(path.startswith('/reports/') for path in state["requests"])
         page.screenshot(path=str(output / "browser-navigation-admin.png"), full_page=True)
         checks.append("direct admin entry shows only admin tools and never requests production report data")
+
+        go_view(page, "api-inspector")
+        expect(page.get_by_role("heading", name="Kiểm tra API", exact=True)).to_be_visible()
+        expect(page.get_by_role("heading", name="Đăng nhập API", exact=True)).to_be_visible()
+        expect(page.get_by_role("button", name="Chạy kiểm tra", exact=True)).to_be_disabled()
+        expect(page.locator(".api-inspector-resource")).to_have_count(1)
+        # Development StrictMode can replay the metadata effect; only an
+        # explicit inspection may read production source data.
+        assert "/admin/corporate-api/catalog" in state["requests"]
+        assert "/admin/corporate-api/inspect" not in state["requests"]
+        assert state["reports"] == []
+        checks.append("admin with both terminals sees the API tab and its catalog; entering it performs no production or inspection read")
 
         go_view(page, "overview")
         expect(page.locator(".kpi-card")).to_have_count(3)
@@ -137,7 +157,7 @@ def main():
         expect(page.locator("#management-content")).to_be_hidden()
         expect(page.locator(".filter-panel")).to_be_hidden()
         assert len(state["reports"]) == report_count
-        checks.append("three separate views retain the exact selected filters and report snapshot without rereading SQL")
+        checks.append("report, planning and admin views retain the exact selected filters and report snapshot without rereading SQL")
 
         page.go_back()
         active_view(page, "management")
@@ -163,7 +183,7 @@ def main():
 
         for width in (1440, 1024, 850, 390, 320):
             page.set_viewport_size({"width": width, "height": 844})
-            for view in ("overview", "management", "admin"):
+            for view in ("overview", "management", "api-inspector", "admin"):
                 go_view(page, view)
                 expect(page.locator(".top-nav")).to_be_visible()
                 assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), {"view": view, "width": width}
@@ -233,22 +253,28 @@ def main():
         direct.close()
         checks.append("opening closed reports starts one lazy report read; reconciliation reuses that snapshot and plans hides report controls")
 
-        for role in ("viewer", "manager"):
+        for role, terminals in (("viewer", ["cua_lo", "ben_thuy"]), ("manager", ["cua_lo", "ben_thuy"]), ("admin", ["cua_lo"])):
             scoped_page = browser.new_page(viewport={"width": 1280, "height": 900})
-            scoped_state, scoped_auth = install_navigation_fixture(scoped_page, role)
+            scoped_state, scoped_auth = install_navigation_fixture(scoped_page, role, terminals=terminals)
             scoped_page.on("pageerror", lambda error: errors.append(str(error)))
-            scoped_page.goto(f"{args.url.rstrip('/')}#admin")
+            denied_entry = "admin" if role != "admin" else "api-inspector"
+            scoped_page.goto(f"{args.url.rstrip('/')}#{denied_entry}")
             active_view(scoped_page, "overview")
             expect(scoped_page.locator(".kpi-card")).to_have_count(3)
-            expect(scoped_page.locator(".top-nav a")).to_have_count(2)
-            expect(scoped_page.locator('.top-nav a[href="#admin"]')).to_have_count(0)
+            expect(scoped_page.locator(".top-nav a")).to_have_count(3 if role == "admin" else 2)
+            expect(scoped_page.locator('.top-nav a[href="#admin"]')).to_have_count(1 if role == "admin" else 0)
+            expect(scoped_page.locator('.top-nav a[href="#api-inspector"]')).to_have_count(0)
             expect(scoped_page.locator("#admin-content")).to_have_count(0)
             assert not any(path.startswith(('/users', '/admin/')) for path in scoped_state["requests"])
+            scoped_page.evaluate("window.location.hash = 'api-inspector'")
+            active_view(scoped_page, "overview")
+            expect(scoped_page.locator(".api-inspector")).to_have_count(0)
+            assert not any(path.startswith('/admin/corporate-api/') for path in scoped_state["requests"])
             go_view(scoped_page, "management")
             expect(scoped_page.locator("#management-content").get_by_role("tab")).to_have_count(3)
             assert scoped_auth["unexpected"] == [], scoped_auth["unexpected"]
             scoped_page.close()
-        checks.append("viewers and managers cannot enter admin or trigger its APIs, including direct admin URLs")
+        checks.append("viewers and managers cannot enter admin; viewers, managers and single-terminal admins cannot enter API inspection or trigger its APIs through direct URLs or hash changes")
         assert errors == [], errors
         browser.close()
     result = {"status": "passed", "data": "synthetic intercepted browser fixtures only", "checks": checks, "page_errors": errors}
