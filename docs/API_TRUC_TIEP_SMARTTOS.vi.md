@@ -203,3 +203,115 @@ Các vấn đề nguồn còn phải đối chiếu khi lấy tháng 09:
 - Hàng rời: có phiếu thiếu khối lượng/đơn vị quy đổi hợp lệ và có phương án chưa
   được chọn. Cần sửa hoặc xác nhận tại nguồn; quyền để null cho trường tùy chọn
   không áp dụng cho tấn, mã hàng, ngày hay phương án bắt buộc.
+
+## Rà soát nguồn và bản ứng viên ngày 12/10/2026
+
+Đã đọc lại hai nguồn SmartTOS cho tháng 09/2026 và khoảng 01–12/10/2026,
+rồi đối chiếu bộ trích xuất hiện có với bản ứng viên. Đây là kiểm tra nguồn
+và mã ứng viên, **chưa phải xác nhận đã triển khai các thay đổi ngày 12/10**
+hoặc mọi API đều sẵn sàng. Các mục ngày 29–30/09 phía trên ghi nhận những lần
+kiểm tra trước; số liệu mới có thể khác vì mỗi lần đọc lấy lại dữ liệu nguồn.
+
+Bằng chứng của lần rà soát này:
+
+Các tệp bên dưới chỉ lưu ở máy rà soát trong thư mục `outputs/`, không đưa dữ
+liệu nguồn vào Git. Liên kết này không có tệp đính kèm trong repository công khai.
+
+- [Nguồn trước thay đổi](../outputs/api-review-20261012/source_review.result.json).
+- [Kết quả bản ứng viên](../outputs/api-review-20261012/candidate_source_review.result.json).
+- [Phiếu, đơn vị và hệ số nguồn](../outputs/api-review-20261012/unit_evidence.result.json).
+- [Đối chiếu manifest](../outputs/api-review-20261012/manifest_evidence.result.json).
+
+Bản ứng viên bổ sung hai quy tắc hẹp:
+
+- Phiếu đã xác định là hàng rời, có mã hàng dương hợp lệ, chỉ được loại là
+  phiếu trống khi **cả số lượng và khối lượng nguồn đều đúng bằng 0**. Trước
+  khi loại vẫn kiểm tra phương án, ngày và điều kiện tàu/hướng hàng qua cầu.
+  Không cần suy ra đơn vị tấn cho phiếu không có lượng; có bộ đếm riêng
+  `excluded_empty_bulk_rows`. Phiếu có số đo null, sai kiểu, âm hoặc khác 0
+  không được loại bằng quy tắc này.
+- Một số tác nghiệp kho/bãi ghi giờ vào `weightNetSum`, thay vì trường số
+  lượng. Ví dụ phiếu Cửa Lò `308824`, `317711`, `318419` có đơn vị trọng lượng
+  thực tế `GIO`, số lượng 0 và chưa có đơn vị số lượng. Bản ứng viên đọc thêm
+  mã đơn vị của `weightUnitId`; chỉ loại trường hợp này khi mã hàng hợp lệ,
+  thuộc kho/bãi, số lượng đúng bằng 0, đơn vị số lượng trống và số giờ hữu hạn,
+  không âm. Không áp dụng cho số lượng dương/null, đơn vị khác, hoặc tác nghiệp
+  qua cầu. Quy tắc cũ về đơn vị số lượng `GIO` giữ nguyên.
+
+Hai quy tắc không thay công thức tấn, không sửa những khối lượng dương đã có
+đơn vị quy đổi hợp lệ và không biến khối lượng thiếu thành 0. Số dòng tổng hợp
+giảm khi loại các dòng 0; không được dùng việc giảm số dòng để kết luận đã xử
+lý hết dữ liệu thiếu. Kiểm thử hồi quy giữ các trường hợp số đo dương, null,
+âm, boolean, NaN, ngày/phương án không hợp lệ và thiếu thông tin tàu trong
+nhánh kiểm tra tương ứng, thay vì cho đi qua nhánh loại phiếu trống.
+
+Số phiếu bị chặn bởi `WEIGHT_OR_UNIT_UNAVAILABLE` trong hai lần đọc:
+
+| Kỳ | Endpoint | Trước | Bản ứng viên |
+|---|---|---:|---:|
+| 01–30/09/2026 | bulkGateVolumesCB | 33 | 14 |
+| 01–12/10/2026 | bulkGateVolumesCB | 13 | 7 |
+| 01–30/09/2026 | bulkQuayVolumesCB | 24 | 24 |
+| 01–12/10/2026 | bulkQuayVolumesCB | 11 | 11 |
+
+Mức giảm lỗi đơn vị tại cổng/bãi đến từ nhận diện giờ ở trường trọng lượng:
+19 phiếu tháng 9 và 6 phiếu trong kỳ tháng 10. Bản ứng viên vẫn chưa sẵn sàng
+cho hai API hàng rời ở các kỳ trên. Tháng 9 còn 3 phiếu cổng/bãi thiếu phương
+án và 8 phiếu chưa phân loại hàng; các lỗi này không được xóa bởi sửa lỗi
+đơn vị. Container qua cầu đủ điều kiện ở cấp bộ trích xuất trong cả hai kỳ;
+container cổng/bãi tháng 9 vẫn bị chặn. Các kết quả này không thay thế kiểm
+tra tham chiếu và HTTP của toàn bộ bộ đọc live sau triển khai.
+
+Những vấn đề còn cần xác nhận nghiệp vụ hoặc bổ sung tại nguồn:
+
+- **GÀU của cát/than tại Bến Thủy:** số 500 của phiếu `87042`, `89249` và 570
+  của phiếu `89265` có đơn vị `GÀU`, không phải tấn. Số lượng bằng 0 không đủ
+  để loại các phiếu này vì giá trị nguồn dương. Cần quy tắc quy đổi được duyệt
+  cho đúng hàng, thiết bị và phạm vi áp dụng, hoặc khối lượng cân thực tế.
+- **M3 của gỗ, M2 của cọc bê tông, CAI của pallet:** phiếu `317946`, `309602`,
+  `313291` chưa có cơ sở đã duyệt để đưa vào chỉ tiêu tấn. Có bản ghi chuyển
+  đổi M3→KG theo hàng gỗ trong danh mục nguồn, nhưng sự tồn tại của một hệ số
+  chưa xác nhận được phạm vi áp dụng nghiệp vụ. Không lấy `BaseUnit.TONE=1`
+  ở đơn vị `CAI` để mặc định một cái bằng một tấn; không lấy hệ số của mặt
+  hàng khác bù vào pallet. Cần duyệt quan hệ nguồn–đích, mặt hàng, giá trị hệ
+  số và thời gian áp dụng trước khi mở rộng quy đổi.
+- **Hai phiếu thu phí chưa có hàng:** Bến Thủy `88166`, `88178` thuộc phương
+  án `TRUC THU PHI`, có `cargoId=0` nhưng ghi 180 ở trường trọng lượng, đơn vị
+  `TAN`. Tên phương án gợi ý hoạt động dịch vụ, chưa đủ để tự loại khỏi phạm
+  vi sản lượng hoặc gán thành hàng rời. Cần xác nhận phạm vi nghiệp vụ; khi
+  chưa phân loại, các phiếu này vẫn có thể chặn cả API container và hàng rời
+  cổng/bãi. Chúng chỉ là hai phiếu trong nhóm chưa phân loại, không phải toàn
+  bộ 8 phiếu của tháng 9.
+- **Container `310813`, `310820`:** mỗi phiếu có số lượng 1, hàng `Khác`,
+  thiếu khối lượng và chưa xác định được kích cỡ. Manifest `8166`, `8165`
+  cũng thiếu các trường khối lượng cần thiết; không có dòng `ContainerManifest`
+  tương ứng trong kết quả đối chiếu. Danh sách mã hàng con của manifest không
+  xác định kích cỡ của từng phiếu. Không tự lấy khối lượng định mức, chia
+  khối lượng tổng hoặc chọn một kích cỡ để làm API hết lỗi.
+
+Chẩn đoán nội bộ dành cho quản trị viên bổ sung mã lỗi, số lượng lỗi và tối đa
+50 mẫu tham chiếu nguồn để tìm đúng phiếu cần đối chiếu. Số đo và mã đơn vị
+được kiểm tra theo danh sách/kiểu cho phép trước khi trả qua công cụ Kiểm tra
+API; không đưa thông báo driver, SQL hoặc dữ liệu tùy ý vào phản hồi. Chẩn đoán
+dùng chính lần đọc phát sinh lỗi, không truy vấn lặp để dựng lại mẫu và không
+lưu cache giữa các yêu cầu. Hợp đồng phản hồi API bên ngoài vẫn là `data`,
+`code`, `message`; không thêm các mẫu chẩn đoán vào schema công khai.
+
+Trong chế độ **Tài khoản API**, sau lỗi 503 quản trị viên có thể bấm **Xem
+phiếu cần kiểm tra** để chủ động gửi một yêu cầu nội bộ mới với đúng bộ lọc
+của lần lỗi. Đây là một lần đọc SQL mới; kết quả API/JSON ban đầu vẫn giữ
+nguyên. Trong chế độ **Dữ liệu nội bộ**, chi tiết đã đi kèm cùng lần đọc nên
+không cần gửi thêm yêu cầu. Đổi bộ lọc hoặc API sẽ hủy chi tiết cũ đang tải.
+
+Kiểm tra tiếp toàn bộ bộ đọc ứng viên trong tiến trình riêng trên Railway,
+không thay service đang chạy: `contGateVolumesCB` kỳ 01–12/10 trả 42 dòng,
+8.496,84 tấn và 750 TEU sau kiểm tra tham chiếu. `bulkGateVolumesCB` cùng kỳ
+giữ lỗi 503 với đúng 7 phiếu Bến Thủy dùng đơn vị GÀU; chẩn đoán trả được
+mã phiếu và số đo nguồn. Bằng chứng nội bộ:
+`outputs/api-review-20261012/candidate_live_review.result.json`.
+
+1.484 kiểm thử nhóm API backend và 200 kiểm thử frontend đạt; lint và build
+frontend đạt. Kiểm tra trình duyệt bằng dữ liệu giả lập ở kích thước 1280px
+và 375px xác nhận đọc chi tiết theo thao tác, giữ JSON gốc, hủy yêu cầu cũ
+khi đổi bộ lọc và không tràn ngang. Đây chưa phải kiểm thử đăng nhập/giao
+diện production với tài khoản quản trị thật.

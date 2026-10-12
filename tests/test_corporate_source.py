@@ -120,6 +120,64 @@ def test_zero_quantity_does_not_turn_unknown_weight_into_zero():
     assert 'WEIGHT_OR_UNIT_UNAVAILABLE' in result['contGateVolumesCB']['blockers']
 
 
+@pytest.mark.parametrize('hours', [0, Decimal('1'), Decimal('2.5')])
+def test_yard_hours_in_native_weight_are_excluded_with_explicit_zero_quantity(hours):
+    result, _ = run([yard_fact(cargo_id=2, quantity=0, native_weight=hours,
+                              quantity_unit_code=None, weight_unit_code='GIO',
+                              tonne_factor=None)], yard_profile())
+    data = result['bulkGateVolumesCB']
+    assert data['ready'] and data['rows'] == []
+    assert data['excluded_time_rows'] == 1 and data['excluded_empty_bulk_rows'] == 0
+    assert any('không quy đổi giờ thành tấn' in warning for warning in data['warnings'])
+
+
+@pytest.mark.parametrize('updates', [
+    {'quantity': 1}, {'quantity': None}, {'quantity': -1}, {'quantity': False},
+    {'quantity_unit_code': 'TAN'}, {'native_weight': None}, {'native_weight': -1},
+    {'native_weight': True}, {'native_weight': Decimal('NaN')},
+    {'weight_unit_code': 'M3'}, {'weight_unit_code': 'M2'}, {'weight_unit_code': 'CAI'},
+])
+def test_yard_weight_unit_time_rule_preserves_cargo_or_incomplete_measurements(updates):
+    row = yard_fact(**{'cargo_id': 2, 'quantity': 0, 'native_weight': Decimal('2.5'),
+                      'quantity_unit_code': None, 'weight_unit_code': 'GIO',
+                      'tonne_factor': None, **updates})
+    result, _ = run([row], yard_profile())
+    data = result['bulkGateVolumesCB']
+    assert data['blockers'] == ['WEIGHT_OR_UNIT_UNAVAILABLE']
+    assert data.get('excluded_time_rows', 0) == data['excluded_empty_bulk_rows'] == 0
+
+
+def test_physical_quay_weight_in_hours_is_not_discarded_as_yard_service():
+    result, _ = run([fact(cargo_id=2, quantity=0, native_weight=1,
+                         quantity_unit_code=None, weight_unit_code='GIO', tonne_factor=None)])
+    data = result['bulkQuayVolumesCB']
+    assert data['blockers'] == ['WEIGHT_OR_UNIT_UNAVAILABLE']
+    assert data.get('excluded_time_rows', 0) == 0
+
+
+def test_existing_quantity_hours_rule_is_preserved_with_available_weight():
+    result, _ = run([yard_fact(cargo_id=2, quantity=1, quantity_unit_code='GIO')], yard_profile())
+    data = result['bulkGateVolumesCB']
+    assert data['ready'] and data['rows'] == [] and data['excluded_time_rows'] == 1
+
+
+def test_yard_weight_hours_rule_does_not_hide_invalid_cargo_or_method():
+    p = yard_profile()
+    p['cargo_kind_by_group'] = {'cua_lo': {'55': 'bulk'}}
+    for updates, code in [({'cargo_id': None}, 'WEIGHT_OR_UNIT_UNAVAILABLE'),
+                          ({'method_id': None}, 'METHOD_ID_UNAVAILABLE')]:
+        result, _ = run([yard_fact(**{'cargo_id': 2, 'cargo_group_id': 55, 'quantity': 0,
+                                     'native_weight': 1, 'quantity_unit_code': None,
+                                     'weight_unit_code': 'GIO', 'tonne_factor': None, **updates})], p)
+        data = result['bulkGateVolumesCB']
+        assert data['blockers'] == [code] and data.get('excluded_time_rows', 0) == 0
+
+
+def test_fact_sql_reads_actual_native_weight_unit_for_yard_hour_classification():
+    for terminal in ('cua_lo', 'ben_thuy'):
+        assert 'u.baseUnitCode AS weight_unit_code' in _facts_sql(terminal)
+
+
 @pytest.mark.parametrize('unit', [None, 'XE', 'TAN'])
 def test_container_count_unit_must_be_cont(unit):
     result, _ = run([yard_fact(quantity_unit_code=unit)], yard_profile())
@@ -305,6 +363,123 @@ def test_zero_activity_does_not_hide_invalid_source_id_or_unclassified_cargo():
     for name in ('contGateVolumesCB', 'bulkGateVolumesCB'):
         assert result[name]['blockers'] == ['CARGO_KIND_UNMAPPED']
         assert result[name]['excluded_empty_container_rows'] == 0
+
+
+@pytest.mark.parametrize('side', ['quay', 'yard'])
+@pytest.mark.parametrize('factor', [None, Decimal('1')])
+@pytest.mark.parametrize('classification', ['cargo', 'group'])
+def test_known_bulk_explicit_zero_activity_needs_no_mass_unit(side, factor, classification):
+    p = yard_profile() if side == 'yard' else profile()
+    make_fact = yard_fact if side == 'yard' else fact
+    if classification == 'group':
+        p['cargo_kind_by_cargo']['cua_lo'].pop('2')
+        p['cargo_kind_by_group'] = {'cua_lo': {'55': 'bulk'}}
+    result, _ = run([make_fact(cargo_id=2, cargo_group_id=55, quantity=0,
+                              native_weight=Decimal('0.00'), tonne_factor=factor,
+                              quantity_unit_code=None)], p)
+    data = result['bulkGateVolumesCB' if side == 'yard' else 'bulkQuayVolumesCB']
+    assert data['ready'] and data['rows'] == [] and data['source_row_count'] == 1
+    assert data['excluded_empty_bulk_rows'] == 1
+    assert any('số lượng và trọng lượng nguồn đều bằng 0' in warning for warning in data['warnings'])
+
+
+@pytest.mark.parametrize('updates', [
+    {'quantity': 1}, {'quantity': None}, {'quantity': -1}, {'quantity': False},
+    {'quantity': Decimal('NaN')}, {'native_weight': None}, {'native_weight': Decimal('0.01')},
+    {'native_weight': -1}, {'native_weight': False}, {'native_weight': Decimal('NaN')},
+])
+def test_bulk_empty_rule_never_hides_missing_invalid_or_nonzero_measurements(updates):
+    result, _ = run([yard_fact(**{'cargo_id': 2, 'quantity': 0, 'native_weight': 0,
+                                 'tonne_factor': None, 'quantity_unit_code': None, **updates})], yard_profile())
+    data = result['bulkGateVolumesCB']
+    assert data['blockers'] == ['WEIGHT_OR_UNIT_UNAVAILABLE']
+    assert data['excluded_empty_bulk_rows'] == 0
+
+
+@pytest.mark.parametrize('updates,blocker', [
+    ({'method_id': None}, 'METHOD_ID_UNAVAILABLE'),
+    ({'business_date': None}, 'SOURCE_DATE_INVALID'),
+    ({'business_date': date(2026, 10, 1)}, 'SOURCE_DATE_INVALID'),
+])
+def test_empty_bulk_still_validates_method_and_business_date(updates, blocker):
+    result, _ = run([yard_fact(**{'cargo_id': 2, 'quantity': 0, 'native_weight': 0,
+                                 'tonne_factor': None, 'quantity_unit_code': None, **updates})], yard_profile())
+    data = result['bulkGateVolumesCB']
+    assert data['blockers'] == [blocker] and data['excluded_empty_bulk_rows'] == 0
+
+
+@pytest.mark.parametrize('updates', [{'ship_id': None}, {'direction_id': None}, {'physical_voyage': None}])
+def test_empty_bulk_still_validates_physical_ship_data(updates):
+    result, _ = run([fact(**{'cargo_id': 2, 'quantity': 0, 'native_weight': 0,
+                            'tonne_factor': None, **updates})])
+    data = result['bulkQuayVolumesCB']
+    assert data['blockers'] == ['PHYSICAL_SHIP_OR_DIRECTION_UNAVAILABLE']
+    assert data['excluded_empty_bulk_rows'] == 0
+
+
+@pytest.mark.parametrize('cargo', [None, -1, True])
+def test_group_classification_cannot_hide_missing_or_invalid_bulk_cargo_identity(cargo):
+    p = yard_profile()
+    p['cargo_kind_by_group'] = {'cua_lo': {'55': 'bulk'}}
+    result, _ = run([yard_fact(cargo_id=cargo, cargo_group_id=55, quantity=0,
+                              native_weight=0, tonne_factor=None)], p)
+    data = result['bulkGateVolumesCB']
+    assert data['blockers'] == ['WEIGHT_OR_UNIT_UNAVAILABLE']
+    assert data['excluded_empty_bulk_rows'] == 0
+
+
+def test_empty_bulk_preserves_unknown_cargo_blockers_and_existing_totals():
+    existing = [fact(), fact(source_id=2, cargo_id=2)]
+    before, _ = run(existing)
+    after, _ = run(existing + [fact(source_id=3, cargo_id=2, quantity=0,
+                                   native_weight=0, tonne_factor=None)])
+    for name in RESOURCES:
+        assert after[name]['rows'] == before[name]['rows'] and after[name]['ready']
+    result, _ = run([yard_fact(cargo_id=999, quantity=0, native_weight=0,
+                              tonne_factor=None)], yard_profile())
+    for name in ('contGateVolumesCB', 'bulkGateVolumesCB'):
+        assert result[name]['blockers'] == ['CARGO_KIND_UNMAPPED']
+        assert result[name]['excluded_empty_bulk_rows'] == 0
+
+
+@pytest.mark.parametrize('updates,code', [
+    ({'cargo_id': 999}, 'CARGO_KIND_UNMAPPED'),
+    ({'method_id': None}, 'METHOD_ID_UNAVAILABLE'),
+    ({'business_date': None}, 'SOURCE_DATE_INVALID'),
+    ({'native_weight': Decimal('1000000000000001')}, 'WEIGHT_OUT_OF_RANGE'),
+    ({'cargo_id': 2, 'cargo_group_id': None}, 'CARGO_TYPE_UNMAPPED'),
+])
+def test_per_fact_blockers_include_private_source_reference_samples(updates, code):
+    p = yard_profile()
+    p['cargo_catalog_source'] = 'native_groups'
+    result, _ = run([yard_fact(**{'cargo_id': 2, 'cargo_group_id': 55, **updates})], p)
+    data = result['bulkGateVolumesCB']
+    assert data['issue_counts'] == {code: 1}
+    sample = data['issue_samples'][0]
+    assert sample['code'] == code and sample['terminal'] == 'cua_lo'
+    assert sample['sourceId'] == 1 and sample['cargoId'] == updates.get('cargo_id', 2)
+
+
+def test_unmapped_source_samples_remain_bounded_while_issue_count_is_complete():
+    result, _ = run([yard_fact(source_id=i, cargo_id=999) for i in range(1, 61)], yard_profile())
+    for name in ('contGateVolumesCB', 'bulkGateVolumesCB'):
+        data = result[name]
+        assert data['issue_counts'] == {'CARGO_KIND_UNMAPPED': 60}
+        assert len(data['issue_samples']) == 50
+
+
+@pytest.mark.parametrize('weight', [None, Decimal('123.456789')])
+def test_private_issue_samples_preserve_missing_and_native_measurement_context(weight):
+    result, _ = run([yard_fact(cargo_id=2, native_weight=weight, quantity=Decimal('2.5'),
+                              quantity_unit_code='CAI', weight_unit_code='M3',
+                              tonne_factor=None)], yard_profile())
+    sample = result['bulkGateVolumesCB']['issue_samples'][0]
+    assert sample['code'] == 'WEIGHT_OR_UNIT_UNAVAILABLE'
+    assert sample['quantityUnit'] == 'CAI' and sample['weightUnit'] == 'M3'
+    assert sample['nativeWeight'] == weight and sample['tonneFactor'] is None
+    assert sample['quantity'] == Decimal('2.5')
+    assert sample['nativeWeight'] is None or type(sample['nativeWeight']) is Decimal
+    assert type(sample['quantity']) is Decimal
 
 
 @pytest.mark.parametrize('side', ['quay', 'yard'])

@@ -3,6 +3,7 @@ import { AlertCircle, ArrowLeft, ArrowRight, Braces, Check, Copy, Database, KeyR
 import { apiRequest } from '../api-client.js';
 import { inspectCorporateApi, loginCorporateApi, logoutCorporateApi } from '../corporate-api-client.js';
 import { formatNumber, formatTimestamp } from '../dashboard-data.js';
+import { DIAGNOSTIC_FIELDS, DIAGNOSTIC_SAMPLE_LIMIT, createDiagnosticsRequestTracker, diagnosticMeasurement, diagnosticReason, diagnosticValue, diagnosticsRequest, validateDiagnostics } from '../api-diagnostics.js';
 import {
   INSPECTOR_GROUPS, INSPECTOR_HEADERS, INSPECTOR_LIMITS, INSPECTOR_LIVE_MAX_DAYS, buildInspectorQuery,
   dateInput, initialInspectorValues, inspectorCell, inspectorColumns, inspectorFields,
@@ -33,6 +34,10 @@ export default function ApiInspector({ apiBase }) {
   const [authError, setAuthError] = useState('');
   const [authNotice, setAuthNotice] = useState('');
   const [authStatus, setAuthStatus] = useState(null);
+  const [diagnosticsResult, setDiagnosticsResult] = useState(null);
+  const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
+  const [diagnosticsError, setDiagnosticsError] = useState('');
+  const diagnosticsTracker = useRef(createDiagnosticsRequestTracker());
   const authSequence = useRef(0);
   const authController = useRef(null);
   const passwordInput = useRef(null);
@@ -50,6 +55,7 @@ export default function ApiInspector({ apiBase }) {
     const timer = setTimeout(() => {
       setApiSession(null); setAuthNotice(''); setAuthStatus(null); setAuthError('Phiên API đã hết hạn. Vui lòng đăng nhập API lại.');
       if (mode === 'api') {
+        clearDiagnostics();
         requestSequence.current += 1; requestController.current?.abort(); copySequence.current += 1;
         setResponse(null); setBusy(false); setCopyNotice('');
       }
@@ -61,6 +67,7 @@ export default function ApiInspector({ apiBase }) {
     const controller = new AbortController();
     requestSequence.current += 1;
     requestController.current?.abort();
+    clearDiagnostics();
     setCatalogLoading(true); setCatalogError(''); setCatalog(null);
     setResponse(null); setBusy(false); setError(''); setCopyNotice('');
     apiRequest('/admin/corporate-api/catalog', { baseUrl: apiBase, signal: controller.signal })
@@ -72,7 +79,8 @@ export default function ApiInspector({ apiBase }) {
       })
       .catch((failure) => { if (!controller.signal.aborted) setCatalogError(failure.message || 'Chưa tải được danh sách API.'); })
       .finally(() => { if (!controller.signal.aborted) setCatalogLoading(false); });
-    return () => { controller.abort(); requestSequence.current += 1; requestController.current?.abort(); copySequence.current += 1; };
+    const tracker = diagnosticsTracker.current;
+    return () => { controller.abort(); requestSequence.current += 1; requestController.current?.abort(); copySequence.current += 1; tracker.cancel(); };
   }, [apiBase, catalogRevision]);
 
   const resource = catalog?.resources.find((item) => item.id === selectedId) || null;
@@ -98,7 +106,11 @@ export default function ApiInspector({ apiBase }) {
   const sourceReadAt = inspectorHeader(response?.headers, 'X-Source-Read-At');
   const canInspect = !authBusy && (mode === 'internal' || !!apiSession);
 
+  function clearDiagnostics() {
+    diagnosticsTracker.current.cancel(); setDiagnosticsResult(null); setDiagnosticsBusy(false); setDiagnosticsError('');
+  }
   function clearInspection() {
+    clearDiagnostics();
     requestSequence.current += 1; requestController.current?.abort(); copySequence.current += 1;
     setResponse(null); setBusy(false); setError(''); setCopyNotice('');
   }
@@ -155,6 +167,7 @@ export default function ApiInspector({ apiBase }) {
     if (mode === 'api' && (!apiSession || apiSession.expiresAt <= Date.now())) {
       clearInspection(); setApiSession(null); setAuthNotice(''); setAuthStatus(null); setAuthError('Vui lòng đăng nhập API trước khi kiểm tra.'); return;
     }
+    clearDiagnostics();
     let query;
     try { query = buildInspectorQuery(resource, values, { page, limit, snapshotId }); }
     catch (failure) { setError(failure.message); setResponse(null); return; }
@@ -184,6 +197,32 @@ export default function ApiInspector({ apiBase }) {
         ? 'Chưa nhận được phản hồi kiểm tra API. Vui lòng thử lại.'
         : failure.message || 'Chưa kiểm tra được API. Vui lòng thử lại.');
     } finally { if (sequence === requestSequence.current) setBusy(false); }
+  }
+
+  async function readDiagnostics() {
+    if (diagnosticsBusy || busy || mode !== 'api' || !liveRead || !resource) return;
+    let request;
+    try { request = diagnosticsRequest(resource, response); }
+    catch (failure) { setDiagnosticsError(failure.message); return; }
+    const pending = diagnosticsTracker.current.begin();
+    setDiagnosticsBusy(true); setDiagnosticsResult(null); setDiagnosticsError('');
+    try {
+      const result = await apiRequest('/admin/corporate-api/inspect', {
+        baseUrl: apiBase, method: 'POST', body: request, signal: pending.signal,
+      });
+      if (!pending.current()) return;
+      const checked = validateInspection(result, resource, request.query);
+      if (Object.keys(checked.requestQuery).length !== Object.keys(request.query).length
+        || Object.entries(request.query).some(([key, value]) => String(checked.requestQuery[key]) !== String(value))) {
+        throw new Error('Chi tiết chưa khớp yêu cầu lỗi. Hãy chạy kiểm tra API lại.');
+      }
+      validateDiagnostics(checked.diagnostics);
+      setDiagnosticsResult({ inspection: checked, receivedAt: new Date().toISOString() });
+    } catch (failure) {
+      if (!pending.current()) return;
+      setDiagnosticsError(['REQUEST_TIMEOUT', 'NETWORK_ERROR'].includes(failure.code)
+        ? 'Chưa nhận được chi tiết kiểm tra phiếu. Vui lòng thử lại.' : failure.message || 'Chưa lấy được chi tiết kiểm tra phiếu.');
+    } finally { if (pending.current()) setDiagnosticsBusy(false); }
   }
 
   async function copyText(text, label) {
@@ -281,11 +320,50 @@ export default function ApiInspector({ apiBase }) {
               {success && !pagination.valid && <p className="api-inspector-help">{liveRead ? 'Phản hồi chưa đủ thông tin phân trang.' : 'Phản hồi chưa đủ thông tin phân trang hoặc phiên dữ liệu.'} Chạy lại từ trang đầu để tiếp tục kiểm tra.</p>}
               {sourceReadAt && <p className="api-inspector-help">Thời điểm đọc nguồn trong phản hồi: {formatTimestamp(sourceReadAt)}</p>}
               <details className="api-inspector-response-meta"><summary>Thông tin yêu cầu và phân trang</summary><code className="api-inspector-actual-url">GET {actualAddress}</code><dl>{INSPECTOR_HEADERS.map((header) => { const value = inspectorHeader(response.headers, header); return value === null ? null : <div key={header}><dt>{header}</dt><dd>{value}</dd></div>; })}</dl></details>
+              {liveRead && response.statusCode === 503 && <DiagnosticsPanel
+                id={`${prefix}-diagnostics`} inspection={mode === 'internal' ? response : diagnosticsResult?.inspection}
+                receivedAt={diagnosticsResult?.receivedAt} busy={diagnosticsBusy} error={diagnosticsError}
+                onRead={mode === 'api' ? readDiagnostics : null} requestAddress={actualAddress}
+              />}
             </>}
           </section>
         </> : <div className="api-inspector-card api-inspector-empty">Chưa có API trong danh sách.</div>}
       </div>
     </div>}
     <p className="api-inspector-copy-notice" role="status" aria-live="polite">{copyNotice}</p>
+  </section>;
+}
+
+function DiagnosticsPanel({ id, inspection, receivedAt, busy, error, onRead, requestAddress }) {
+  let diagnostics = null, validationError = '';
+  try { diagnostics = validateDiagnostics(inspection?.diagnostics); }
+  catch (failure) { validationError = failure.message; }
+  const sourceReadAt = inspectorHeader(inspection?.headers, 'X-Source-Read-At');
+  return <section className="api-inspector-diagnostics" aria-labelledby={`${id}-title`} aria-busy={busy}>
+    <div className="api-inspector-result-heading"><h3 id={`${id}-title`}>Phiếu cần kiểm tra</h3>
+      {onRead && <button type="button" className="button" disabled={busy} onClick={onRead}><Search size={16} aria-hidden="true" />{busy ? 'Đang đọc chi tiết…' : 'Xem phiếu cần kiểm tra'}</button>}
+    </div>
+    <p className="api-inspector-help">{onRead ? 'Dùng quyền quản trị dashboard để đọc lại nguồn theo đúng yêu cầu lỗi. Dữ liệu nguồn có thể thay đổi giữa hai lần đọc; kết quả API phía trên được giữ nguyên.' : 'Chi tiết từ cùng lần kiểm tra nội bộ, không truy vấn thêm nguồn.'}</p>
+    <p className="api-inspector-live" role="status" aria-live="polite">{busy ? 'Đang lấy danh sách phiếu cần kiểm tra…' : inspection ? `Lần kiểm tra chi tiết trả HTTP ${inspection.statusCode}. ${diagnostics ? `Có ${diagnostics.samples.length} dòng mẫu.` : inspection.statusCode >= 200 && inspection.statusCode < 300 ? 'Nguồn hiện đã trả dữ liệu thành công.' : 'Chưa có danh sách phiếu cụ thể cho lỗi này.'}` : 'Chọn “Xem phiếu cần kiểm tra” để đọc chi tiết.'}</p>
+    {(error || validationError) && <div className="api-inspector-error" role="alert"><AlertCircle size={18} aria-hidden="true" /><p>{error || validationError}</p></div>}
+    {inspection && <>
+      {onRead && <p className="api-inspector-help">{inspection.body.message}</p>}
+      {receivedAt && <p className="api-inspector-help">Nhận kết quả chi tiết lúc: {formatTimestamp(receivedAt)}</p>}
+      {sourceReadAt && <p className="api-inspector-help">Thời điểm đọc nguồn: {formatTimestamp(sourceReadAt)}</p>}
+      {diagnostics && <>
+        <p className="api-inspector-help">Nguồn cần đối chiếu: <strong>{diagnostics.resource}</strong>. Một phiếu có thể xuất hiện ở nhiều lý do; không cộng các số lượng bên dưới thành tổng phiếu.</p>
+        <ul className="api-inspector-blockers">{diagnostics.blockers.map((item, index) => <li key={`${item.code}-${index}`}><div><strong>{diagnosticReason(item.code)}</strong><code>{item.code}</code></div><span>{item.count === null ? 'Chưa có số lượng' : `${formatNumber(item.count, 0)} trường hợp`}</span></li>)}</ul>
+        {diagnostics.samples.length ? <ol className="api-inspector-samples" tabIndex={0} aria-label="Các dòng mẫu cần kiểm tra">{diagnostics.samples.map((sample, index) => <li key={index}>
+          <p><strong>{diagnosticReason(sample.code)}</strong></p><code>{sample.code}</code>
+          <dl>{Object.entries(DIAGNOSTIC_FIELDS).map(([field, label]) => <div key={field}><dt>{label}</dt><dd>{diagnosticValue(field, sample[field])}</dd></div>)}
+            {(sample.nativeWeight !== undefined || sample.weightUnit !== undefined) && <div><dt>Giá trị nguồn</dt><dd>{diagnosticMeasurement(sample.nativeWeight, sample.weightUnit)}</dd></div>}
+            {(sample.quantity !== undefined || sample.quantityUnit !== undefined) && <div><dt>Số lượng gốc</dt><dd>{diagnosticMeasurement(sample.quantity, sample.quantityUnit)}</dd></div>}
+          </dl>
+        </li>)}</ol> : <p className="api-inspector-help">Chưa có mã phiếu mẫu cho các lý do trên. Hãy đối chiếu cấu hình hoặc danh mục nguồn theo mã lỗi.</p>}
+        {!!diagnostics.conflictIds.length && <p className="api-inspector-help">Mã nguồn trùng cần đối chiếu: {diagnostics.conflictIds.join(', ')}.{diagnostics.conflictCount !== null && ` Tổng số mã trùng: ${formatNumber(diagnostics.conflictCount, 0)}.`}</p>}
+        <p className="api-inspector-help">{diagnostics.samplesTruncated ? `Danh sách đã được giới hạn, đang hiển thị ${diagnostics.samples.length} dòng mẫu; đây không phải toàn bộ phiếu lỗi.` : `Hiển thị ${diagnostics.samples.length} dòng mẫu (tối đa ${DIAGNOSTIC_SAMPLE_LIMIT}). Danh sách mẫu không thay thế đối soát toàn kỳ.`} Số liệu gốc giữ nguyên đơn vị nguồn, chưa quy đổi sang tấn.</p>
+      </>}
+      {onRead && <details className="api-inspector-response-meta"><summary>Yêu cầu dùng để kiểm tra chi tiết</summary><code className="api-inspector-actual-url">GET {requestAddress}</code></details>}
+    </>}
   </section>;
 }

@@ -21,6 +21,7 @@ except ImportError:  # Backend also supports its existing standalone main import
 
 from .contracts import PRODUCTION, Query
 from .errors import CorporateError
+from .diagnostics import sanitize_diagnostics
 from .freshness import max_age_seconds
 from .operation_contracts import OPERATION_MODELS, OPERATION_PATHS, OperationQuery
 from .registry import MODELS
@@ -155,6 +156,7 @@ def _invalid_query():
 @router.post('/inspect')
 def inspect(body: InspectInput, request: Request, user=Depends(require_inspector)):
     started = perf_counter()
+    diagnostics = None
     request_query = {'companyId': COMPANY_ID}
     path = _path(body.resource) if body.resource in MODELS else None
     try:
@@ -177,6 +179,7 @@ def inspect(body: InspectInput, request: Request, user=Depends(require_inspector
         response = _invalid_query()
         status, payload = response.status_code, json.loads(response.body)
     except CorporateError as exc:
+        diagnostics = sanitize_diagnostics(exc.diagnostics) if exc.status == 503 else None
         response = error_response(exc.status, exc.code, exc.message, exc.retry_after)
         status, payload = response.status_code, json.loads(response.body)
     except sqlite3.Error:
@@ -185,4 +188,4 @@ def inspect(body: InspectInput, request: Request, user=Depends(require_inspector
     return {'resource': body.resource, 'path': path, 'method': 'GET', 'requestQuery': request_query,
             'statusCode': status, 'durationMs': round((perf_counter() - started) * 1000, 2),
             'headers': {name: response.headers[name] for name in HEADER_NAMES if name in response.headers},
-            'body': payload}
+            'body': payload, **({'diagnostics': diagnostics} if diagnostics is not None else {})}

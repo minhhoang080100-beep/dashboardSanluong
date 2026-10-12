@@ -115,6 +115,7 @@ def _facts_sql(terminal):
         t.weightNetSum AS native_weight,t.quantityTotalSum AS quantity,
         t.consigneeId AS customer_id,s.vesselId AS ship_id,t.vesselVoyageId AS voyage_id,
         vt.vesselTypeCode AS vessel_type_code,qu.baseUnitCode AS quantity_unit_code,
+        u.baseUnitCode AS weight_unit_code,
         CASE WHEN {repo.physical_voyage_filter} THEN 1 ELSE 0 END AS physical_voyage,
         CASE WHEN {repo.throughput_filter.format(schema=schema)} THEN 1 ELSE 0 END AS quay_eligible,
         {repo.tonne_factor_logic} AS tonne_factor
@@ -164,6 +165,7 @@ def _result():
             'excluded_scope_rows': 0, 'excluded_unknown_scope_rows': 0,
             'excluded_location_rows': 0, 'excluded_unknown_location_rows': 0,
             'excluded_nonphysical_rows': 0, 'excluded_empty_container_rows': 0,
+            'excluded_empty_bulk_rows': 0,
             'excluded_placeholder_rows': 0,
             'unselected_source_row_count': 0, 'source_errors': [], 'issue_samples': []}
 
@@ -283,7 +285,10 @@ class ProductionSource:
                 samples.append({'code': code, 'terminal': terminal,
                     'sourceId': fact.get('source_id'), 'date': str(fact.get('business_date')),
                     'cargoId': fact.get('cargo_id'), 'methodId': fact.get('method_id'),
-                    'quantityUnit': fact.get('quantity_unit_code')})
+                    'quantityUnit': fact.get('quantity_unit_code'),
+                    'weightUnit': fact.get('weight_unit_code'),
+                    'nativeWeight': fact.get('native_weight'), 'quantity': fact.get('quantity'),
+                    'tonneFactor': fact.get('tonne_factor')})
         scope = profile.get('production_scope')
         global_blockers = []
         if set(terminals) != set(DATABASES):
@@ -433,17 +438,17 @@ class ProductionSource:
                     continue
                 if kind not in {'container', 'bulk'}:
                     for name in affected:
-                        issues[name]['CARGO_KIND_UNMAPPED'] += 1
+                        flag(name, 'CARGO_KIND_UNMAPPED', fact, terminal)
                     continue
                 name = ('cont' if kind == 'container' else 'bulk') + side + 'VolumesCB'
                 if name not in selected_set:
                     continue
                 results[name]['source_row_count'] += 1
                 if method is None:
-                    issues[name]['METHOD_ID_UNAVAILABLE'] += 1
+                    flag(name, 'METHOD_ID_UNAVAILABLE', fact, terminal)
                     continue
                 if type(day) is not date or not start <= day <= end:
-                    issues[name]['SOURCE_DATE_INVALID'] += 1
+                    flag(name, 'SOURCE_DATE_INVALID', fact, terminal)
                     continue
                 if is_quay:
                     ship = _native_id(fact.get('ship_id'))
@@ -452,6 +457,24 @@ class ProductionSource:
                         flag(name, 'PHYSICAL_SHIP_OR_DIRECTION_UNAVAILABLE', fact, terminal)
                         continue
                 weight = _decimal(fact.get('native_weight'))
+                weight_unit = str(fact.get('weight_unit_code') or '').strip().upper()
+                if (by_yard and is_gate and cargo is not None and weight_unit == 'GIO'
+                        and not quantity_unit and _decimal(fact.get('quantity')) == 0
+                        and weight is not None):
+                    # Some yard service hours are recorded in weightNetSum,
+                    # with GIO as its actual unit and explicit zero quantity.
+                    # Do not discard a positive/unknown cargo quantity or extend
+                    # this source-specific rule to physical quay throughput.
+                    results[name].setdefault('excluded_time_rows', 0)
+                    results[name]['excluded_time_rows'] += 1
+                    continue
+                if (kind == 'bulk' and cargo is not None
+                        and _decimal(fact.get('quantity')) == 0 and weight == 0):
+                    # Both recorded measures explicitly confirm no movement.
+                    # Do not require a mass conversion for this empty slot, or
+                    # extend the exclusion to missing/invalid/nonzero measures.
+                    results[name]['excluded_empty_bulk_rows'] += 1
+                    continue
                 if (kind == 'container' and size_mode == 'native_cargo'
                         and _decimal(fact.get('quantity')) == 0
                         and (weight == 0 or (quantity_unit == 'CONT'
@@ -471,7 +494,7 @@ class ProductionSource:
                     continue
                 tonnes = weight * factor
                 if tonnes > Decimal('1000000000000000'):
-                    issues[name]['WEIGHT_OUT_OF_RANGE'] += 1
+                    flag(name, 'WEIGHT_OUT_OF_RANGE', fact, terminal)
                     continue
                 row = {'reportDate': report_date.strftime('%Y%m%d'), 'companyId': 'CNT',
                        'finishDate': day.strftime('%Y%m%d'),
@@ -517,7 +540,7 @@ class ProductionSource:
                     # catalog by downstream publication/live FK validation.
                     # A second static profile allowlist would reject new groups.
                     if not cargo_type or (not native_groups and cargo_type not in profile.get('cargo_types', {})):
-                        issues[name]['CARGO_TYPE_UNMAPPED'] += 1
+                        flag(name, 'CARGO_TYPE_UNMAPPED', fact, terminal)
                         continue
                     row.update(cargoTypeId=cargo_type, cargoCategoryId=source_id(terminal, cargo),
                                bulkOriginId=None, bulkWeight=tonnes)
@@ -584,5 +607,13 @@ class ProductionSource:
             if item['excluded_placeholder_rows']:
                 item['warnings'].append(
                     f"Loại {item['excluded_placeholder_rows']} phiếu chưa nhập hàng có mã hàng, số lượng và trọng lượng nguồn đều bằng 0; không bỏ phiếu có chỉ tiêu thiếu hoặc khác 0."
+                )
+            if item['excluded_empty_bulk_rows']:
+                item['warnings'].append(
+                    f"Loại {item['excluded_empty_bulk_rows']} phiếu hàng rời đã xác định mã hàng có số lượng và trọng lượng nguồn đều bằng 0; không bỏ phiếu có chỉ tiêu thiếu hoặc khác 0."
+                )
+            if item.get('excluded_time_rows'):
+                item['warnings'].append(
+                    f"Loại {item['excluded_time_rows']} phiếu tính giờ theo đơn vị GIO của số lượng, hoặc trọng lượng nguồn tại kho/bãi khi số lượng bằng 0 và chưa có đơn vị số lượng; không quy đổi giờ thành tấn."
                 )
         return {name: results[name] for name in selected}

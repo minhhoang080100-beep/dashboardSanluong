@@ -87,6 +87,22 @@
 .api-inspector-error svg { margin-top: 2px; }
 .api-inspector-empty { padding: 28px 14px; text-align: center; color: var(--text-muted); font-size: 13px; line-height: 1.6; }
 .api-inspector-copy-notice { min-height: 22px; font-size: 12px; color: var(--text-muted); margin-top: 12px; }
+.api-inspector-diagnostics { min-width: 0; margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border-color); }
+.api-inspector-diagnostics h3 { font-size: 16px; font-weight: 600; }
+.api-inspector-diagnostics .button { min-height: 44px; white-space: normal; }
+.api-inspector-diagnostics code { display: block; font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
+.api-inspector-blockers, .api-inspector-samples { padding: 0; margin: 14px 0 0; list-style: none; display: grid; gap: 10px; }
+.api-inspector-blockers li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; padding: 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 12px; line-height: 1.6; }
+.api-inspector-blockers li > div { min-width: 0; }
+.api-inspector-blockers li > span { color: var(--text-muted); }
+.api-inspector-samples { grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); max-height: 520px; overflow-y: auto; overscroll-behavior: contain; }
+.api-inspector-samples li { min-width: 0; padding: 14px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--surface-muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.api-inspector-samples dl { display: grid; gap: 7px; margin: 12px 0 0; }
+.api-inspector-samples dl > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.api-inspector-samples :is(dt, dd) { min-width: 0; margin: 0; }
+.api-inspector-samples dt { color: var(--text-muted); }
+.api-inspector-diagnostics :is(button, summary, .api-inspector-samples):focus-visible { outline: 2px solid var(--primary-color); outline-offset: 3px; }
+.api-inspector-diagnostics summary { min-height: 44px; align-content: center; }
 @media (max-width: 1200px) { .api-inspector { padding: 28px 24px 20px; } }
 @media (max-width: 1000px) { .api-inspector-layout { grid-template-columns: minmax(200px, 235px) minmax(0, 1fr); gap: 14px; } .api-inspector-card { padding: 18px; } }
 @media (max-width: 760px) {

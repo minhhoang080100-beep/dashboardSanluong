@@ -13,6 +13,7 @@ from pathlib import Path
 import threading
 
 from .errors import CorporateError
+from .diagnostics import dataset_diagnostics, MAX_SAMPLES
 from .manage_exports import extract, json_default, publish_preview, references_for
 from .reconciliation import unaccepted_nulls
 from .registry import IDENTITY, MODELS, PRODUCTION
@@ -140,10 +141,11 @@ class LiveReader:
         return size
 
     @staticmethod
-    def _dataset_error(dataset):
+    def _dataset_error(dataset, resource=None):
         # Adapters use strings for production blockers and code/message objects
         # for catalog blockers. Only fixed known codes select public messages;
         # source messages, identifiers and arbitrary exception text stay private.
+        diagnostics = dataset_diagnostics(resource, dataset)
         blockers = dataset.get('blockers', [])
         codes = set()
         if isinstance(blockers, list):
@@ -153,18 +155,18 @@ class LiveReader:
                     codes.add(code)
         if 'SOURCE_TIMEOUT' in codes:
             return CorporateError(503, 'SOURCE_TIMEOUT',
-                                  'Truy vấn SmartTOS quá thời gian. Hãy chọn kỳ ngắn hơn hoặc thử lại.', retry_after=5)
+                                  'Truy vấn SmartTOS quá thời gian. Hãy chọn kỳ ngắn hơn hoặc thử lại.', retry_after=5, diagnostics=diagnostics)
         if 'SOURCE_UNAVAILABLE' in codes:
             return CorporateError(503, 'SOURCE_UNAVAILABLE',
-                                  'Không kết nối được SmartTOS. Vui lòng thử lại hoặc kiểm tra kết nối máy chủ.', retry_after=5)
+                                  'Không kết nối được SmartTOS. Vui lòng thử lại hoặc kiểm tra kết nối máy chủ.', retry_after=5, diagnostics=diagnostics)
         if 'SOURCE_ID_CONFLICT' in codes:
             return CorporateError(503, 'SOURCE_ID_CONFLICT',
-                                  'ID nguồn trùng nhưng khác nội dung giữa Cửa Lò và Bến Thủy. Cần thống nhất cách phân biệt mã trước khi trả dữ liệu.')
+                                  'ID nguồn trùng nhưng khác nội dung giữa Cửa Lò và Bến Thủy. Cần thống nhất cách phân biệt mã trước khi trả dữ liệu.', diagnostics=diagnostics)
         for code, message in PRODUCTION_BLOCKER_MESSAGES.items():
             if code in codes:
-                return CorporateError(503, code, message)
+                return CorporateError(503, code, message, diagnostics=diagnostics)
         return CorporateError(503, 'SOURCE_DATA_NOT_READY',
-                              'Dữ liệu SmartTOS chưa đáp ứng ánh xạ hoặc kiểm tra chất lượng của API.')
+                              'Dữ liệu SmartTOS chưa đáp ứng ánh xạ hoặc kiểm tra chất lượng của API.', diagnostics=diagnostics)
 
     @staticmethod
     def _provenance(row):
@@ -210,8 +212,16 @@ class LiveReader:
             seen.add(identity)
             for terminal in self._provenance(row):
                 found[terminal].add(identity)
-        if any(scope[terminal] - found[terminal] for terminal in SOURCE_TERMINALS):
-            raise self._dataset_error({'blockers': ['SOURCE_REFERENCE_NOT_FOUND']})
+        missing = {terminal: scope[terminal] - found[terminal] for terminal in SOURCE_TERMINALS}
+        if any(missing.values()):
+            samples = []
+            for terminal, identities in missing.items():
+                for identity in sorted(identities, key=int)[:MAX_SAMPLES - len(samples)]:
+                    samples.append({'code': 'SOURCE_REFERENCE_NOT_FOUND', 'terminal': terminal,
+                                    'referenceId': identity})
+            raise self._dataset_error({'blockers': ['SOURCE_REFERENCE_NOT_FOUND'],
+                'issue_counts': {'SOURCE_REFERENCE_NOT_FOUND': sum(map(len, missing.values()))},
+                'issue_samples': samples}, resource)
 
     @staticmethod
     def _check_cargo_parent_cycles(datasets):
@@ -237,7 +247,7 @@ class LiveReader:
         self._check_size(preview)
         production = preview['datasets'][resource]
         if production.get('ready') is not True or production.get('blockers'):
-            raise self._dataset_error(production)
+            raise self._dataset_error(production, resource)
         if unaccepted_nulls(resource, production['rows'], profile):
             raise CorporateError(503, 'SOURCE_NULL_POLICY_REQUIRED',
                                  'Dữ liệu sản lượng còn trường thiếu nguồn; cần bổ sung nguồn hoặc xác nhận các trường được phép để trống trước khi trả API.')
@@ -256,7 +266,7 @@ class LiveReader:
             for name in names:
                 dataset = part['datasets'][name]
                 if dataset.get('ready') is not True or dataset.get('blockers'):
-                    raise self._dataset_error(dataset)
+                    raise self._dataset_error(dataset, name)
                 self._verify_reference_membership(name, dataset['rows'], scope[name])
                 checked[name] = {terminal: set(requested[name][terminal]) for terminal in SOURCE_TERMINALS}
             preview['datasets'].update(part['datasets'])
@@ -296,7 +306,7 @@ class LiveReader:
             for name in names:
                 dataset = preview['datasets'][name]
                 if dataset.get('ready') is not True or dataset.get('blockers'):
-                    raise self._dataset_error(dataset)
+                    raise self._dataset_error(dataset, name)
                 if name in PRODUCTION and unaccepted_nulls(name, dataset['rows'], profile):
                     raise CorporateError(503, 'SOURCE_NULL_POLICY_REQUIRED',
                                          'Dữ liệu sản lượng còn trường thiếu nguồn; cần bổ sung nguồn hoặc xác nhận các trường được phép để trống trước khi trả API.')
