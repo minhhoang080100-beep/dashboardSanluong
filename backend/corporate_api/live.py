@@ -13,11 +13,12 @@ from pathlib import Path
 import threading
 
 from .errors import CorporateError
+from .filter_validation import validate_production_filter_ids
 from .diagnostics import dataset_diagnostics, MAX_SAMPLES
 from .manage_exports import extract, json_default, publish_preview, references_for
 from .reconciliation import unaccepted_nulls
-from .registry import IDENTITY, MODELS, PRODUCTION
-from .sql import source_read_budget
+from .registry import IDENTITY, MODELS, PRODUCTION, S_MODELS
+from .sql import query_source, source_read_budget
 
 
 MAX_PROFILE_BYTES = 2 * 1024 * 1024
@@ -54,13 +55,18 @@ class LiveReader:
     changes. No snapshot token or source result survives the current request.
     """
 
-    def __init__(self, *, extract_fn=None, store_factory=None, profile=None,
+    def __init__(self, *, extract_fn=None, filter_query_fn=None, store_factory=None, profile=None,
                  max_total_bytes=32 * 1024 * 1024,
                  max_concurrent=2, wait_seconds=0.2):
         if (not 1024 <= max_total_bytes <= 256 * 1024 * 1024
                 or not 1 <= max_concurrent <= 8 or not 0 <= wait_seconds <= 5):
             raise ValueError('Invalid live-reader limits')
         self._extract = extract_fn or extract
+        # A synthetic/custom extractor must explicitly provide its source query
+        # capability. Never fall through to a real database from an injected
+        # reader or silently skip the existence check.
+        self._filter_query = filter_query_fn if filter_query_fn is not None else (
+            query_source if extract_fn is None else None)
         if store_factory is None:
             from .memory_store import MemoryExportStore
             store_factory = MemoryExportStore
@@ -162,6 +168,9 @@ class LiveReader:
         if 'SOURCE_ID_CONFLICT' in codes:
             return CorporateError(503, 'SOURCE_ID_CONFLICT',
                                   'ID nguồn trùng nhưng khác nội dung giữa Cửa Lò và Bến Thủy. Cần thống nhất cách phân biệt mã trước khi trả dữ liệu.', diagnostics=diagnostics)
+        if 'FILTER_NOT_READY' in codes:
+            return CorporateError(503, 'FILTER_NOT_READY',
+                                  'Danh mục khách hàng thiếu thuộc tính nguồn để lọc đầy đủ theo yêu cầu.', diagnostics=diagnostics)
         for code, message in PRODUCTION_BLOCKER_MESSAGES.items():
             if code in codes:
                 return CorporateError(503, code, message, diagnostics=diagnostics)
@@ -186,13 +195,13 @@ class LiveReader:
 
     def _grow_reference_scope(self, resource, rows, scope):
         for row in rows:
-            terminals = self._provenance(row)
             for field, (target, _) in references_for(resource).items():
                 if field == IDENTITY.get(resource) or field not in row or row[field] is None:
                     continue
                 values = row[field] if isinstance(row[field], list) else [row[field]]
                 if not values:
                     continue
+                terminals = self._provenance(row)
                 targets = scope.setdefault(target, {terminal: set() for terminal in SOURCE_TERMINALS})
                 for value in values:
                     identity = self._reference_id(value)
@@ -238,9 +247,10 @@ class LiveReader:
                 current = parents[current]
             completed.update(path)
 
-    def _production_preview(self, resource, profile, start, end):
+    def _production_preview(self, resource, profile, start, end, *, production_filters=None):
         """Validate only used catalogs, including source-specific ancestor closure."""
-        preview = self._extract(profile, start, end, [resource])
+        options = {'production_filters': production_filters} if production_filters else {}
+        preview = self._extract(profile, start, end, [resource], **options)
         if (not isinstance(preview, dict) or not isinstance(preview.get('datasets'), dict)
                 or set(preview['datasets']) != {resource}):
             raise ValueError('Invalid source adapter result')
@@ -251,8 +261,22 @@ class LiveReader:
         if unaccepted_nulls(resource, production['rows'], profile):
             raise CorporateError(503, 'SOURCE_NULL_POLICY_REQUIRED',
                                  'Dữ liệu sản lượng còn trường thiếu nguồn; cần bổ sung nguồn hoặc xác nhận các trường được phép để trống trước khi trả API.')
+        return self._complete_references(resource, preview, profile, start, end)
+
+    def _complete_references(self, resource, preview, profile, start, end):
+        """Close actual native references without loading unrelated masters."""
         scope, checked = {}, {}
-        self._grow_reference_scope(resource, production['rows'], scope)
+        rows = preview['datasets'][resource]['rows']
+        # A category can reference another category. Preserve the original
+        # result nodes while fetching ancestors needed only for validation.
+        if resource == 'cargoCategory' and rows:
+            root = {terminal: set() for terminal in SOURCE_TERMINALS}
+            for row in rows:
+                for terminal in self._provenance(row):
+                    root[terminal].add(self._reference_id(row[IDENTITY[resource]]))
+            scope[resource] = root
+            checked[resource] = deepcopy(root)
+        self._grow_reference_scope(resource, rows, scope)
         for _ in range(MAX_REFERENCE_ROUNDS):
             names = sorted(name for name, targets in scope.items() if checked.get(name) != targets)
             if not names:
@@ -276,12 +300,40 @@ class LiveReader:
                 self._grow_reference_scope(name, part['datasets'][name]['rows'], scope)
         raise ValueError('Native reference closure did not stabilize within the bounded limit.')
 
-    def _build(self, resource, query, profile):
+    def _catalog_preview(self, resource, query, profile, start, end, identity):
+        fields = ('startDate', 'endDate', 'customerTaxCode', 'customerType',
+                  'cargoTypeId', 'containerSizeId', 'origin')
+        filters = {field: getattr(query, field) for field in fields
+                   if getattr(query, field, None) is not None}
+        if identity is not None:
+            filters['identity'] = identity
+        options = {'catalog_filters': {resource: filters}} if filters or resource == 'cargoCategory' else {}
+        preview = self._extract(profile, start, end, [resource], **options)
+        if (not isinstance(preview, dict) or not isinstance(preview.get('datasets'), dict)
+                or set(preview['datasets']) != {resource}):
+            raise ValueError('Invalid catalog source adapter result')
+        self._check_size(preview)
+        dataset = preview['datasets'][resource]
+        if dataset.get('ready') is not True or dataset.get('blockers'):
+            raise self._dataset_error(dataset, resource)
+        return self._complete_references(resource, preview, profile, start, end)
+
+    def _build(self, resource, query, profile, *, identity=None):
         today = datetime.now(TZ).date()
         start = datetime.strptime(query.startDate, '%Y%m%d').date() if query.startDate else today
         end = datetime.strptime(query.endDate, '%Y%m%d').date() if query.endDate else today
+        production_filters = {}
         if resource in PRODUCTION:
-            preview, selected = self._production_preview(resource, profile, start, end)
+            production_filters = {field: getattr(query, field) for field in ('shipId', 'handlingMethodId')
+                                  if getattr(query, field) is not None}
+            preview, selected = self._production_preview(resource, profile, start, end,
+                                                         production_filters=production_filters)
+            if production_filters and not preview['datasets'][resource]['rows']:
+                validate_production_filter_ids(production_filters, self._filter_query)
+            pending = set()
+        elif resource in S_MODELS and not (resource in {'cargoType', 'cargoCategory'}
+                and profile.get('cargo_catalog_source', 'configured') != 'native_groups'):
+            preview, selected = self._catalog_preview(resource, query, profile, start, end, identity)
             pending = set()
         else:
             pending, selected = {resource}, set()
@@ -320,7 +372,8 @@ class LiveReader:
                             pending.add(target)
         store = self._store_factory()
         try:
-            versions = publish_preview(preview, profile, store, sorted(selected), replace_all=True)
+            versions = publish_preview(preview, profile, store, sorted(selected), replace_all=True,
+                                       _request_filters=production_filters or None)
             with store.db() as db:
                 size = (db.execute('PRAGMA page_count').fetchone()[0]
                         * db.execute('PRAGMA page_size').fetchone()[0])
@@ -349,6 +402,16 @@ class LiveReader:
             raise CorporateError(422, 'SNAPSHOT_NOT_SUPPORTED',
                                  'API trực tiếp luôn đọc lại SmartTOS và không nhận snapshotId. Hãy bỏ tham số này.')
         profile = self._profile()
+        # Legacy approved cargo types keep their configured string IDs. Read
+        # and validate that complete catalog, then use the store's exact bound
+        # identity filter. Native catalogs retain bounded parameterized reads.
+        configured_type = (resource == 'cargoType'
+                           and profile.get('cargo_catalog_source', 'configured') == 'configured')
+        if identity is not None and resource in S_MODELS and not configured_type:
+            try:
+                self._reference_id(identity)
+            except ValueError:
+                raise CorporateError(404, 'NOT_FOUND', 'Không tìm thấy mã trong danh mục của công ty.') from None
         if resource in PRODUCTION:
             self._check_production_profile(resource, profile)
         store = None
@@ -358,7 +421,7 @@ class LiveReader:
             if not acquired:
                 raise self._busy()
             with source_read_budget(35):
-                store, internal_id = self._build(resource, query, profile)
+                store, internal_id = self._build(resource, query, profile, identity=identity)
             # Reuse the tested filter/page implementation only for this request.
             # Its internal identifier must never reach a caller or be retained.
             result = store.read(resource, query.model_copy(update={'snapshotId': internal_id}),

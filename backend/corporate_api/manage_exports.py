@@ -34,33 +34,43 @@ def profile_digest(profile):
                                      separators=(',', ':')).encode()).hexdigest()
 
 
-def extract(profile, start, end, resources, query_fn=query_source, *, reference_scope=None):
+def extract(profile, start, end, resources, query_fn=query_source, *, reference_scope=None,
+            production_filters=None, catalog_filters=None):
     # Lazy imports keep account management and HTTP reads independent of pyodbc.
-    from .catalog_source import extract_catalogs
-    from .source import ProductionSource
+    from .catalog_source import extract_catalogs, catalog_filter_scope
+    from .source import ProductionSource, production_filter_scope
     if start > end or (set(resources) & PRODUCTION and (end - start).days > 30):
         raise ValueError('Extract one to 31 inclusive calendar days at a time.')
     if not resources or set(resources) - set(MODELS):
         raise ValueError('Unknown or empty extraction resource selection.')
     if reference_scope is not None and (set(resources) & PRODUCTION or set(resources) & set(OPERATION_MODELS)):
         raise ValueError('Reference-scoped extraction is only available for S catalogs.')
+    if production_filters is not None and not set(resources) <= PRODUCTION:
+        raise ValueError('Production filters are only available for production extraction.')
+    if catalog_filters is not None and not set(resources) <= (set(S_MODELS) - PRODUCTION):
+        raise ValueError('Catalog filters are only available for S catalog extraction.')
+    catalogs = catalog_filter_scope(catalog_filters, resources)
+    filters = production_filter_scope(production_filters, resources)
     selected_terminals(profile)
     read_started = datetime.now(timezone.utc).isoformat()
     datasets = {}
     if set(resources) & (set(S_MODELS) - PRODUCTION):
         datasets.update(extract_catalogs(query_fn, profile=profile,
                         resources=[key for key in resources if key in S_MODELS and key not in PRODUCTION],
-                        reference_scope=reference_scope))
+                        reference_scope=reference_scope, catalog_filters=catalogs))
     if set(resources) & set(OPERATION_MODELS):
         from .operation_source import extract_operation_catalogs
         datasets.update(extract_operation_catalogs(query_fn, profile=profile,
                          resources=[key for key in resources if key in OPERATION_MODELS]))
     if set(resources) & PRODUCTION:
+        filter_options = {'production_filters': filters} if filters else {}
         datasets.update(ProductionSource(query_fn).extract(start, end, profile,
-                        resources=[key for key in resources if key in PRODUCTION]))
+                        resources=[key for key in resources if key in PRODUCTION], **filter_options))
     return {'format': FORMAT, 'companyId': 'CNT', 'profileDigest': profile_digest(profile),
             'sourceReadAt': read_started,
             'startDate': start.strftime('%Y%m%d'), 'endDate': end.strftime('%Y%m%d'),
+            **({'productionFilters': filters} if filters else {}),
+            **({'catalogFilters': catalogs} if catalogs is not None else {}),
             'datasets': {key: datasets[key] for key in resources}}
 
 
@@ -83,7 +93,22 @@ def references_for(resource):
     return REFERENCES
 
 
-def validate_preview(preview, profile, store, resources):
+def validate_preview(preview, profile, store, resources, *, _request_filters=None):
+    if 'catalogFilters' in preview:
+        from .memory_store import MemoryExportStore
+        from .catalog_source import catalog_filter_scope
+        catalogs = preview['catalogFilters']
+        catalog_filter_scope(catalogs, list(catalogs) if isinstance(catalogs, dict) else [])
+        if not isinstance(store, MemoryExportStore):
+            raise ValueError('Request-scoped catalogs must not replace persistent complete catalogs.')
+    if preview.get('productionFilters') or _request_filters:
+        from .memory_store import MemoryExportStore
+        from .source import production_filter_scope
+        filters = production_filter_scope(preview.get('productionFilters'),
+                                          [name for name in resources if name in PRODUCTION])
+        if (not isinstance(store, MemoryExportStore) or not filters
+                or filters != _request_filters):
+            raise ValueError('Filtered production is only available in its matching transient API request.')
     date_merge_policies = metadata_policies(profile)
     attribute_policies(profile)
     team_scope_settings(profile)
@@ -146,9 +171,10 @@ def validate_preview(preview, profile, store, resources):
             ensure_dependencies_fresh(db, sorted(existing_dependencies), preview['companyId'], max_age_seconds())
 
 
-def publish_preview(preview, profile, store, resources, *, replace_all=False):
+def publish_preview(preview, profile, store, resources, *, replace_all=False, _request_filters=None):
     with store.atomic_publication():
-        result = _publish_preview(preview, profile, store, resources, replace_all=replace_all)
+        result = _publish_preview(preview, profile, store, resources, replace_all=replace_all,
+                                  _request_filters=_request_filters)
         validate_current_references(store)
         return result
 
@@ -191,8 +217,8 @@ def validate_current_references(store):
                     raise ValueError(f'{resource}: current or retained historical rows still reference a removed {field}.')
 
 
-def _publish_preview(preview, profile, store, resources, *, replace_all=False):
-    validate_preview(preview, profile, store, resources)
+def _publish_preview(preview, profile, store, resources, *, replace_all=False, _request_filters=None):
+    validate_preview(preview, profile, store, resources, _request_filters=_request_filters)
     date_merge_policies = metadata_policies(profile)
     result = {}
     for resource in sorted(resources, key=lambda key: (key in PRODUCTION, key)):

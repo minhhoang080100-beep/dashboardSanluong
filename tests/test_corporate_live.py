@@ -30,7 +30,7 @@ class Source:
         self.scopes = []
         self.blocked = set()
 
-    def __call__(self, profile, start, end, resources, *, reference_scope=None):
+    def __call__(self, profile, start, end, resources, *, reference_scope=None, catalog_filters=None):
         self.calls.append(tuple(resources))
         self.scopes.append(deepcopy(reference_scope))
         def rows(name):
@@ -38,6 +38,12 @@ class Source:
             if reference_scope is not None:
                 requested = set().union(*map(set, reference_scope[name].values()))
                 result = [row for row in result if row[IDENTITY[name]] in requested]
+            if catalog_filters is not None:
+                identity = catalog_filters[name].get('identity')
+                if identity is not None:
+                    result = [row for row in result if row[IDENTITY[name]] == identity]
+                result = [{**row, '_sourceTerminals': row.get('_sourceTerminals', ['cua_lo', 'ben_thuy'])}
+                          for row in result]
             return result
         return {'format': FORMAT, 'companyId': 'CNT', 'profileDigest': profile_digest(profile),
                 'sourceReadAt': datetime.now(timezone.utc).isoformat(),

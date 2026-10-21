@@ -26,6 +26,25 @@ ANY_VERSION = object()
 CUSTOMER_DATE_BASIS = 'source_createdDate_v1'
 
 
+def _production_result_digest(db, resource, company_id, clause, args):
+    """Fingerprint the full filtered result in this request's read transaction.
+
+    Paging must detect changed values even if counts/identities stay constant.
+    reportDate describes the response day, not a production fact. No source
+    rows, cache or cross-request snapshot are retained by this checksum.
+    """
+    digest = hashlib.sha256()
+    digest.update(('corporate-production-result-v1\0' + resource + '\0' + company_id).encode('utf-8'))
+    for entry in db.execute(f'SELECT payload FROM export_rows WHERE {clause} ORDER BY seq', args):
+        row = json.loads(entry['payload'])
+        row.pop('reportDate', None)
+        payload = json.dumps(row, ensure_ascii=False, sort_keys=True,
+                             separators=(',', ':'), allow_nan=False).encode('utf-8')
+        digest.update(len(payload).to_bytes(8, 'big'))
+        digest.update(payload)
+    return digest.hexdigest()
+
+
 def operation_dependencies(resource, rows):
     """Cache only actually used catalog resources, never source IDs or payloads."""
     references = OPERATION_REFERENCES.get(resource, {})
@@ -419,6 +438,12 @@ class ExportStore:
                 if value is not None:
                     where.append(f'{column}=?')
                     args.append(value)
+            if resource == 'origins' and getattr(query, 'origin', None) is not None:
+                # Literal substring matching, including Vietnamese Unicode;
+                # SQL LIKE would give '%' and '_' unintended wildcard meaning.
+                db.create_function('catalog_casefold', 1, lambda value: str(value).casefold() if value is not None else '')
+                where.append("instr(catalog_casefold(json_extract(payload,'$.originName')),?)>0")
+                args.append(query.origin.casefold())
             if query.startDate and resource in OPERATION_MODELS:
                 if db.execute('''SELECT 1 FROM export_rows WHERE snapshot_id=?
                         AND created_date IS NULL AND modified_date IS NULL LIMIT 1''',
@@ -457,6 +482,8 @@ class ExportStore:
                 args.append(identity)
             clause = ' AND '.join(where)
             total = db.execute(f'SELECT COUNT(*) FROM export_rows WHERE {clause}', args).fetchone()[0]
+            result_digest = (_production_result_digest(db, resource, query.companyId, clause, args)
+                             if resource in PRODUCTION else None)
             if identity is not None and total == 0:
                 raise CorporateError(404, 'NOT_FOUND', 'Không tìm thấy mã trong danh mục của công ty.')
             result = db.execute(f'SELECT seq,payload FROM export_rows WHERE {clause} ORDER BY seq LIMIT ? OFFSET ?',
@@ -482,6 +509,7 @@ class ExportStore:
                 'pagination': {'page': query.page, 'limit': query.limit, 'total': total,
                                'hasNext': query.page * query.limit < total,
                                'snapshotId': version['snapshot_id'], 'sourceReadAt': source_read_at,
+                               **({'resultDigest': result_digest} if result_digest is not None else {}),
                                'warnings': json.loads(version['warnings']), 'ruleVersion': version['rule_version']}}
 
     def describe(self):

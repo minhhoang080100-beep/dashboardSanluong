@@ -107,6 +107,24 @@ test('GET preserves normal JSON HTTP error bodies, error codes and Retry-After f
   }
 });
 
+test('production inspection retains the public result digest without copying private response headers', async () => {
+  for (const id of ['contQuayVolumesCB', 'contGateVolumesCB', 'bulkQuayVolumesCB', 'bulkGateVolumesCB']) {
+    const production = { id, path: `/api/${id}` };
+    const digest = 'd'.repeat(64);
+    const result = await inspectCorporateApi(production, query, {
+      accessToken: token,
+      fetcher: async () => Response.json(envelope, { headers: {
+        'x-result-digest': digest, 'X-Source-Read-At': '2026-10-19T02:00:00+00:00',
+        Authorization: 'must-not-be-copied', 'Set-Cookie': 'must-not-be-copied',
+      } }),
+    });
+    assert.equal(result.headers['X-Result-Digest'], digest, id);
+    assert.equal(result.headers['X-Source-Read-At'], '2026-10-19T02:00:00+00:00');
+    assert.deepEqual(result.body, envelope);
+    assert.deepEqual(Object.keys(result.headers).sort(), ['X-Result-Digest', 'X-Source-Read-At']);
+  }
+});
+
 test('login recognizes disabled API and safe status errors without displaying response text', async () => {
   for (const [status, header, code] of [
     [503, 'CORPORATE_API_DISABLED', 'CORPORATE_API_DISABLED'],

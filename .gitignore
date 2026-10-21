@@ -43,3 +43,8 @@ backend/.data/
 
 # Internal API specifications are source documents, not application artifacts.
 /API Vận Hành/
+
+# Legacy API sources and detailed reconciliation evidence remain local.
+/API cũ/
+/docs/KHAC_PHUC_API_SLG_20261015.vi.md
+/docs/RA_SOAT_API_SLG_20261015.vi.md

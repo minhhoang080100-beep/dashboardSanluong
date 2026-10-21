@@ -93,6 +93,70 @@ def _with_provenance(row, other):
         set(row.get('_sourceTerminals', [])) | set(other.get('_sourceTerminals', [])))}
 
 
+def catalog_filter_scope(filters, selected):
+    """Validate private, request-only catalog filters before any source read."""
+    if filters is None:
+        return None
+    if not isinstance(filters, dict) or set(filters) != set(selected):
+        raise ValueError('Invalid catalog request scope')
+    allowed = {'customers': {'startDate', 'endDate', 'customerTaxCode', 'customerType'},
+               'cargoCategory': {'cargoTypeId'}, 'containerSize': {'containerSizeId'},
+               'origins': {'origin'}}
+    from pydantic import TypeAdapter
+    from .contracts import Query, Identifier
+    result = {}
+    for resource, values in filters.items():
+        if (resource not in RESOURCES or not isinstance(values, dict)
+                or set(values) - (allowed.get(resource, set()) | {'identity'})):
+            raise ValueError('Invalid catalog request filters')
+        public = {key: value for key, value in values.items() if key != 'identity'}
+        query = Query(companyId='CNT', **public)
+        query.check_resource(resource)
+        normalized = {key: getattr(query, key) for key in public}
+        if any(value is None for value in normalized.values()):
+            raise ValueError('Null catalog request filter')
+        if 'identity' in values:
+            # Approved legacy cargo-type catalogs may use literal identifiers
+            # such as CNT-BULK. Native SQL readers validate numeric identities
+            # separately before binding them; do not rewrite approved IDs.
+            normalized['identity'] = TypeAdapter(Identifier).validate_python(values['identity'])
+        result[resource] = normalized
+    return result
+
+
+def select_catalog_rows(resource, rows, filters):
+    """Keep every source variant of any matching ID before conflict detection.
+
+    Filtering just the matching variant could turn two different customers or
+    cargo groups sharing an ID into an apparently valid, incomplete catalog.
+    Unknown customer filter attributes still fail closed before selecting IDs.
+    """
+    if not filters:
+        return rows
+    if resource == 'customers':
+        if filters.get('startDate') and any(row.get('_createdDate') is None for row in rows):
+            raise SourceProblem('FILTER_NOT_READY', 'Danh mục khách hàng thiếu ngày tạo nguồn để lọc kỳ đầy đủ.')
+        for field, marker in (('customerTaxCode', '_taxCodeMapped'), ('customerType', '_customerTypeMapped')):
+            if field in filters and any(not row.get(marker, False) for row in rows):
+                raise SourceProblem('FILTER_NOT_READY', 'Thuộc tính lọc khách hàng chưa được ánh xạ đầy đủ.')
+
+    def matches(row):
+        if 'identity' in filters and row[IDENTITY[resource]] != filters['identity']:
+            return False
+        for field in ('cargoTypeId', 'containerSizeId', 'customerTaxCode', 'customerType'):
+            key = '_customerType' if field == 'customerType' else field
+            if field in filters and row.get(key) != filters[field]:
+                return False
+        if 'startDate' in filters and not filters['startDate'] <= row['_createdDate'] <= filters['endDate']:
+            return False
+        if 'origin' in filters and filters['origin'].casefold() not in row['originName'].casefold():
+            return False
+        return True
+
+    identities = {row[IDENTITY[resource]] for row in rows if matches(row)}
+    return [row for row in rows if row[IDENTITY[resource]] in identities]
+
+
 def _merge_reference_rows(resource, left, right):
     """Resolve metadata-only differences without changing business identity.
 
@@ -294,6 +358,12 @@ class _Reader:
     def select_rows(self, table, selected, key, predicates, *, reference_ids=None):
         """Run bounded parameterized lookups; None retains full-master behavior."""
         identities = None if reference_ids is None else _reference_ids(reference_ids)
+        if identities is not None:
+            # Fast driver metadata reports integer categories, not exact SQL
+            # widths: its 'int' may represent a BIGINT source column. Only the
+            # widest supported bound is safe here. Cast parameters, never the
+            # indexed source column, to avoid narrow-column conversion errors.
+            identities = tuple(value for value in identities if int(value) <= 9223372036854775807)
         batches = [None] if identities is None else [
             identities[offset:offset + REFERENCE_CHUNK_SIZE]
             for offset in range(0, len(identities), REFERENCE_CHUNK_SIZE)]
@@ -301,7 +371,7 @@ class _Reader:
         for batch in batches:
             conditions = list(predicates)
             if batch is not None:
-                conditions.append(_identifier(key) + ' IN (' + ','.join('?' for _ in batch) + ')')
+                conditions.append(_identifier(key) + ' IN (' + ','.join('CAST(? AS BIGINT)' for _ in batch) + ')')
             where = ' WHERE ' + ' AND '.join(conditions) if conditions else ''
             sql = (f'SELECT TOP ({MAX_MASTER_ROWS + 1}) ' + ','.join(_identifier(c) for c in selected)
                    + f' FROM [dbo].{_identifier(table)}' + where + f' ORDER BY {_identifier(key)}')
@@ -581,7 +651,7 @@ def _configured_sizes(reader, profile, report_day):
     return output, warnings
 
 
-def _native_cargo_sizes(reader, report_day, *, reference_ids=None):
+def _native_cargo_sizes(reader, report_day, *, reference_ids=None, strict_reference=True):
     """Expose approved local reporting classes using their existing Cargo IDs.
 
     This explicit mode does not link a reporting class to an ISO/domestic size
@@ -603,7 +673,7 @@ def _native_cargo_sizes(reader, report_day, *, reference_ids=None):
         else:
             selected.append(field)
     predicates = ['ISNULL([rowDeleted],0)=0']
-    if reference_ids is None:
+    if reference_ids is None or not strict_reference:
         codes = ','.join("N'" + code + "'" for code in NATIVE_CARGO_SIZE_CODES)
         predicates += [f'[cargoGroupId]={NATIVE_CONTAINER_CARGO_GROUP}',
                        f'[cargoCode] IN ({codes})', '[cargoName]=[cargoCode]']
@@ -624,6 +694,8 @@ def _native_cargo_sizes(reader, report_day, *, reference_ids=None):
         code, name = _text(raw['cargoCode']), _text(raw['cargoName'])
         if (raw['cargoGroupId'] != NATIVE_CONTAINER_CARGO_GROUP
                 or code not in NATIVE_CARGO_SIZE_CODES or name != code):
+            if not strict_reference:
+                continue
             raise SourceProblem('MAPPING_REQUIRED',
                 'Mã Cargo được tham chiếu chưa phải mã container báo cáo đã xác minh.')
         output.append({**_base(raw, report_day), 'containerSizeId': identity,
@@ -684,7 +756,7 @@ def _native_sizes(reader, report_day, *, reference_ids=None):
 
 
 def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=None, resources=None,
-                     reference_scope=None):
+                     reference_scope=None, catalog_filters=None):
     """Return per-resource readiness, validated rows and explicit blockers.
 
     query_fn(database, SELECT_sql, parameter_tuple) -> list[dict].
@@ -706,6 +778,9 @@ def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=No
             or any(resource not in RESOURCES for resource in selected)):
         raise ValueError('Invalid catalog resource selection')
     scope = _reference_scope(reference_scope, selected)
+    filters = catalog_filter_scope(catalog_filters, selected)
+    if scope is not None and filters is not None:
+        raise ValueError('Catalog request filters and dependency scope cannot be combined')
     report_day = (report_date or datetime.now(VIETNAM_TIMEZONE).date()).strftime('%Y%m%d')
     results = {resource: _empty() for resource in selected}
     cargo_mode = (profile or {}).get('cargo_catalog_source', 'configured')
@@ -778,12 +853,25 @@ def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=No
             try:
                 reference_ids = None if scope is None else sorted(
                     scope[resource][terminal], key=int)
+                # Public detail reads must inspect this ID in both sources,
+                # allowing absence in one source while retaining actual conflicts.
+                # Only an ID bound as a parameter reaches SQL.
+                requested = (filters or {}).get(resource, {})
+                requested_id = requested.get('identity') or requested.get('containerSizeId')
+                if requested_id is not None and not (resource == 'containerSize' and size_mode == 'configured'):
+                    try:
+                        reference_ids = [source_id(terminal, requested_id)]
+                    except ValueError:
+                        # A syntactically valid public filter may still not be
+                        # a native numeric ID. It cannot match this source.
+                        reference_ids = []
                 if resource == 'cargoCategory':
                     rows, warnings = (_native_categories(reader, report_day, reference_ids=reference_ids) if cargo_mode == 'native_groups'
                                       else _configured_categories(reader, profile, report_day))
                 elif resource == 'containerSize':
                     if size_mode == 'native_cargo':
-                        rows, warnings = _native_cargo_sizes(reader, report_day, reference_ids=reference_ids)
+                        rows, warnings = _native_cargo_sizes(reader, report_day, reference_ids=reference_ids,
+                                                            strict_reference=filters is None)
                     else:
                         rows, warnings = (_native_sizes(reader, report_day, reference_ids=reference_ids) if size_mode == 'native_domestic'
                                           else _configured_sizes(reader, profile, report_day))
@@ -794,6 +882,7 @@ def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=No
                     if set(scope[resource][terminal]) - found:
                         raise SourceProblem('SOURCE_REFERENCE_NOT_FOUND',
                             'Không tìm thấy mã danh mục trong đúng nguồn tham chiếu.')
+                if scope is not None or filters is not None:
                     rows = [{**row, '_sourceTerminals': [terminal]} for row in rows]
                 results[resource]['rows'].extend(rows)
                 results[resource]['warnings'].extend(warnings)
@@ -806,6 +895,11 @@ def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=No
         # can be coalesced apart from source metadata dates. Full customers are
         # strict because their public query filters by creation date; other S
         # catalogs have no date filter. Scoped dependencies are never published.
+        if result['ready'] and filters is not None:
+            try:
+                result['rows'] = select_catalog_rows(resource, result['rows'], filters[resource])
+            except SourceProblem as exc:
+                _block(result, exc)
         if result['ready']:
             unique = {}
             conflict_ids = set()

@@ -71,6 +71,108 @@ def test_equal_first_times_at_distinct_berths_are_ambiguous(history_db):
     assert all(value[key] is None for key in ("initial_berth_id", "initial_berth_code", "initial_berth_at"))
 
 
+@pytest.mark.parametrize("terminal,first_berths,later_berth", [
+    ("cua_lo", (12, 11), 13),
+    ("ben_thuy", (13, 12), 11),
+])
+def test_distinct_first_berths_can_agree_on_scope_without_resolving_berth(
+        history_db, terminal, first_berths, later_berth):
+    # Both initial possibilities are company berths. Later moves and insertion
+    # order do not justify choosing an exact initial berth from the tie.
+    for berth in first_berths:
+        arrival(history_db, 1, berth, atb="2026-01-16T06:00:00")
+    arrival(history_db, 1, later_berth, atb="2026-01-17T12:00:00")
+    value = assignments(history_db, terminal)[1]
+    assert value["production_scope"] == "nghe_tinh"
+    assert value["berth_assignment_status"] == "ambiguous"
+    assert all(value[key] is None for key in ("initial_berth_id", "initial_berth_code", "initial_berth_at"))
+
+
+def test_all_earliest_candidates_determine_scope_not_only_extreme_berth_ids(history_db):
+    # Looking only at MIN/MAX berth IDs would miss Cau 5 in the middle.
+    for berth in (11, 13, 15):
+        arrival(history_db, 1, berth, atb="2026-01-16T06:00:00")
+    value = assignments(history_db)[1]
+    assert value["production_scope"] == "unclassified"
+    assert value["berth_assignment_status"] == "ambiguous"
+    assert all(value[key] is None for key in ("initial_berth_id", "initial_berth_code", "initial_berth_at"))
+
+
+@pytest.mark.parametrize("invalid_berth", [None, 0, -1])
+def test_same_scope_tie_cannot_mask_invalid_first_berth_identity(history_db, invalid_berth):
+    for berth in (11, 12, invalid_berth):
+        arrival(history_db, 1, berth, atb="2026-01-16T06:00:00")
+    value = assignments(history_db)[1]
+    assert value["production_scope"] == "unclassified"
+    assert value["berth_assignment_status"] == "ambiguous"
+    assert all(value[key] is None for key in ("initial_berth_id", "initial_berth_code", "initial_berth_at"))
+
+
+@pytest.mark.parametrize("invalid_code", [None, "", "   ", "missing_reference"])
+def test_same_scope_tie_requires_valid_references_for_every_first_berth(history_db, invalid_code):
+    for berth in (11, 12):
+        arrival(history_db, 1, berth, atb="2026-01-16T06:00:00")
+    if invalid_code == "missing_reference":
+        history_db.execute("DELETE FROM berths WHERE berthId=12")
+    else:
+        history_db.execute("UPDATE berths SET berthCode=? WHERE berthId=12", (invalid_code,))
+    value = assignments(history_db)[1]
+    assert value["production_scope"] == "unclassified"
+    assert value["berth_assignment_status"] == "ambiguous"
+    assert all(value[key] is None for key in ("initial_berth_id", "initial_berth_code", "initial_berth_at"))
+
+
+@pytest.mark.parametrize("timestamp", [None, "1899-12-30T00:00:00"])
+def test_same_scope_tie_remains_unknown_with_an_undated_actual_arrival(history_db, timestamp):
+    for berth in (11, 12):
+        arrival(history_db, 1, berth, atb="2026-01-16T06:00:00")
+    # Even a nominally company berth cannot be sequenced without its date.
+    arrival(history_db, 1, 11, atb=timestamp)
+    value = assignments(history_db)[1]
+    assert value["production_scope"] == "unclassified"
+    assert value["berth_assignment_status"] == "ambiguous"
+    assert all(value[key] is None for key in ("initial_berth_id", "initial_berth_code", "initial_berth_at"))
+
+
+def test_planned_and_deleted_history_does_not_block_same_scope_first_tie(history_db):
+    for berth in (11, 12):
+        arrival(history_db, 1, berth, atb="2026-01-16T06:00:00")
+    arrival(history_db, 1, 13, confirmed=False)
+    arrival(history_db, 1, 13, atb="2026-01-16T06:00:00", deleted=True)
+    value = assignments(history_db)[1]
+    assert value["production_scope"] == "nghe_tinh"
+    assert value["berth_assignment_status"] == "ambiguous"
+
+
+def test_repeated_same_scope_ties_do_not_multiply_production(history_db):
+    for berth in (11, 12, 11, 12):
+        arrival(history_db, 1, berth, atb="2026-01-16T06:00:00")
+    history_db.executemany("INSERT INTO facts VALUES(?,?,?)", [(1, 1, 100), (2, 1, 200)])
+    result = history_db.execute(
+        f"SELECT COUNT(*) AS rows, SUM(f.tonnes) AS tonnes FROM facts f "
+        f"JOIN ({query()}) b ON b.vesselVoyageId=f.voyage_id "
+        "WHERE b.production_scope='nghe_tinh'").fetchone()
+    assert (result["rows"], result["tonnes"]) == (2, 300)
+    assert assignments(history_db)[1]["berth_assignment_status"] == "ambiguous"
+
+
+@pytest.mark.parametrize("selection", ["voyage", "period_voyages"])
+def test_restricted_selection_keeps_all_initial_candidates_for_requested_voyage(history_db, selection):
+    for berth in (11, 12):
+        arrival(history_db, 1, berth, atb="2025-12-31T06:00:00")
+    arrival(history_db, 1, 13, atb="2026-01-16T06:00:00")
+    arrival(history_db, 2, 13, atb="2026-01-16T06:00:00")
+    sql = query(selection=selection)
+    if selection == "period_voyages":
+        sql = "WITH period_voyages AS (SELECT ? AS vesselVoyageId) " + sql
+    result = history_db.execute(sql, (1,)).fetchall()
+    assert len(result) == 1
+    assert result[0]["vesselVoyageId"] == 1
+    assert result[0]["production_scope"] == "nghe_tinh"
+    assert result[0]["berth_assignment_status"] == "ambiguous"
+    assert result[0]["initial_berth_id"] is None
+
+
 def test_repeated_same_berth_records_do_not_multiply_production(history_db):
     arrival(history_db, 1, 12, atb="2026-08-14T15:00:00")
     arrival(history_db, 1, 12, atb="2026-08-14T15:00:00")
@@ -270,6 +372,21 @@ def test_missing_null_and_ambiguous_dictionary_are_unclassified():
     assert [r["id"] for r in selected] == ["0", "1", "2"]
     assert [r["berth_assignment_status"] for r in selected] == ["missing", "missing", "ambiguous"]
     assert all(r["initial_berth_id"] is None for r in selected)
+
+
+def test_raw_report_accepts_known_scope_without_inventing_an_exact_berth():
+    fact = {"kind": "fact", "id": "known-scope", "terminal_id": "cua_lo",
+            "source_voyage_id": "1", "native_weight": 100}
+    fetched = [fact, berth_row("cua_lo", "1", "nghe_tinh", "ambiguous")]
+    selected = DashboardRepository._scope_report_rows(fetched, "nghe_tinh")
+    assert len(selected) == 1
+    assert selected[0]["native_weight"] == 100
+    assert selected[0]["production_scope"] == "nghe_tinh"
+    assert selected[0]["berth_assignment_status"] == "ambiguous"
+    assert all(selected[0][key] is None for key in ("initial_berth_id", "initial_berth_code", "initial_berth_at"))
+    assert DashboardRepository._scope_report_rows(fetched, "vietsun") == []
+    assert DashboardRepository._scope_report_rows(fetched, "unclassified") == []
+    assert "production_scope" not in fact
 
 
 def test_duplicate_assignment_identity_fails_before_aggregation():

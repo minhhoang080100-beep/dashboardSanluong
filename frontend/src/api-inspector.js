@@ -1,7 +1,7 @@
 export const INSPECTOR_GROUPS = { production: 'Sản lượng', catalog_s: 'Danh mục sản lượng', operations: 'Danh mục vận hành' };
 export const INSPECTOR_LIMITS = [20, 50, 100];
 export const INSPECTOR_LIVE_MAX_DAYS = 31;
-export const INSPECTOR_HEADERS = ['X-Page', 'X-Limit', 'X-Total-Count', 'X-Total-Pages', 'X-Has-Next', 'X-Snapshot-Id', 'X-Source-Read-At', 'X-Error-Code', 'Retry-After'];
+export const INSPECTOR_HEADERS = ['X-Page', 'X-Limit', 'X-Total-Count', 'X-Total-Pages', 'X-Has-Next', 'X-Snapshot-Id', 'X-Result-Digest', 'X-Source-Read-At', 'X-Error-Code', 'Retry-After'];
 const RESERVED_FILTERS = new Set(['companyId', 'page', 'limit', 'snapshotId']);
 const SNAPSHOT_ID = /^[a-f0-9]{32}$/i;
 const DEFAULT_API_BASE = import.meta.env?.VITE_API_URL || '/api';

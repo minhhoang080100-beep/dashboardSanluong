@@ -1,9 +1,10 @@
 """S v3 wire contracts. No RORO routes or inferred ISO/operator values."""
+from copy import deepcopy
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Annotated, Generic, TypeVar
+from typing import Annotated, Generic, Literal, TypeVar
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, PlainSerializer, StringConstraints, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, PlainSerializer, StringConstraints, create_model, field_validator
 
 
 def _calendar_day(value):
@@ -184,19 +185,42 @@ class Page(Contract, Generic[T]):
     message: str = 'Lấy dữ liệu thành công'
 
 
+class ErrorResult(Contract):
+    """The same compact envelope used by validation, auth and source failures."""
+    data: list = Field(max_length=0)
+    code: Literal['0']
+    message: str
+
+
+COMMON_QUERY_FIELDS = frozenset({'companyId', 'page', 'limit', 'snapshotId'})
+RESOURCE_QUERY_FIELDS = {
+    'contQuayVolumesCB': frozenset({'startDate', 'endDate', 'shipId', 'handlingMethodId'}),
+    'bulkQuayVolumesCB': frozenset({'startDate', 'endDate', 'shipId', 'handlingMethodId'}),
+    'contGateVolumesCB': frozenset({'startDate', 'endDate', 'handlingMethodId'}),
+    'bulkGateVolumesCB': frozenset({'startDate', 'endDate', 'handlingMethodId'}),
+    'customers': frozenset({'startDate', 'endDate', 'customerTaxCode', 'customerType'}),
+    'cargoCategory': frozenset({'cargoTypeId'}),
+    'containerSize': frozenset({'containerSizeId'}),
+    'origins': frozenset({'origin'}),
+}
+
+
 class Query(Contract):
-    companyId: Identifier
-    startDate: Day | None = None
-    endDate: Day | None = None
+    companyId: Identifier = Field(description='Mã đơn vị được cấp quyền; Cảng Nghệ Tĩnh sử dụng CNT.')
+    startDate: Day | None = Field(default=None, description='Ngày bắt đầu, dạng YYYYMMDD. Bao gồm ngày này.')
+    endDate: Day | None = Field(default=None, description='Ngày kết thúc, dạng YYYYMMDD. Bao gồm ngày này.')
     shipId: Identifier | None = None
     handlingMethodId: Identifier | None = None
     cargoTypeId: Identifier | None = None
     containerSizeId: Identifier | None = None
     customerTaxCode: Annotated[str, StringConstraints(min_length=1, max_length=255)] | None = None
     customerType: Identifier | None = None
-    page: int = Field(default=1, ge=1, le=1000000)
-    limit: int = Field(default=20, ge=1, le=100)
-    snapshotId: Annotated[str, StringConstraints(pattern=r'^[a-f0-9]{32}$')] | None = None
+    origin: Annotated[str, StringConstraints(min_length=1, max_length=254, strip_whitespace=True)] | None = Field(
+        default=None, description='Tìm chuỗi trong tên nguồn gốc hàng (originName), không phân biệt hoa/thường. Ký tự % và _ được hiểu theo nghĩa đen; độ dài dưới 255 ký tự.')
+    page: int = Field(default=1, ge=1, le=1000000, description='Số trang, bắt đầu từ 1.')
+    limit: int = Field(default=20, ge=1, le=100, description='Số bản ghi mỗi trang, tối đa 100.')
+    snapshotId: Annotated[str, StringConstraints(pattern=r'^[a-f0-9]{32}$')] | None = Field(
+        default=None, description='Chỉ dùng ở chế độ bản công bố; lấy từ X-Snapshot-Id trang 1. Chế độ trực tiếp không nhận tham số này.')
 
     @field_validator('startDate', 'endDate')
     @classmethod
@@ -213,18 +237,35 @@ class Query(Contract):
             raise CorporateError(422, 'PERIOD_REQUIRED', 'startDate và endDate là bắt buộc.')
         if self.startDate and self.endDate < self.startDate:
             raise CorporateError(422, 'INVALID_PERIOD', 'endDate phải từ startDate trở đi.')
-        common = {'companyId', 'page', 'limit', 'snapshotId'}
-        allowed = {
-            'contQuayVolumesCB': {'startDate', 'endDate', 'shipId', 'handlingMethodId'},
-            'bulkQuayVolumesCB': {'startDate', 'endDate', 'shipId', 'handlingMethodId'},
-            'contGateVolumesCB': {'startDate', 'endDate', 'handlingMethodId'},
-            'bulkGateVolumesCB': {'startDate', 'endDate', 'handlingMethodId'},
-            'customers': {'startDate', 'endDate', 'customerTaxCode', 'customerType'},
-            'cargoCategory': {'cargoTypeId'}, 'containerSize': {'containerSizeId'},
-        }.get(resource, set())
-        unexpected = {key for key in self.model_fields_set - common - allowed if getattr(self, key) is not None}
+        if resource in PRODUCTION and self.endDate == '99991231':
+            # Production SQL uses the next day as an exclusive upper bound.
+            # Reject the unrepresentable boundary before profile/source reads,
+            # rather than disguising date overflow as a SmartTOS outage.
+            raise CorporateError(422, 'INVALID_PERIOD', 'endDate của API sản lượng phải trước 99991231.')
+        allowed = RESOURCE_QUERY_FIELDS.get(resource, frozenset())
+        unexpected = {key for key in self.model_fields_set - COMMON_QUERY_FIELDS - allowed if getattr(self, key) is not None}
         if unexpected:
             raise CorporateError(422, 'UNSUPPORTED_FILTER', 'Bộ lọc không áp dụng cho API này.')
+
+
+def _public_query_model(resource):
+    """Share field validation with readers without advertising unsupported filters."""
+    allowed = COMMON_QUERY_FIELDS | RESOURCE_QUERY_FIELDS.get(resource, frozenset())
+    fields = {}
+    for name, definition in Query.model_fields.items():
+        if name not in allowed:
+            continue
+        field = deepcopy(definition)
+        annotation = field.annotation
+        if resource in PRODUCTION and name in {'startDate', 'endDate'}:
+            # These are required, non-null dates in all four production sheets.
+            annotation = Day
+            field.default = ...
+        fields[name] = (annotation, field)
+    return create_model(resource + 'Query', __base__=Contract, **fields)
+
+
+PUBLIC_QUERY_MODELS = {resource: _public_query_model(resource) for resource in MODELS}
 
 
 def day(value: date) -> str:

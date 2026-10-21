@@ -278,7 +278,11 @@ def test_native_cont_missing_weight_with_nonzero_or_unknown_count_stays_blocked(
     p = {**profile(), 'container_size_source': 'native_cargo'}
     result, _ = run([fact(cargo_name='Khác', quantity=quantity, native_weight=None)], p)
     data = result['contQuayVolumesCB']
-    assert data['blockers'] == ['WEIGHT_OR_UNIT_UNAVAILABLE']
+    expected = {'CONTAINER_SIZE_UNMAPPED', 'WEIGHT_OR_UNIT_UNAVAILABLE'}
+    if quantity is None or isinstance(quantity, bool) or not Decimal(str(quantity)).is_finite() or quantity < 0:
+        expected.add('CONTAINER_QUANTITY_UNAVAILABLE')
+    assert data['blockers'] == sorted(expected)
+    assert not data['ready'] and data['rows'] == []
     assert data['excluded_empty_container_rows'] == 0
 
 
@@ -309,7 +313,7 @@ def test_native_cont_zero_count_with_positive_weight_retains_weight_and_size_val
 def test_zero_activity_rule_is_not_extended_to_non_cont_units_or_bulk(updates, resource, blocker):
     p = {**profile(), 'container_size_source': 'native_cargo'}
     result, _ = run([fact(quantity=0, native_weight=None, **updates)], p)
-    assert result[resource]['blockers'] == [blocker]
+    assert result[resource]['blockers'] == sorted({blocker, 'WEIGHT_OR_UNIT_UNAVAILABLE'})
     assert result[resource]['excluded_empty_container_rows'] == 0
 
 
@@ -329,12 +333,39 @@ def test_zero_native_container_count_without_actual_zero_weight_cannot_hide_miss
     for weight in (None, Decimal('1.25'), Decimal('NaN'), -1):
         result, _ = run([yard_fact(quantity=0, native_weight=weight, quantity_unit_code=unit)], p)
         data = result['contGateVolumesCB']
-        assert data['blockers'] == ['CONTAINER_QUANTITY_UNIT_UNCONFIRMED']
+        expected = {'CONTAINER_QUANTITY_UNIT_UNCONFIRMED'}
+        if weight != Decimal('1.25'):
+            expected.add('WEIGHT_OR_UNIT_UNAVAILABLE')
+        assert data['blockers'] == sorted(expected)
         assert data['excluded_empty_container_rows'] == 0
 
 
+def test_container_diagnostics_report_missing_size_and_mass_for_the_same_source_row():
+    p = {**profile(), 'container_size_source': 'native_cargo'}
+    broken = fact(source_id=301, cargo_name='Khác', native_weight=None, quantity=2)
+    result, _ = run([broken], p)
+    data = result['contQuayVolumesCB']
+    assert data['issue_counts'] == {'CONTAINER_SIZE_UNMAPPED': 1, 'WEIGHT_OR_UNIT_UNAVAILABLE': 1}
+    assert {(sample['sourceId'], sample['code']) for sample in data['issue_samples']} == {
+        (301, 'CONTAINER_SIZE_UNMAPPED'), (301, 'WEIGHT_OR_UNIT_UNAVAILABLE')}
+    assert not data['ready'] and data['rows'] == []
+
+    # Fixing the size alone must not unblock a record whose weight is still absent.
+    result, _ = run([{**broken, 'cargo_name': '40F'}], p)
+    assert result['contQuayVolumesCB']['blockers'] == ['WEIGHT_OR_UNIT_UNAVAILABLE']
+
+    # Only the source correction of both fields yields throughput, using actual weight.
+    result, _ = run([{**broken, 'cargo_name': '40F', 'native_weight': Decimal('57.125')}], p)
+    data = result['contQuayVolumesCB']
+    assert data['ready'] and data['issue_counts'] == {} and data['issue_samples'] == []
+    assert len(data['rows']) == 1
+    assert data['rows'][0]['containerWeight'] == Decimal('57.125')
+    assert data['rows'][0]['containerTEU'] == 4
+    assert data['rows'][0]['containerSizeId'] == '1'
+
+
 @pytest.mark.parametrize('updates,blocker', [
-    ({'method_id': None}, 'METHOD_ID_UNAVAILABLE'),
+    ({'method_id': -1}, 'METHOD_ID_UNAVAILABLE'),
     ({'business_date': None}, 'SOURCE_DATE_INVALID'),
     ({'business_date': date(2026, 10, 1)}, 'SOURCE_DATE_INVALID'),
 ])
@@ -397,7 +428,7 @@ def test_bulk_empty_rule_never_hides_missing_invalid_or_nonzero_measurements(upd
 
 
 @pytest.mark.parametrize('updates,blocker', [
-    ({'method_id': None}, 'METHOD_ID_UNAVAILABLE'),
+    ({'method_id': -1}, 'METHOD_ID_UNAVAILABLE'),
     ({'business_date': None}, 'SOURCE_DATE_INVALID'),
     ({'business_date': date(2026, 10, 1)}, 'SOURCE_DATE_INVALID'),
 ])
@@ -522,11 +553,11 @@ def test_empty_placeholder_rule_never_hides_missing_invalid_or_nonzero_source_da
         assert result[name]['excluded_placeholder_rows'] == 0
 
 
-def test_empty_yard_placeholder_with_method_zero_remains_unclassified():
+def test_empty_yard_placeholder_with_method_zero_is_counted_without_inventing_cargo():
     result, _ = run([yard_fact(cargo_id=0, quantity=0, native_weight=0, method_id=0)], yard_profile())
     for name in ('contGateVolumesCB', 'bulkGateVolumesCB'):
-        assert result[name]['blockers'] == ['CARGO_KIND_UNMAPPED']
-        assert result[name]['excluded_placeholder_rows'] == 0
+        assert result[name]['ready'] and result[name]['rows'] == []
+        assert result[name]['excluded_placeholder_rows'] == 1
 
 
 @pytest.mark.parametrize('physical', [None, True, 2])

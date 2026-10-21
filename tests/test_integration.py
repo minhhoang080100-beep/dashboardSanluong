@@ -336,7 +336,7 @@ def test_noncompany_scope_keeps_actuals_but_never_uses_or_freezes_company_plans(
     closed = client.post('/api/closed-reports', headers=admin, json={'report_id': rid})
     assert closed.status_code == 201, closed.text
     saved = client.get(f"/api/closed-reports/{closed.json()['id']}", headers=admin).json()
-    assert saved['production_scope'] == scope and saved['berth_rule_version'] == 'initial-berth-v1' and not saved['legacy_scope']
+    assert saved['production_scope'] == scope and saved['berth_rule_version'] == repository.BERTH_RULE_VERSION and not saved['legacy_scope']
     assert saved['report']['meta']['filters']['production_scope'] == scope
     assert saved['planning']['eligible'] is False and saved['planning']['plans'] == [] and saved['planning']['rows'] == []
     assert saved['planning']['period']['production_scope'] == scope
@@ -414,7 +414,7 @@ def test_closed_comparison_rejects_other_scope_or_rule_and_preserves_legacy_expo
     user = store.authenticate(admin['Authorization'].split()[1])
     snapshot = service.export_snapshot(rid)
     future = deepcopy(snapshot['report'])
-    future['meta']['berth_rule_version'] = 'initial-berth-v2'
+    future['meta']['berth_rule_version'] = repository.BERTH_RULE_VERSION + '-different-rule'
     different_rule = store.close_report(user, 'cua_lo', '2026-09-11', '2026-09-12', future, snapshot['operations'])
     assert client.post(f"/api/closed-reports/{different_rule['id']}/compare", headers=admin, json={'report_id': rid}).status_code == 422
     legacy = deepcopy(snapshot['report'])

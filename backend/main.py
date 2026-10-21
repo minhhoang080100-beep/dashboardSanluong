@@ -41,7 +41,7 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Accept", "Content-Type", "Authorization"],
-    expose_headers=["X-Snapshot-Id", "X-Source-Read-At", "X-Corporate-Contract",
+    expose_headers=["X-Snapshot-Id", "X-Source-Read-At", "X-Corporate-Contract", "X-Result-Digest",
                     "X-Page", "X-Limit", "X-Total-Count", "X-Total-Pages", "X-Has-Next", "X-Error-Code", "Retry-After"],
 )
 

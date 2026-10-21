@@ -19,7 +19,7 @@ except ImportError:  # Backend also supports its existing standalone main import
     from control_api import require_user
     from control_store import require_admin, require_scope
 
-from .contracts import PRODUCTION, Query
+from .contracts import PRODUCTION, PUBLIC_QUERY_MODELS, Query
 from .errors import CorporateError
 from .diagnostics import sanitize_diagnostics
 from .freshness import max_age_seconds
@@ -71,11 +71,12 @@ TEXT_FILTERS = {
     'customers': [('customerTaxCode', 'Mã số thuế'), ('customerType', 'Loại khách hàng')],
     'cargoCategory': [('cargoTypeId', 'Mã loại hàng')],
     'containerSize': [('containerSizeId', 'Mã kích cỡ container')],
+    'origins': [('origin', 'Tên nguồn gốc hàng')],
 }
 HEADER_NAMES = (
     'Cache-Control', 'X-Content-Type-Options', 'X-Snapshot-Id', 'X-Source-Read-At',
     'X-Corporate-Contract', 'X-Page', 'X-Limit', 'X-Total-Count', 'X-Total-Pages',
-    'X-Has-Next', 'X-Error-Code', 'Retry-After',
+    'X-Has-Next', 'X-Result-Digest', 'X-Error-Code', 'Retry-After',
 )
 
 
@@ -164,8 +165,12 @@ def inspect(body: InspectInput, request: Request, user=Depends(require_inspector
             raise CorporateError(422, 'UNSUPPORTED_RESOURCE', 'API không thuộc danh sách được hỗ trợ.')
         if body.query.get('companyId', COMPANY_ID) != COMPANY_ID:
             raise CorporateError(403, 'COMPANY_FORBIDDEN', 'Chỉ hỗ trợ dữ liệu Cảng Nghệ Tĩnh (CNT).')
-        query_model = OperationQuery if body.resource in OPERATION_MODELS else Query
+        query_model = OperationQuery if body.resource in OPERATION_MODELS else PUBLIC_QUERY_MODELS[body.resource]
         query = query_model.model_validate({'companyId': COMPANY_ID, **body.query})
+        if body.resource not in OPERATION_MODELS:
+            # Match the public endpoint's resource-specific required fields and
+            # unsupported-filter validation before entering the shared reader.
+            query = Query.model_validate(query.model_dump(exclude_unset=True))
         # Never echo unknown/raw inputs, including accidentally supplied credentials.
         request_query = query.model_dump(mode='json', exclude_none=True)
         query.check_resource(body.resource)

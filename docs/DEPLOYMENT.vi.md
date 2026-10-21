@@ -1,5 +1,7 @@
 **Triển khai dashboard nội bộ trên Railway và Vercel — cập nhật 17/09/2026**
 
+**API Tổng công ty riêng — 15/10/2026:** service `api-tong-cong-ty` dùng ứng dụng và volume xác thực riêng, còn backend dashboard giữ nguyên. Xem [cấu hình, trạng thái bàn giao và cách triển khai API riêng](API_RIENG_RAILWAY.vi.md). API riêng dùng gói Docker đã chuẩn bị cùng Start Command/healthcheck lưu trực tiếp trên service Railway; cấu hình dashboard bên dưới không áp dụng thay thế. Frontend hiện vẫn dùng backend dashboard cũ.
+
 **Chuyển tài khoản Railway ngày 27/09/2026:** domain API hiện tại là `https://dashboardsanluong-production-1761.up.railway.app`. Các deployment bên dưới là lịch sử; xem [biên bản chuyển hệ thống](CHUYEN_RAILWAY_20260927.vi.md) cho cấu hình và kết quả kiểm tra mới.
 
 **Responsive và xóa kế hoạch:** backend Railway deployment `277286c5-4212-4e0f-beaf-9881c8b9e0e4` đạt `SUCCESS`; hash module khớp gói phát hành. `DELETE /api/plans/{id}` nhận `{revision}` và đánh dấu xóa trong transaction, kiểm tra quyền/phạm vi, giữ lịch sử và bản chốt. `include_deleted=true` hỗ trợ tra cứu. Xóa bản đã duyệt mới nhất không kích hoạt lại phiên bản cũ; xóa mục tiêu công ty cũng không tự thay bằng tổng hai xí nghiệp. Migration chỉ thêm metadata xóa và điều chỉnh trigger để cho phép chuyển trạng thái này; nội dung kế hoạch đã duyệt/hủy vẫn bất biến.

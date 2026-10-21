@@ -44,7 +44,7 @@ class ScopedQuery(FakeQuery):
         rows = super().__call__(db, sql, params)
         if 'INFORMATION_SCHEMA' in sql:
             return [row for row in rows if row['table_name'] in params]
-        match = re.search(r'\[([A-Za-z]+)\] IN \((?:\?,?)+\)', sql)
+        match = re.search(r'\[([A-Za-z]+)\] IN \((?:CAST\(\? AS BIGINT\),?)+\)', sql)
         if match:
             assert sql.count('?') == len(params)
             rows = [row for row in rows if str(row[match[1]]) in params]
@@ -81,7 +81,7 @@ def test_only_used_ids_are_read_in_the_actual_referencing_source():
     assert len(calls) == 1
     assert {db for db, _, _ in query.calls} == {'SmartTOS'}
     for _, sql, params in calls:
-        assert '[vesselId] IN (?)' in sql and params == ('10',)
+        assert '[vesselId] IN (CAST(? AS BIGINT))' in sql and params == ('10',)
         assert '99' not in sql and '10' not in sql.replace('100001', '')
 
 
@@ -311,7 +311,7 @@ def test_native_size_view_uses_scope_and_keeps_domestic_identity():
     assert result['ready'] and [row['containerSizeId'] for row in result['rows']] == ['617']
     assert result['rows'][0]['isoSzTp'] == '45G0'
     calls = [(sql, params) for _, sql, params in query.calls if 'INFORMATION_SCHEMA' not in sql]
-    assert all('[containerSizeTypeDomesticId] IN (?)' in sql and params == ('617',) for sql, params in calls)
+    assert all('[containerSizeTypeDomesticId] IN (CAST(? AS BIGINT))' in sql and params == ('617',) for sql, params in calls)
 
 
 def test_used_native_size_collision_remains_blocking():

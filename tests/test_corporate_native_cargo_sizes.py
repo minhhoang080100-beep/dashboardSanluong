@@ -77,7 +77,7 @@ def test_reference_scope_reads_only_used_native_ids_in_actual_source():
     data_calls = [(sql,params) for _,sql,params in query.calls if 'INFORMATION_SCHEMA' not in sql]
     assert len(data_calls)==1
     assert {db for db,_,_ in query.calls}=={'SmartTOS'}
-    assert all('[cargoId] IN (?)' in sql and params==('2125',) for sql,params in data_calls)
+    assert all('[cargoId] IN (CAST(? AS BIGINT))' in sql and params==('2125',) for sql,params in data_calls)
 
 
 @pytest.mark.parametrize('identity', ['3000','3001','3002','3003'])

@@ -259,8 +259,8 @@ def test_invalid_query_is_inner_422_without_store_access_or_raw_input(api, monke
 
 
 @pytest.mark.parametrize('resource,query,code', [
-    ('origins', {'startDate': '20260901', 'endDate': '20260930'}, 'UNSUPPORTED_FILTER'),
-    ('contGateVolumesCB', {}, 'PERIOD_REQUIRED'),
+    ('origins', {'startDate': '20260901', 'endDate': '20260930'}, 'INVALID_REQUEST'),
+    ('contGateVolumesCB', {}, 'INVALID_REQUEST'),
     ('customers', {'startDate': '20260901'}, 'INVALID_PERIOD'),
     ('oprt.berths', {'startDate': '20260930', 'endDate': '20260901'}, 'INVALID_PERIOD'),
 ])
