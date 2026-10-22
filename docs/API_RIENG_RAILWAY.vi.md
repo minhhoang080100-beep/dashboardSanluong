@@ -99,6 +99,49 @@ trước truy vấn. Nạp lại danh mục và sản lượng cùng chế độ
 vùng sau kiểm tra; không nối vào dữ liệu ID cũ hoặc ghép trang trước/sau đổi
 profile. Xem [quy trình chuyển định danh](VAN_HANH_API_TONG_CONG_TY.vi.md#chuyển-id-bộ-s-sang-phân-biệt-nguồn).
 
+### Kích hoạt có kiểm tra cấu hình và phục hồi
+
+Sau khi bản mã mới đã chạy thành công, có thể dùng module
+`corporate_api.manage_source_identity` trong đúng container API. Công cụ không
+triển khai mã, không kết nối SmartTOS và không sửa tài khoản. Mặc định chỉ lập
+kế hoạch, chưa ghi file. Công cụ yêu cầu chế độ đọc `live`, đúng service và
+deployment đã kiểm tra trên Railway, cùng SHA-256 của **toàn bộ byte** file
+profile hiện tại. Không dùng hash của profile cũ nếu nội dung đã thay đổi.
+
+```sh
+python -m corporate_api.manage_source_identity plan \
+  --service-id "<API_SERVICE_ID>" --deployment-id "<VERIFIED_DEPLOYMENT_ID>" \
+  --expected-profile-sha256 "<CURRENT_PROFILE_SHA256>"
+```
+
+Kết quả chỉ chứa mã hash, chế độ ID và tên trường thay đổi, không in nội dung
+profile. Sau khi đối chiếu kết quả `plan`, dùng cùng thông tin với hành động
+`apply` và đường dẫn backup **chưa tồn tại**, cùng thư mục với profile:
+
+```sh
+python -m corporate_api.manage_source_identity apply \
+  --service-id "<API_SERVICE_ID>" --deployment-id "<VERIFIED_DEPLOYMENT_ID>" \
+  --expected-profile-sha256 "<CURRENT_PROFILE_SHA256>" \
+  --backup "/data/corporate-source.before-terminal-ids.json"
+```
+
+Chỉ `source_identity_mode` đổi; những cấu hình khác được giữ nguyên. Công cụ
+lưu backup nguyên byte và biên nhận bên cạnh, giữ quyền/chủ sở hữu file trên
+Linux, kiểm tra lại nội dung trước khi thay thế nguyên tử. Các lần chạy công
+cụ dùng chung khóa; không chỉnh profile bằng công cụ khác trong lúc chuyển.
+Nếu hash, nguồn dữ liệu hoặc đích triển khai không khớp, công cụ từ chối ghi.
+
+Để phục hồi **trong cùng deployment**, dùng `rollback`, cùng `--backup` và
+`--expected-profile-sha256` bằng `newSha256` từ lần `apply`. Biên nhận và hash
+backup phải khớp; profile có thay đổi khác sau kích hoạt sẽ không bị ghi đè.
+Không dùng thao tác này để tự động quay lại sau khi đã đổi sang deployment
+khác. Khôi phục profile không tự khôi phục dữ liệu đã nhập ở bên nhận.
+
+Nghiệm thu so tổng tấn/TEU trên cùng kỳ; số dòng và digest có thể đổi do mã
+CL:/BT:. Digest chỉ cần ổn định giữa các trang **trong cùng lượt đọc mới**,
+không yêu cầu bằng digest trước chuyển. Đọc đủ tám danh mục, kiểm tra tra cứu
+và toàn bộ tham chiếu sản lượng trước khi cho bên nhận nạp lại dữ liệu.
+
 ## Triển khai bản tiếp theo
 
 Service hiện được triển khai bằng **Railway CLI từ gói mã local**, chưa nối GitHub để tự triển khai. Đẩy commit lên Git không tự cập nhật service này. Các thiết lập sau được lưu trực tiếp trên service API riêng trong Railway:
