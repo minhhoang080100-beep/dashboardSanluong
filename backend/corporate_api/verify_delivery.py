@@ -500,6 +500,8 @@ def _reference_failure_sample(key, result):
     # identifiers (which can contain personal data or credential-shaped text).
     if re.fullmatch(r'[1-9][0-9]{0,18}', key[1]):
         sample['nativeId'] = key[1]
+    elif re.fullmatch(r'(CL|BT):[1-9][0-9]{0,18}', key[1]):
+        sample['apiId'] = key[1]
     for name in ('http', 'serverErrorCode', 'retryAfterSeconds'):
         if name in result:
             sample[name] = result[name]
@@ -511,7 +513,7 @@ def _reference_relation_failure_sample(category, expected, actual):
                                       {'error': 'REFERENCE_RELATION_MISMATCH'})
     sample['field'] = 'cargoTypeId'
     for name, value in (('expectedTypeId', expected), ('actualTypeId', actual)):
-        if re.fullmatch(r'[1-9][0-9]{0,18}', value):
+        if re.fullmatch(r'(?:(?:CL|BT):)?[1-9][0-9]{0,18}', value):
             sample[name] = value
     return sample
 

@@ -13,12 +13,13 @@ from pathlib import Path
 import threading
 
 from .errors import CorporateError
-from .filter_validation import validate_production_filter_ids
+from .filter_validation import MAX_NATIVE_ID, validate_production_filter_ids
 from .diagnostics import dataset_diagnostics, MAX_SAMPLES
 from .manage_exports import extract, json_default, publish_preview, references_for
 from .reconciliation import unaccepted_nulls
 from .registry import IDENTITY, MODELS, PRODUCTION, S_MODELS
 from .sql import query_source, source_read_budget
+from .source_identity import MODE as PREFIXED_IDENTITIES, decode_id, mode as source_identity_mode
 
 
 MAX_PROFILE_BYTES = 2 * 1024 * 1024
@@ -105,6 +106,11 @@ class LiveReader:
                 or sorted(terminals) != ['ben_thuy', 'cua_lo']):
             raise CorporateError(503, 'SOURCE_TERMINALS_INCOMPLETE',
                                  'Cần cấu hình đầy đủ nguồn Cửa Lò và Bến Thủy cho CNT.')
+        try:
+            source_identity_mode(profile)
+        except ValueError:
+            raise CorporateError(503, 'SOURCE_PROFILE_INVALID',
+                                 'Cấu hình ánh xạ nguồn SmartTOS không hợp lệ.') from None
         return profile
 
     def close(self):
@@ -187,13 +193,19 @@ class LiveReader:
         return terminals
 
     @staticmethod
-    def _reference_id(value):
-        if (not isinstance(value, str) or not value.isascii() or not value.isdigit()
-                or len(value) > 19 or value.startswith('0')):
-            raise ValueError('Invalid native reference identity.')
-        return value
+    def _reference_id(value, profile=None):
+        identity, _ = decode_id(value, profile)
+        return identity
 
-    def _grow_reference_scope(self, resource, rows, scope):
+    def _reference_sources(self, value, row, profile=None):
+        """Decode public references without losing their source provenance."""
+        identity, terminal = decode_id(value, profile)
+        terminals = self._provenance(row)
+        if terminal is not None and terminals != [terminal]:
+            raise ValueError('Reference identity does not match its source provenance.')
+        return identity, terminals
+
+    def _grow_reference_scope(self, resource, rows, scope, profile=None):
         for row in rows:
             for field, (target, _) in references_for(resource).items():
                 if field == IDENTITY.get(resource) or field not in row or row[field] is None:
@@ -201,25 +213,30 @@ class LiveReader:
                 values = row[field] if isinstance(row[field], list) else [row[field]]
                 if not values:
                     continue
-                terminals = self._provenance(row)
                 targets = scope.setdefault(target, {terminal: set() for terminal in SOURCE_TERMINALS})
                 for value in values:
-                    identity = self._reference_id(value)
+                    identity, terminals = self._reference_sources(value, row, profile)
                     for terminal in terminals:
                         targets[terminal].add(identity)
-                if len(set().union(*targets.values())) > MAX_REFERENCE_IDS:
+                count = (sum(map(len, targets.values())) if source_identity_mode(profile) == PREFIXED_IDENTITIES
+                         else len(set().union(*targets.values())))
+                if count > MAX_REFERENCE_IDS:
                     raise ValueError('Native reference scope exceeds the bounded limit.')
 
-    def _verify_reference_membership(self, resource, rows, scope):
+    def _verify_reference_membership(self, resource, rows, scope, profile=None):
         found = {terminal: set() for terminal in SOURCE_TERMINALS}
         requested = set().union(*scope.values())
         seen = set()
         for row in rows:
-            identity = self._reference_id(row.get(IDENTITY[resource]))
-            if identity not in requested or identity in seen:
+            public_id = row.get(IDENTITY[resource])
+            identity, terminals = self._reference_sources(public_id, row, profile)
+            if identity not in requested or public_id in seen:
                 raise ValueError('Catalog returned an unrequested or duplicate native identity.')
-            seen.add(identity)
-            for terminal in self._provenance(row):
+            seen.add(public_id)
+            if source_identity_mode(profile) == PREFIXED_IDENTITIES and any(
+                    identity not in scope[terminal] for terminal in terminals):
+                raise ValueError('Catalog returned an identity from an unrequested source.')
+            for terminal in terminals:
                 found[terminal].add(identity)
         missing = {terminal: scope[terminal] - found[terminal] for terminal in SOURCE_TERMINALS}
         if any(missing.values()):
@@ -272,11 +289,12 @@ class LiveReader:
         if resource == 'cargoCategory' and rows:
             root = {terminal: set() for terminal in SOURCE_TERMINALS}
             for row in rows:
-                for terminal in self._provenance(row):
-                    root[terminal].add(self._reference_id(row[IDENTITY[resource]]))
+                identity, terminals = self._reference_sources(row[IDENTITY[resource]], row, profile)
+                for terminal in terminals:
+                    root[terminal].add(identity)
             scope[resource] = root
             checked[resource] = deepcopy(root)
-        self._grow_reference_scope(resource, rows, scope)
+        self._grow_reference_scope(resource, rows, scope, profile)
         for _ in range(MAX_REFERENCE_ROUNDS):
             names = sorted(name for name, targets in scope.items() if checked.get(name) != targets)
             if not names:
@@ -291,13 +309,13 @@ class LiveReader:
                 dataset = part['datasets'][name]
                 if dataset.get('ready') is not True or dataset.get('blockers'):
                     raise self._dataset_error(dataset, name)
-                self._verify_reference_membership(name, dataset['rows'], scope[name])
+                self._verify_reference_membership(name, dataset['rows'], scope[name], profile)
                 checked[name] = {terminal: set(requested[name][terminal]) for terminal in SOURCE_TERMINALS}
             preview['datasets'].update(part['datasets'])
             self._check_size(preview)
             self._check_cargo_parent_cycles(preview['datasets'])
             for name in names:
-                self._grow_reference_scope(name, part['datasets'][name]['rows'], scope)
+                self._grow_reference_scope(name, part['datasets'][name]['rows'], scope, profile)
         raise ValueError('Native reference closure did not stabilize within the bounded limit.')
 
     def _catalog_preview(self, resource, query, profile, start, end, identity):
@@ -305,6 +323,16 @@ class LiveReader:
                   'cargoTypeId', 'containerSizeId', 'origin')
         filters = {field: getattr(query, field) for field in fields
                    if getattr(query, field, None) is not None}
+        if source_identity_mode(profile) == PREFIXED_IDENTITIES:
+            try:
+                for field in ('cargoTypeId', 'containerSizeId'):
+                    if field in filters:
+                        native = self._reference_id(filters[field], profile)
+                        if int(native) > MAX_NATIVE_ID:
+                            raise ValueError('Filter exceeds the source key range.')
+            except ValueError:
+                raise CorporateError(422, 'FILTER_ID_NOT_FOUND',
+                                     'Mã dùng để lọc không tồn tại trong danh mục nguồn hợp lệ.') from None
         if identity is not None:
             filters['identity'] = identity
         options = {'catalog_filters': {resource: filters}} if filters or resource == 'cargoCategory' else {}
@@ -316,6 +344,11 @@ class LiveReader:
         dataset = preview['datasets'][resource]
         if dataset.get('ready') is not True or dataset.get('blockers'):
             raise self._dataset_error(dataset, resource)
+        if source_identity_mode(profile) == PREFIXED_IDENTITIES:
+            for row in dataset['rows']:
+                self._reference_sources(row.get(IDENTITY[resource]), row, profile)
+                if identity is not None and row.get(IDENTITY[resource]) != identity:
+                    raise ValueError('Catalog detail returned an unrequested source identity.')
         return self._complete_references(resource, preview, profile, start, end)
 
     def _build(self, resource, query, profile, *, identity=None):
@@ -329,7 +362,7 @@ class LiveReader:
             preview, selected = self._production_preview(resource, profile, start, end,
                                                          production_filters=production_filters)
             if production_filters and not preview['datasets'][resource]['rows']:
-                validate_production_filter_ids(production_filters, self._filter_query)
+                validate_production_filter_ids(production_filters, self._filter_query, profile=profile)
             pending = set()
         elif resource in S_MODELS and not (resource in {'cargoType', 'cargoCategory'}
                 and profile.get('cargo_catalog_source', 'configured') != 'native_groups'):
@@ -409,11 +442,22 @@ class LiveReader:
                            and profile.get('cargo_catalog_source', 'configured') == 'configured')
         if identity is not None and resource in S_MODELS and not configured_type:
             try:
-                self._reference_id(identity)
+                native = self._reference_id(identity, profile)
+                if source_identity_mode(profile) == PREFIXED_IDENTITIES and int(native) > MAX_NATIVE_ID:
+                    raise ValueError('Identity exceeds the source key range.')
             except ValueError:
                 raise CorporateError(404, 'NOT_FOUND', 'Không tìm thấy mã trong danh mục của công ty.') from None
         if resource in PRODUCTION:
             self._check_production_profile(resource, profile)
+        if resource in PRODUCTION and source_identity_mode(profile) == PREFIXED_IDENTITIES:
+            try:
+                for field in ('shipId', 'handlingMethodId'):
+                    value = getattr(query, field)
+                    if value is not None and int(self._reference_id(value, profile)) > MAX_NATIVE_ID:
+                        raise ValueError('Filter exceeds the source key range.')
+            except ValueError:
+                raise CorporateError(422, 'FILTER_ID_NOT_FOUND',
+                                     'Mã tàu hoặc mã phương án dùng để lọc không tồn tại trong danh mục nguồn hợp lệ.') from None
         store = None
         acquired = False
         try:

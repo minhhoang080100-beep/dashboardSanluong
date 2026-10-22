@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Generic, Literal, TypeVar
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, PlainSerializer, StringConstraints, create_model, field_validator
+from pydantic import AfterValidator, BeforeValidator, BaseModel, ConfigDict, Field, PlainSerializer, StringConstraints, create_model, field_validator
 
 
 def _calendar_day(value):
@@ -12,6 +12,17 @@ def _calendar_day(value):
     return value
 
 Identifier = Annotated[str, StringConstraints(min_length=1, max_length=255, strip_whitespace=True)]
+
+
+def _exact_qualified_identifier(value):
+    # Do not silently turn a malformed public source ID into a different key.
+    # Preserve the legacy whitespace behavior for unqualified identifiers.
+    if isinstance(value, str) and ':' in value and value != value.strip():
+        raise ValueError('Qualified source IDs must not contain surrounding whitespace')
+    return value
+
+
+SourceQueryIdentifier = Annotated[Identifier, BeforeValidator(_exact_qualified_identifier)]
 Day = Annotated[str, StringConstraints(pattern=r"^[0-9]{8}$"), AfterValidator(_calendar_day)]
 Number = Annotated[Decimal, Field(ge=0, le=Decimal('1000000000000000'), allow_inf_nan=False),
                    PlainSerializer(float, return_type=float, when_used='json')]
@@ -209,10 +220,10 @@ class Query(Contract):
     companyId: Identifier = Field(description='Mã đơn vị được cấp quyền; Cảng Nghệ Tĩnh sử dụng CNT.')
     startDate: Day | None = Field(default=None, description='Ngày bắt đầu, dạng YYYYMMDD. Bao gồm ngày này.')
     endDate: Day | None = Field(default=None, description='Ngày kết thúc, dạng YYYYMMDD. Bao gồm ngày này.')
-    shipId: Identifier | None = None
-    handlingMethodId: Identifier | None = None
-    cargoTypeId: Identifier | None = None
-    containerSizeId: Identifier | None = None
+    shipId: SourceQueryIdentifier | None = None
+    handlingMethodId: SourceQueryIdentifier | None = None
+    cargoTypeId: SourceQueryIdentifier | None = None
+    containerSizeId: SourceQueryIdentifier | None = None
     customerTaxCode: Annotated[str, StringConstraints(min_length=1, max_length=255)] | None = None
     customerType: Identifier | None = None
     origin: Annotated[str, StringConstraints(min_length=1, max_length=254, strip_whitespace=True)] | None = Field(

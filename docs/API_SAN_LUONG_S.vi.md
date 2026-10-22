@@ -71,7 +71,7 @@ trong Excel đã được Tổng công ty chấp thuận.
 | ApiKey có ghi bắt buộc nhưng mô tả “nếu có” | Bearer token từ tài khoản máy riêng; không sử dụng Basic hoặc ApiKey |
 | Production nhắc cả finishDate lẫn update_time | Lọc ngày ghi nhận sản lượng; chỉ cho ánh xạ `shiftDate` sau khi xác nhận đây là ngày báo cáo cần dùng |
 | Customers lọc theo `createdDate` trong bộ S v3 | Khi truyền kỳ: chỉ lọc ngày tạo nguồn trong `metadata.createdDate`; thiếu hoặc sai ngày tạo trả `FILTER_NOT_READY`, không lấy ngày sửa thay thế |
-| ID cùng số có thể nằm ở hai xí nghiệp | Giữ ID gốc dưới dạng chuỗi, không thêm tiền tố. Danh mục trùng ID và khác nội dung bị chặn khi gộp; kiểm tra tham chiếu trong đúng nguồn phát sinh. |
+| ID cùng số có thể nằm ở hai xí nghiệp | Mặc định `native` giữ chuỗi ID gốc và chặn xung đột khi gộp. Profile có thể chọn `source_identity_mode="terminal_prefixed_v1"` để trả `CL:<ID>` hoặc `BT:<ID>` đồng bộ trong danh mục S và sản lượng; xem quy tắc chuyển đổi bên dưới. |
 | Mẫu chỉ có `data`, `code`, `message` | JSON giữ đúng ba trường; thông tin phân trang chuyển sang HTTP headers, không thêm thuộc tính vào payload |
 | Các trường phản hồi không đánh dấu bắt buộc rõ | Trường chưa có nguồn được phép null theo schema hiện tại và được nêu trong cảnh báo; cần bên nhận xác nhận tính tương thích |
 
@@ -90,7 +90,7 @@ so sánh chính xác hay chuỗi con; đây là ngữ nghĩa triển khai đư�
 Customers nhận cặp ngày tùy chọn, `customerTaxCode`, `customerType`. Bộ lọc không
 áp dụng cho resource bị từ chối, không bị âm thầm bỏ qua.
 
-Tra cứu danh mục theo ID kiểm tra đúng ID đó trong cả hai nguồn. Một mã khác
+Trong chế độ `native`, tra cứu danh mục theo ID kiểm tra đúng ID đó trong cả hai nguồn. Một mã khác
 bị trùng không chặn ID đang tra cứu; chính ID đang tra cứu có nội dung xung
 đột vẫn trả `503 SOURCE_ID_CONFLICT`. Không tồn tại ID trả `404 NOT_FOUND`,
 khác với danh sách có bộ lọc hợp lệ nhưng không khớp dòng nào (`200`, mảng rỗng).
@@ -98,6 +98,38 @@ Các bộ lọc tên/nhóm/khách hàng chọn tập ID rồi kiểm tra mọi b
 đó ở hai nguồn, tránh che giấu xung đột bằng bộ lọc. Lấy toàn danh mục vẫn bị
 chặn nếu còn ID trùng khác nội dung. Tham chiếu mặt hàng/nhóm hàng được kiểm
 tra trong đúng nguồn phát sinh, không dùng mã cùng số của nguồn khác để bù.
+
+### ID phân biệt nguồn của bộ S
+
+Bản cập nhật mã ngày 22/10/2026 hỗ trợ lựa chọn
+`source_identity_mode="terminal_prefixed_v1"`; **chưa xác nhận lựa chọn này
+đã được kích hoạt trên production**. Bỏ khóa này hoặc đặt `"native"` giữ hành
+vi cũ. Trong chế độ mới, `CL` là Cửa Lò, `BT` là Bến Thủy; ví dụ giả lập
+`CL:123` và `BT:123` là hai định danh khác nhau dù phần ID nguồn cùng bằng `123`.
+
+- Áp dụng cho cả tám danh mục S: `shipDetails`, `customers`, `cargoType`,
+  `cargoCategory`, `handlingMethodList`, `class`, `origins`, `containerSize`.
+  ID đối tượng và tham chiếu giữa các danh mục dùng cùng tiền tố, gồm quan hệ
+  mặt hàng–nhóm hàng và hàng cha.
+- Bốn API sản lượng dùng cùng ID có tiền tố cho các khóa tham chiếu có giá trị.
+  Không gộp hai đối tượng khác nguồn chỉ vì ID số giống nhau. Tổng tấn/TEU,
+  công thức, phạm vi, `companyId=CNT` và chính sách null giữ nguyên; số dòng
+  tổng hợp có thể tăng vì hai nguồn được phân biệt.
+- Tra cứu `/{record_id}` và các bộ lọc ID phải giữ nguyên ID API, ví dụ
+  `shipId=CL:123`. Không bỏ tiền tố, ép thành số, đổi hoa/thường hoặc thêm số 0
+  phía trước. Khi bật chế độ mới, ID không có tiền tố hoặc sai cú pháp bị từ chối
+  trước khi đọc nguồn. ID hợp lệ chỉ tra đúng nguồn được mã hóa.
+- ID và khóa ngoại trong SmartTOS không bị sửa. Các allowlist, ánh xạ phân loại
+  và quy đổi trong profile vẫn dùng ID gốc theo `cua_lo`/`ben_thuy`; SQL nhận
+  tham số ID gốc. Không thêm trường `sourceDatabase` vào JSON.
+- Chế độ này dùng `cargo_catalog_source="native_groups"` và kích cỡ
+  `native_cargo` hoặc `native_domestic` có quan hệ đã xác minh. Bộ danh mục vận
+  hành `/api/oprt/` không đổi định danh theo lựa chọn này.
+
+Triển khai mã hỗ trợ trước khi đổi profile. Bên nhận cần nạp lại danh mục và
+sản lượng cùng chế độ, giữ nguyên chuỗi ID trong khóa/quan hệ và thay thế đúng
+phân vùng đã chuyển đổi; không nối dữ liệu mới vào phân vùng còn ID `native`.
+Xem [quy trình chuyển định danh](VAN_HANH_API_TONG_CONG_TY.vi.md#chuyển-id-bộ-s-sang-phân-biệt-nguồn).
 
 Swagger chỉ liệt kê bộ lọc áp dụng cho từng endpoint, đánh dấu hai ngày bắt
 buộc của sản lượng, mô tả lỗi theo `data/code/message` và các header phân trang.
@@ -107,15 +139,17 @@ trước. Trong chế độ published, tham số này tiếp tục được hỗ
 Bộ đọc áp bộ lọc tàu/phương án của sản lượng trước kiểm tra phiếu,
 tổng hợp và tìm danh mục tham chiếu. Phiếu lỗi ngoài tàu/phương án được chọn
 không chặn riêng tập con đó; phiếu lỗi bên trong vẫn bị chặn. ID so đúng chuỗi
-gốc, không tự chuyển `001` thành `1`. Không thêm bộ lọc con để coi một phần dữ
+API của chế độ đã chọn, không tự chuyển `001` thành `1` hoặc bỏ `CL:`/`BT:`.
+Không thêm bộ lọc con để coi một phần dữ
 liệu là tổng toàn kỳ. SQL truyền các bộ lọc ID bằng tham số, áp trước giới
 hạn dòng của lần đọc phiếu; lịch sử cầu vẫn xét toàn bộ lịch sử của các chuyến
 được chọn. Không cam kết thời gian truy vấn cố định cho mọi kỳ.
 
 Khi kết quả sản lượng đã lọc rỗng ở chế độ live, API kiểm tra mã tàu/phương án
-trong cả hai nguồn bằng tối đa hai SELECT ngắn. Mã có thật nhưng không phát
+trong cả hai nguồn ở chế độ `native`, hoặc đúng nguồn trong ID có tiền tố,
+bằng tối đa hai SELECT ngắn. Mã có thật nhưng không phát
 sinh trong kỳ trả `200` với mảng rỗng; mã không tồn tại trả `422` với header
-`X-Error-Code: FILTER_ID_NOT_FOUND`. Nếu không đọc đủ hai nguồn, trả `503`,
+`X-Error-Code: FILTER_ID_NOT_FOUND`. Nếu không đọc đủ các nguồn cần tra, trả `503`,
 không kết luận mã không tồn tại. Yêu cầu có dữ liệu hoặc không truyền mã lọc
 không thực hiện bước tra cứu bổ sung này.
 
@@ -259,15 +293,16 @@ Tạo bản sao `profile.example.json` vào `backend/.data/corporate-profile.jso
 |---|---|
 | `approved` | `false` trong lúc làm; `true` sau khi người phụ trách đối chiếu xong hồ sơ ánh xạ |
 | `company_id`, `terminals` | CNT và đủ `cua_lo`, `ben_thuy` |
+| `source_identity_mode` | Mặc định `native`; chọn `terminal_prefixed_v1` để phân biệt ID công khai bằng `CL:`/`BT:` cho tám danh mục S và bốn API sản lượng. Cần triển khai mã hỗ trợ và chuyển dữ liệu bên nhận đồng bộ trước khi sử dụng. |
 | `date_basis` | `shiftDate` chỉ khi ngày hạch toán ca là ngày báo cáo được yêu cầu |
 | `production_scope` | `nghe_tinh`, `vietsun` hoặc `all_activity` theo phạm vi thống nhất |
 | `quay_method_ids`, `gate_method_ids` | Object theo xí nghiệp, mỗi giá trị là danh sách jobMethodId nguồn; không chồng lấn |
 | `quay_selection`, `gate_selection` | Hiện hành: `source_statistics` và `vessel_type`; chỉ chế độ `methods` dùng allowlist tương ứng |
 | `cargo_kind_by_cargo` | Theo xí nghiệp rồi cargoId dạng chuỗi; giá trị container/bulk/roro/exclude |
 | `cargo_kind_by_group` | Theo xí nghiệp rồi cargoGroupId; ánh xạ mặt hàng ở trên được ưu tiên |
-| `container_size_source` | `native_cargo` giữ cargoId và mã 20F/40F/20E/40E đã xác định; không tự suy ISO |
+| `container_size_source` | `native_cargo` lấy cargoId và mã 20F/40F/20E/40E đã xác định; chỉ thêm tiền tố vào ID công khai nếu đã chọn chế độ đó, không tự suy ISO |
 | `accepted_null_fields` | Cho phép các trường thiếu đã được xác nhận để thử; chưa thay thế xác nhận tiếp nhận chính thức của Tổng công ty |
-| `cargo_catalog_source` | `native_groups` lấy CargoGroup/Cargo nguồn; không tạo bộ mã thay thế |
+| `cargo_catalog_source` | `native_groups` lấy CargoGroup/Cargo nguồn; chế độ định danh chỉ phân biệt nguồn của ID công khai, không đổi nhóm hàng |
 | `cargo_types`, `cargo_type_by_cargo` | Dành cho chế độ ánh xạ được cấu hình riêng; không thay ID gốc trong cấu hình hiện hành |
 | `container_sizes_by_cargo` | Dành cho chế độ `configured`; chỉ điền thuộc tính có bằng chứng, không suy ISO từ mã hàng |
 | `source_columns` | Ánh xạ thuộc tính tàu/khách hàng tới cột nguồn có cùng ý nghĩa; tên cột và kiểu được kiểm tra trước SELECT |
@@ -336,8 +371,10 @@ lần HTTP 200 hoặc một lần chạy kiểm tra không có lỗi.
 
 Kiểm tra đúng bản đang triển khai: xác thực/quyền, schema phản hồi, các header,
 mọi trang và mọi khoảng ngày cần giao. Kiểm tra những danh mục bên nhận phải
-tra cứu bằng `verify_delivery --verify-references`; ID đã được kiểm tra trong
-nguồn của phiếu chưa chắc đọc được trên danh mục công khai gộp hai nguồn.
+tra cứu bằng `verify_delivery --verify-references`; kiểm tra cả ID và quan hệ
+giữa danh mục với sản lượng theo cùng chế độ định danh. Ở chế độ `native`, ID
+đã được kiểm tra trong nguồn của phiếu chưa chắc đọc được trên danh mục công
+khai gộp hai nguồn vì xung đột cùng ID.
 
 Khối lượng nguồn bằng 0 và số lượng dương có chẩn đoán nội bộ riêng, không làm
 thay số đo hoặc payload. Chưa có quy tắc nghiệp vụ được xác nhận thì không

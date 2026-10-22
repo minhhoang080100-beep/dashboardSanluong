@@ -77,6 +77,28 @@ Các biến kết nối `DB_*` và cấu hình origin frontend dùng reference t
 
 Profile `/data/corporate-source.json` được chuyển riêng từ cấu hình đã dùng trên backend dashboard. Phạm vi sản lượng và quy tắc nguồn giữ nguyên, gồm loại Cầu 5 theo cầu cập đầu tiên cho sản lượng qua cầu. Không dùng việc đổi domain để sửa số liệu hoặc bỏ các lỗi thiếu dữ liệu nguồn.
 
+### Chuyển chế độ ID của bộ S
+
+Bản mã cập nhật ngày 22/10/2026 hỗ trợ
+`source_identity_mode="terminal_prefixed_v1"` trong profile; **chưa xác nhận
+đã kích hoạt trên service production**. Mặc định `native` giữ ID cũ.
+Chế độ mới trả `CL:<ID>` cho Cửa Lò và `BT:<ID>` cho Bến Thủy, ví dụ giả lập
+`CL:123` và `BT:123`, đồng bộ trong tám danh mục S, quan hệ của chúng và khóa
+tham chiếu của bốn API sản lượng. Bộ `/api/oprt/` không đổi.
+
+Triển khai mã hỗ trợ tới đúng service trước khi đặt chế độ trong profile trên
+volume. Dùng `cargo_catalog_source="native_groups"` và kích cỡ `native_cargo`
+hoặc `native_domestic` có quan hệ đã xác minh. ID database và các ánh xạ
+profile theo xí nghiệp vẫn là ID gốc; không thêm tiền tố vào allowlist. Việc
+đổi ID không thay `companyId=CNT`, tấn/TEU, phạm vi hoặc chính sách null và
+không thêm `sourceDatabase` vào JSON.
+
+Bên nhận cần giữ nguyên chuỗi có tiền tố trong khóa, tra cứu và bộ lọc; không
+ép thành số hoặc bỏ tiền tố. Khi bật chế độ mới, ID trần/sai cú pháp bị từ chối
+trước truy vấn. Nạp lại danh mục và sản lượng cùng chế độ, thay thế đúng phân
+vùng sau kiểm tra; không nối vào dữ liệu ID cũ hoặc ghép trang trước/sau đổi
+profile. Xem [quy trình chuyển định danh](VAN_HANH_API_TONG_CONG_TY.vi.md#chuyển-id-bộ-s-sang-phân-biệt-nguồn).
+
 ## Triển khai bản tiếp theo
 
 Service hiện được triển khai bằng **Railway CLI từ gói mã local**, chưa nối GitHub để tự triển khai. Đẩy commit lên Git không tự cập nhật service này. Các thiết lập sau được lưu trực tiếp trên service API riêng trong Railway:

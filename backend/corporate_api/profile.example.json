@@ -1,6 +1,7 @@
 {
   "approved": false,
   "company_id": "CNT",
+  "source_identity_mode": "native",
   "date_basis": null,
   "production_scope": null,
   "terminals": ["cua_lo", "ben_thuy"],

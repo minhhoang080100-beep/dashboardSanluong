@@ -7,7 +7,8 @@ from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
-from .catalog_source import source_id, _Reader, _native_sizes, SourceProblem
+from .catalog_source import _Reader, _native_sizes, SourceProblem
+from .source_identity import MODE, mode as identity_mode, encode_id, decode_id
 from .errors import CorporateError
 if __package__ == 'corporate_api':
     from berth_scope import initial_berth_query
@@ -336,7 +337,7 @@ def _container_fields(fact, profile, terminal, cargo, size_mode, native_sizes, *
         problems.append('CONTAINER_QUANTITY_UNAVAILABLE')
     if problems:
         return {}, problems
-    return {'containerSizeId': source_id(terminal, size_id),
+    return {'containerSizeId': encode_id(terminal, size_id, profile),
             'containerTEU': quantity * teu_factor}, []
 
 
@@ -643,6 +644,21 @@ class ProductionSource:
         size_mode = profile.get('container_size_source', 'configured')
         if size_mode not in {'configured', 'native_domestic', 'native_cargo'}:
             raise SourceError('SOURCE_PROFILE', 'Nguồn danh mục kích cỡ container không hợp lệ.')
+        try:
+            qualified_ids = identity_mode(profile) == MODE
+        except ValueError as exc:
+            raise SourceError('SOURCE_PROFILE', 'Cấu hình định danh nguồn không hợp lệ.') from exc
+        if qualified_ids and (profile.get('cargo_catalog_source') != 'native_groups'
+                              or size_mode == 'configured'):
+            raise SourceError('SOURCE_PROFILE', 'ID phân biệt nguồn cần danh mục hàng và kích cỡ từ nguồn gốc.')
+        decoded_filters = {}
+        if qualified_ids:
+            try:
+                decoded_filters = {field: decode_id(value, profile) for field, value in filters.items()}
+                if any(int(native) > 9223372036854775807 for native, _ in decoded_filters.values()):
+                    raise ValueError('Invalid source identity')
+            except ValueError as exc:
+                raise SourceError('SOURCE_FILTER', 'Bộ lọc phải dùng ID API hợp lệ dạng CL:<ID> hoặc BT:<ID>.') from exc
         terminals = profile.get('terminals', list(DATABASES))
         if (not isinstance(terminals, list) or not terminals
                 or any(not isinstance(t, str) or t not in DATABASES for t in terminals)
@@ -683,6 +699,13 @@ class ProductionSource:
             raise SourceError('SOURCE_PROFILE', 'Ngày đọc nguồn không hợp lệ.')
 
         for terminal in terminals:
+            # Qualified filters deliberately select their encoded source. The
+            # SQL adapter receives only bound native IDs, never a public prefix.
+            # Filters on different sources cannot describe a single fact.
+            if qualified_ids and any(source != terminal for _, source in decoded_filters.values()):
+                continue
+            terminal_filters = ({field: native for field, (native, _) in decoded_filters.items()}
+                                if qualified_ids else filters)
             quay_methods = None if by_statistics else _method_ids(profile, 'quay_method_ids', terminal)
             gate_methods = _method_ids(profile, 'gate_method_ids', terminal)
             if quay_methods is None and not by_statistics:
@@ -696,7 +719,7 @@ class ProductionSource:
             if not by_yard and quay_methods and gate_methods and quay_methods & gate_methods:
                 raise SourceError('SOURCE_PROFILE', 'Phương án cầu và cổng đang bị chồng lấn.')
             try:
-                facts = self._read_terminal(terminal, start, end, production_filters=filters,
+                facts = self._read_terminal(terminal, start, end, production_filters=terminal_filters,
                                             include_berths=include_berths)
             except Exception as exc:
                 # Unknown driver text may contain host or credentials. Only our
@@ -922,10 +945,10 @@ class ProductionSource:
                     continue
                 row = {'reportDate': report_date.strftime('%Y%m%d'), 'companyId': 'CNT',
                        'finishDate': day.strftime('%Y%m%d'),
-                       'handlingMethodId': source_id(terminal, method)}
+                       'handlingMethodId': encode_id(terminal, method, profile)}
                 if is_quay:
-                    row['shipId'] = source_id(terminal, ship)
-                    row['classId' if kind == 'container' else 'shipClassId'] = source_id(terminal, direction)
+                    row['shipId'] = encode_id(terminal, ship, profile)
+                    row['classId' if kind == 'container' else 'shipClassId'] = encode_id(terminal, direction, profile)
                 if kind == 'container':
                     row.update(originId=None, containerWeight=tonnes,
                                containerOperatorId=None, **container_fields)
@@ -942,13 +965,14 @@ class ProductionSource:
                     if not cargo_type or (not native_groups and cargo_type not in profile.get('cargo_types', {})):
                         flag(name, 'CARGO_TYPE_UNMAPPED', fact, terminal)
                         continue
-                    row.update(cargoTypeId=cargo_type, cargoCategoryId=source_id(terminal, cargo),
+                    row.update(cargoTypeId=(encode_id(terminal, cargo_type, profile) if native_groups else cargo_type),
+                               cargoCategoryId=encode_id(terminal, cargo, profile),
                                bulkOriginId=None, bulkWeight=tonnes)
                     if is_quay:
                         row['shipAgentId'] = None
                     else:
                         customer = _native_id(fact.get('customer_id'))
-                        row['customerCode'] = source_id(terminal, customer) if customer else None
+                        row['customerCode'] = encode_id(terminal, customer, profile) if customer else None
                     sums = ('bulkWeight',)
                     quantity = _decimal(fact.get('quantity'))
                     if weight == 0 and quantity is not None and quantity > 0:
@@ -1000,7 +1024,8 @@ class ProductionSource:
             item['warnings'] = [
                 'finishDate dùng ngày hạch toán ca shiftDate theo hồ sơ nguồn; không khẳng định là thời điểm hoàn tất tác nghiệp.',
                 'Nguồn gốc hàng, chủ khai thác tàu/vỏ và đại lý chưa được xác minh; trường tương ứng giữ null.',
-                'ID giữ nguyên từ database, không thêm tiền tố; ID trùng khác nội dung giữa hai nguồn cần tách phạm vi.',
+                ('ID API gồm CL:/BT: và ID gốc; giữ tiền tố khi tra cứu hoặc tham chiếu danh mục.' if qualified_ids else
+                 'ID giữ nguyên từ database, không thêm tiền tố; ID trùng khác nội dung giữa hai nguồn cần tách phạm vi.'),
             ]
             if by_yard and 'Gate' in name:
                 item['warnings'].append('Phạm vi tất cả kho/bãi theo vesselTypeCode; không lọc phương án hoặc cầu cập tàu. Có thể gồm gom bãi và tác nghiệp tính phí, chưa phải chỉ tiêu hàng qua cổng vật lý.')

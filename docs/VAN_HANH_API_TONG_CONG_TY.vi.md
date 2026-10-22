@@ -74,6 +74,42 @@ Lakehouse đã nhập thành công.
 Mã có thật nhưng không phát sinh trong kỳ trả HTTP 200 với `data: []`.
 Nếu danh mục nguồn không đọc đủ, API trả 503 thay vì kết luận không phát sinh.
 
+### Chuyển ID bộ S sang phân biệt nguồn
+
+Mã cập nhật ngày 22/10/2026 hỗ trợ profile
+`source_identity_mode="terminal_prefixed_v1"`; **chưa xác nhận đã kích hoạt
+trên production**. Bỏ khóa hoặc đặt `"native"` giữ cách trả ID cũ. Trong chế
+độ mới, `CL:<ID>` thuộc Cửa Lò, `BT:<ID>` thuộc Bến Thủy; ví dụ giả lập
+`CL:123` và `BT:123` phải được lưu thành hai khóa khác nhau.
+
+Phạm vi gồm tám danh mục S (`shipDetails`, `customers`, `cargoType`,
+`cargoCategory`, `handlingMethodList`, `class`, `origins`, `containerSize`),
+quan hệ giữa các danh mục và các khóa tham chiếu có giá trị trong bốn API sản
+lượng. `/api/oprt/` giữ nguyên. ID nguồn và ánh xạ profile theo xí nghiệp vẫn
+là ID gốc. `companyId=CNT`, tấn/TEU, chính sách null và JSON ba trường không
+đổi; không bổ sung `sourceDatabase`. Số dòng tổng hợp có thể tăng khi hai nguồn
+được tách đúng định danh, nhưng việc đổi ID không thay tổng số đo.
+
+1. Triển khai bản mã có hỗ trợ chế độ mới trước khi đổi profile. Kiểm tra đúng
+   service/bản phát hành; việc commit hoặc cập nhật tài liệu chưa kích hoạt nó.
+2. Chuẩn bị bên nhận lưu nguyên chuỗi ID, gồm `CL:`/`BT:`. Không ép sang số,
+   cắt tiền tố hoặc tự đổi ID. Khi bật chế độ mới, tra cứu và bộ lọc phải dùng
+   ID API đầy đủ; ID trần hoặc sai cú pháp bị từ chối trước khi đọc nguồn.
+3. Chọn chế độ trong profile đã kiểm tra, dùng danh mục `native_groups` và
+   kích cỡ `native_cargo` hoặc `native_domestic` có quan hệ đã xác minh. Không
+   thêm tiền tố vào các allowlist, ánh xạ phân loại hoặc quy đổi nguồn.
+4. Tạm dừng lượt nhận đang dở; nạp lại cả danh mục và sản lượng trong phạm vi
+   chuyển đổi bằng cùng chế độ. Kiểm tra khóa ngoại, đủ trang và digest; không
+   ghép trang trước/sau đổi chế độ, không nối dữ liệu mới vào phân vùng còn ID
+   `native`. Thay thế phân vùng sau khi kiểm tra, để tránh ghi nhận hai lần.
+5. So tổng tấn/TEU trước/sau trên cùng kỳ và cùng dữ liệu nguồn; kiểm tra tra
+   cứu danh mục theo chính ID có trong sản lượng. Chỉ tiếp tục lịch nhận sau
+   khi bên nhận xác nhận giữ đúng khóa và quan hệ. Nếu quay về `native`, cũng
+   chuyển lại đồng bộ danh mục và sản lượng; không chỉ đổi riêng profile.
+
+Đây là thay đổi định danh đã được người phụ trách chọn, không phải xác nhận
+MISBI đã khớp hoặc Tổng công ty đã nghiệm thu chính sách null.
+
 20 API danh mục vận hành Bulk/Container dùng chung cơ chế tài khoản máy, xem
 [API_DANH_MUC_VAN_HANH.vi.md](API_DANH_MUC_VAN_HANH.vi.md). Tài khoản cũ cần
 được cấp quyền resource mới tường minh. `CORPORATE_SYNC_DOMAIN` chỉ điều khiển
@@ -147,8 +183,9 @@ vượt giới hạn, `skipped_incomplete` là
 chưa kiểm tra vì sản lượng kỳ đó chưa lấy đủ. Các số tổng, `retrievalComplete`,
 phép so MISBI và `status` cũ giữ nguyên; lỗi danh mục không biến số liệu đã đọc
 thành số 0. CLI trả mã thoát 2 nếu bật kiểm tra này mà không đạt, kể cả khi
-sản lượng trả HTTP 200. Mẫu lỗi tối đa 10; chỉ giữ mã lỗi an toàn và ID dạng số,
-không lưu nội dung danh mục, thông tin liên hệ hay lỗi tự do từ máy chủ.
+sản lượng trả HTTP 200. Mẫu lỗi tối đa 10; chỉ giữ mã lỗi an toàn và ID đúng
+dạng số hoặc `CL:<ID>`/`BT:<ID>`, không lưu nội dung danh mục, thông tin liên
+hệ hay lỗi tự do từ máy chủ.
 
 Giới hạn mặc định là 200 yêu cầu danh mục tuần tự, có thể đặt từ 1 đến 2.000;
 mỗi yêu cầu có timeout 60 giây nên không nên tăng giới hạn ngay cho kỳ dài.
@@ -329,9 +366,10 @@ Các quy tắc snapshot/tuổi dữ liệu trong mục này chỉ áp dụng pub
 
 ## Nội dung cần Tổng công ty xác nhận
 
-1. Quy định nhận dạng đối tượng khi hai database có cùng ID nhưng khác nội dung.
-   Có thể Tổng công ty cấp bảng mã thống nhất hoặc quy định thêm chiều nhận dạng;
-   chưa tự chọn giải pháp nào khi chưa có đặc tả.
+1. Bên nhận giữ nguyên ID dạng chuỗi `CL:<ID>`/`BT:<ID>` khi chuyển sang
+   `terminal_prefixed_v1`, đồng bộ danh mục với sản lượng và thay thế đúng phân
+   vùng dữ liệu cũ. Người phụ trách đã chọn cách phân biệt nguồn này; khả năng
+   tiếp nhận và lịch chuyển đổi của Tổng công ty vẫn cần được kiểm tra.
 2. Những trường nguồn gốc/chủ khai thác/đại lý được phép null và khi nào cần bổ sung.
 3. `finishDate` dùng ngày hạch toán ca shiftDate; có phù hợp kỳ báo cáo bên nhận không?
 4. “Qua cổng/bãi” nhận toàn bộ tác nghiệp kho/bãi hay chỉ hàng thực sự qua cổng?

@@ -13,6 +13,7 @@ import re
 
 from .contracts import MODELS, IDENTITY
 from .errors import CorporateError
+from .source_identity import MODE as PREFIXED_IDENTITY_MODE, mode as source_identity_mode, decode_id, encode_id
 
 SOURCES = {'cua_lo': 'SmartTOS', 'ben_thuy': 'SmartTOS_BenThuy'}
 RESOURCES = ('shipDetails', 'customers', 'cargoType', 'cargoCategory',
@@ -157,12 +158,31 @@ def select_catalog_rows(resource, rows, filters):
     return [row for row in rows if row[IDENTITY[resource]] in identities]
 
 
+def _same_customer_creation(left, right):
+    """Allow public timestamp coalescing only when no creation variant is lost."""
+    created = left.get('metadata', {}).get('createdDate')
+    return (created is not None
+            and created == right.get('metadata', {}).get('createdDate')
+            and left.get('_createdDate') is not None
+            and left['_createdDate'] == right.get('_createdDate'))
+
+
+def _public_catalog_row(resource, row, terminal, profile):
+    """Namespace only public native keys after validating native relations."""
+    fields = {IDENTITY[resource]}
+    if resource == 'cargoCategory':
+        fields.update(('cargoTypeId', 'cargoParentId'))
+    return {**row, **{field: encode_id(terminal, row[field], profile)
+                     for field in fields if row.get(field) is not None},
+            '_sourceTerminals': [terminal]}
+
+
 def _merge_reference_rows(resource, left, right):
     """Resolve metadata-only differences without changing business identity.
 
     Allowed for private dependency checks and full S catalogs without date
-    filters. Full customers must stay strict because creation-date filtering
-    would lose a source variant when selecting one original metadata row.
+    filters. Public customers additionally require the same known creation
+    timestamp and filter day, so selecting one row cannot lose a date variant.
     All business fields and lifecycle flags remain strict. Select one original
     row, retaining its entire timestamp pair and customer creation-date index.
     """
@@ -773,6 +793,7 @@ def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=No
     """
     if company_id != 'CNT':
         raise ValueError('Unsupported company')
+    prefixed = source_identity_mode(profile) == PREFIXED_IDENTITY_MODE
     selected = list(RESOURCES if resources is None else resources)
     if (not selected or len(set(selected)) != len(selected)
             or any(resource not in RESOURCES for resource in selected)):
@@ -789,6 +810,16 @@ def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=No
     size_mode = (profile or {}).get('container_size_source', 'configured')
     if size_mode not in {'configured', 'native_domestic', 'native_cargo'}:
         raise ValueError('Invalid container size source')
+    if prefixed and (cargo_mode != 'native_groups' or size_mode == 'configured'):
+        raise ValueError('Terminal-prefixed identity requires native cargo and container catalogs.')
+    # Explicit public IDs identify their source. Decode before metadata reads;
+    # an invalid prefix must not turn into a broad company-wide catalog scan.
+    decoded_filters = {}
+    if prefixed and filters is not None:
+        for resource, values in filters.items():
+            decoded_filters[resource] = {
+                field: decode_id(value, profile) for field, value in values.items()
+                if field in {'identity', 'containerSizeId', 'cargoTypeId'}}
     if scope is not None:
         if (set(selected) & {'cargoType', 'cargoCategory'} and cargo_mode != 'native_groups'):
             raise ValueError('Native cargo catalogs required for reference scope')
@@ -831,8 +862,9 @@ def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=No
         raise ValueError('Reference scope requires both source terminals')
     for terminal in terminals:
         terminal_native = tuple(resource for resource in native
-                                if scope is None or scope[resource][terminal])
-        if scope is not None:
+                                if (scope is None or scope[resource][terminal])
+                                and all(owner == terminal for _, owner in decoded_filters.get(resource, {}).values()))
+        if scope is not None or prefixed:
             for resource in native:
                 if resource not in terminal_native:
                     results[resource]['source_coverage'].append({'terminal': terminal, 'row_count': 0})
@@ -853,11 +885,14 @@ def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=No
             try:
                 reference_ids = None if scope is None else sorted(
                     scope[resource][terminal], key=int)
-                # Public detail reads must inspect this ID in both sources,
-                # allowing absence in one source while retaining actual conflicts.
-                # Only an ID bound as a parameter reaches SQL.
+                # Native-mode public detail reads inspect both sources. A
+                # prefixed identity selects one source above; bind only its
+                # native numeric suffix to SQL, never the public prefix.
                 requested = (filters or {}).get(resource, {})
                 requested_id = requested.get('identity') or requested.get('containerSizeId')
+                if prefixed and requested_id is not None:
+                    field = 'identity' if 'identity' in requested else 'containerSizeId'
+                    requested_id = decoded_filters[resource][field][0]
                 if requested_id is not None and not (resource == 'containerSize' and size_mode == 'configured'):
                     try:
                         reference_ids = [source_id(terminal, requested_id)]
@@ -882,7 +917,9 @@ def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=No
                     if set(scope[resource][terminal]) - found:
                         raise SourceProblem('SOURCE_REFERENCE_NOT_FOUND',
                             'Không tìm thấy mã danh mục trong đúng nguồn tham chiếu.')
-                if scope is not None or filters is not None:
+                if prefixed:
+                    rows = [_public_catalog_row(resource, row, terminal, profile) for row in rows]
+                elif scope is not None or filters is not None:
                     rows = [{**row, '_sourceTerminals': [terminal]} for row in rows]
                 results[resource]['rows'].extend(rows)
                 results[resource]['warnings'].extend(warnings)
@@ -892,9 +929,10 @@ def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=No
     for resource, result in results.items():
         result['warnings'] = list(dict.fromkeys(result['warnings']))
         # Native IDs may overlap between databases. Only identical catalog rows
-        # can be coalesced apart from source metadata dates. Full customers are
-        # strict because their public query filters by creation date; other S
-        # catalogs have no date filter. Scoped dependencies are never published.
+        # can be coalesced apart from source metadata dates. Public customers
+        # must preserve their filterable creation timestamp; a modification-only
+        # difference does not change that filter. Scoped dependencies are never
+        # published, and other S catalogs have no date filter.
         if result['ready'] and filters is not None:
             try:
                 result['rows'] = select_catalog_rows(resource, result['rows'], filters[resource])
@@ -908,7 +946,8 @@ def extract_catalogs(query_fn, company_id='CNT', *, profile=None, report_date=No
                 old = unique.get(key)
                 comparable = {k: v for k, v in row.items() if k != '_sourceTerminals'}
                 if old is not None and {k: v for k, v in old.items() if k != '_sourceTerminals'} != comparable:
-                    if scope is not None or resource != 'customers':
+                    if (scope is not None or resource != 'customers'
+                            or _same_customer_creation(old, row)):
                         try:
                             merged = _merge_reference_rows(resource, old, row)
                         except SourceProblem as exc:

@@ -30,6 +30,33 @@ Backend và frontend phải cùng hỗ trợ chế độ đọc được chọn.
 service trước khi chuyển chế độ; việc đổi chế độ hoặc khởi động lại không xóa tài khoản.
 Sau khi đổi bộ đọc, tải lại danh sách API để màn hình dùng đúng cách phân trang.
 
+### Lựa chọn ID phân biệt nguồn của bộ S
+
+Mã cập nhật ngày 22/10/2026 hỗ trợ `source_identity_mode` trong profile.
+Mặc định là `native` để giữ tương thích. Đặt `"terminal_prefixed_v1"` cho phép
+ID API mang tiền tố `CL:` (Cửa Lò) hoặc `BT:` (Bến Thủy); ví dụ giả lập
+`CL:123` và `BT:123` là hai đối tượng riêng. **Tài liệu này chưa xác nhận chế
+độ mới đã được kích hoạt trên production.**
+
+Lựa chọn áp dụng đồng bộ cho tám danh mục S (`shipDetails`, `customers`,
+`cargoType`, `cargoCategory`, `handlingMethodList`, `class`, `origins`,
+`containerSize`), các quan hệ của chúng và khóa tham chiếu trong bốn API sản
+lượng. Cần `cargo_catalog_source="native_groups"` và
+`container_size_source="native_cargo"` hoặc `"native_domestic"` có quan hệ
+đã xác minh. Định danh của `/api/oprt/` không thay đổi.
+
+Giữ ID gốc trong database, các ánh xạ/allowlist profile theo từng xí nghiệp và
+tham số SQL. Chỉ ID công khai được mã hóa; `companyId=CNT`, công thức tấn/TEU,
+phạm vi và chính sách null không đổi, không thêm `sourceDatabase` vào JSON.
+Tra cứu chi tiết và bộ lọc ID phải dùng nguyên chuỗi có tiền tố; ID trần hoặc
+sai cú pháp bị từ chối trước truy vấn. Hai nguồn cùng ID không gộp thành một
+đối tượng; thiếu tham chiếu trong nguồn này không được lấy nguồn kia thay thế.
+
+Triển khai mã hỗ trợ trước khi đổi profile. Bên nhận cần giữ ID dạng chuỗi,
+không cắt tiền tố/ép số; nạp lại cả danh mục và sản lượng cùng chế độ rồi thay
+thế đúng phân vùng, không nối vào dữ liệu còn dùng ID cũ. Xem
+[quy trình chuyển định danh](VAN_HANH_API_TONG_CONG_TY.vi.md#chuyển-id-bộ-s-sang-phân-biệt-nguồn).
+
 ### Quy đổi hàng rời theo danh mục nguồn
 
 Mặc định không bật quy đổi bổ sung. Khóa `bulk_unit_conversion_cargo_ids`
@@ -138,7 +165,8 @@ hoặc chính sách dữ liệu thiếu. Khi phát hành phải kiểm tra đún
   từng phiếu, tổng hợp và xác định danh mục tham chiếu. Một phiếu lỗi thuộc
   tàu/phương án khác không còn chặn riêng tập con được yêu cầu. Phiếu thuộc
   tập con vẫn phải qua đủ kiểm tra; không truyền bộ lọc thì vẫn kiểm tra toàn kỳ.
-  Qua cổng/bãi chỉ hỗ trợ phương án. ID so chính xác, không đổi mã nguồn.
+  Qua cổng/bãi chỉ hỗ trợ phương án. ID so chính xác theo chế độ profile;
+  chế độ có tiền tố chỉ đọc nguồn tương ứng và truyền phần ID gốc vào SQL.
 - Bộ lọc mã tàu/phương án được truyền bằng tham số và áp trước giới hạn dòng
   trong SQL đọc phiếu. Lịch sử cầu của những chuyến được chọn vẫn xét toàn bộ
   lịch sử. Giới hạn dòng tiếp tục áp dụng cho chính tập con được yêu cầu; thay
@@ -165,7 +193,8 @@ báo cáo ở [hướng dẫn bàn giao](VAN_HANH_API_TONG_CONG_TY.vi.md#lệnh-
 
 Truy vấn trực tiếp thay cách lấy dữ liệu, không thay định nghĩa chỉ tiêu. Vẫn
 kiểm tra nguồn đủ hai xí nghiệp, schema, đơn vị, ID, tham chiếu và các trường null
-chưa có xác nhận. Không tự chọn một nguồn khi ID trùng khác nội dung, không coi
+chưa có xác nhận. Chế độ `native` vẫn chặn xung đột ID khi gộp; chế độ có tiền
+tố giữ riêng đối tượng của mỗi nguồn và vẫn kiểm tra tham chiếu đúng nguồn. Không coi
 trường thiếu là 0 và không trả một phần sản lượng thành kết quả đầy đủ.
 
 Mục Kiểm tra API dùng nhãn **Truy vấn SmartTOS** khi bật live. Nhãn này chỉ cách
@@ -226,8 +255,9 @@ chỉ tiêu. Lệnh không gửi vào Lakehouse và không xác nhận thay ngư
 
 Theo lựa chọn nguồn đã xác nhận để thử API, chế độ
 `container_size_source: "native_cargo"` dùng chính `Cargo.cargoId` và mã hàng
-container báo cáo (`20F`, `40F`, `20E`, `40E`, các mã đã hỗ trợ) làm ID và
-`localSzTp`. Không gán chúng vào một mã ISO bất kỳ. `isoSzTp`, `heightCode`,
+container báo cáo (`20F`, `40F`, `20E`, `40E`, các mã đã hỗ trợ) làm cơ sở ID và
+`localSzTp`; chỉ thêm tiền tố vào ID công khai nếu profile chọn chế độ đó.
+Không gán chúng vào một mã ISO bất kỳ. `isoSzTp`, `heightCode`,
 `containerTypeCode` giữ null. Chế độ `native_domestic` vẫn giữ yêu cầu quan hệ
 đã xác minh tới `vwContainerSizeTypeDomestic` khi được chọn.
 
@@ -253,8 +283,9 @@ Các thay đổi giảm công việc SQL cho mỗi yêu cầu:
   hoặc chế độ `methods` giữ kiểm tra tương ứng.
 - Đọc danh mục theo các ID thực sự được tham chiếu tại từng xí nghiệp, kiểm tra
   đúng nguồn và toàn bộ quan hệ nhóm hàng cha. Bản ghi cùng ID ở nguồn không
-  phát sinh không chặn kết quả. Nếu cả hai nguồn thực sự dùng cùng ID nhưng
-  khác nội dung nghiệp vụ thì vẫn chặn; thiếu ID không được lấy nguồn khác bù.
+  phát sinh không chặn kết quả. Trong chế độ `native`, hai nguồn cùng ID nhưng
+  khác nội dung nghiệp vụ vẫn bị chặn. Trong `terminal_prefixed_v1`, hai ID
+  công khai khác nhau nên được giữ riêng; thiếu ID không được lấy nguồn khác bù.
 - Tái sử dụng kết nối SQL trong một yêu cầu và đóng khi yêu cầu kết thúc.
   Mỗi SELECT vẫn đọc mới; không giữ kết quả cho yêu cầu tiếp theo.
 
@@ -276,7 +307,8 @@ nội bộ có giới hạn. Khi số 0 và đơn vị hợp lệ, bộ đọc g
 không tự kết luận thiếu cân, nhân số lượng với định mức hoặc cộng tấn bổ sung.
 Chẩn đoán này không thay payload công khai và không tự chặn toàn kỳ.
 
-Danh mục đầy đủ vẫn có thể vướng ID trùng khác nội dung; một tập con sản lượng
+Danh mục đầy đủ trong chế độ `native` vẫn có thể vướng ID trùng khác nội dung;
+chế độ có tiền tố vẫn giữ các kiểm tra khóa và quan hệ trong mỗi nguồn. Một tập con sản lượng
 đọc thành công không chứng minh mọi danh mục công khai đều đọc được. Dùng
 `verify_delivery --verify-references` khi cần kiểm tra cả những mã bên nhận
 phải tra cứu, theo hướng dẫn bàn giao. Kiểm thử mã, kiểm tra HTTP và đối chiếu

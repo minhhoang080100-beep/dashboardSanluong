@@ -248,6 +248,7 @@ for resource, model in MODELS.items():
     description = ('Lấy sản lượng theo kỳ, bao gồm cả ngày bắt đầu và ngày kết thúc. '
                    'startDate và endDate bắt buộc, dạng YYYYMMDD. Chế độ trực tiếp cho phép tối đa '
                    '31 ngày mỗi yêu cầu (tính cả hai đầu); chia kỳ dài thành từng tháng. '
+                   'Dùng nguyên ID do danh mục trả về; khi bật định danh nguồn, ID có dạng CL:<ID> hoặc BT:<ID>. '
                    'Mã lọc tàu/phương án phải tồn tại trong danh mục nguồn hợp lệ: '
                    'chế độ trực tiếp trả 422 FILTER_ID_NOT_FOUND nếu không có mã; '
                    'mã hợp lệ không có tác nghiệp trong kỳ trả 200 với data rỗng. '
@@ -255,6 +256,7 @@ for resource, model in MODELS.items():
                    'Đọc đủ các trang tới khi X-Has-Next=false và kiểm tra X-Result-Digest không đổi giữa các trang.'
                    if resource in PRODUCTION else
                    'Lấy danh mục theo các bộ lọc được liệt kê. Đọc đủ các trang tới khi X-Has-Next=false. '
+                   'Khi bật định danh nguồn, CL:<ID> là Cửa Lò, BT:<ID> là Bến Thủy; giữ nguyên tiền tố khi tham chiếu hoặc lọc. '
                    'Ở chế độ trực tiếp, mỗi yêu cầu đọc lại nguồn; danh mục có thể thay đổi giữa các trang.')
     router.add_api_route('/' + resource, list_endpoint(resource), methods=['GET'], response_model=Page[model],
                          tags=['Tổng công ty / S'], description=description,
@@ -264,7 +266,7 @@ for resource, model in MODELS.items():
     if resource in IDENTITY and resource != 'containerSize':
         router.add_api_route('/' + resource + '/{record_id}', detail_endpoint(resource),
                              methods=['GET'], response_model=Page[model], tags=['Tổng công ty / S'],
-                             description='Tra cứu ID gốc trong danh mục. Nếu không có ID phù hợp, trả 404 NOT_FOUND; page phải bằng 1.',
+                             description='Tra cứu nguyên ID API do danh mục trả về, kể cả CL:/BT: khi bật định danh nguồn. Nếu không có ID phù hợp, trả 404 NOT_FOUND; page phải bằng 1.',
                              responses=PAGE_RESPONSES)
 
 
